@@ -1,0 +1,8 @@
+[package]
+name = "osflux-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossbeam.workspace = true
+windows.workspace = true

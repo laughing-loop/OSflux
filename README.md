@@ -1,0 +1,38 @@
+# OSflux
+
+OSflux is a next-generation bootable media and OS deployment platform.
+
+## Platform Layout
+
+- OSflux Core: low-level device access, Windows I/O bindings, and write pipeline primitives.
+- OSflux Engine: orchestration layer for image planning, write execution, and verification.
+- OSflux CLI: command-line interface for local development and operator workflows.
+- OSflux Studio: planned graphical interface built on top of the same engine.
+
+## Current Status
+
+The repository is currently a Rust workspace with the first platform crates in place:
+
+- `crates/osflux-core`
+- `crates/osflux-engine`
+- `crates/osflux-cli`
+
+## Development
+
+Requirements:
+
+- Rust stable MSVC toolchain
+- Visual Studio C++ build tools
+- Windows SDK
+
+Run the CLI:
+
+```powershell
+cargo run
+```
+
+Run with demo pipeline options:
+
+```powershell
+cargo run -- --blocks=16 --block-size=1048576
+```

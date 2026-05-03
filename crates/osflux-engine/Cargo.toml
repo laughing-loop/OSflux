@@ -1,0 +1,7 @@
+[package]
+name = "osflux-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+osflux-core = { path = "../osflux-core" }

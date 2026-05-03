@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+*.pdb
+*.exe
+.vs/
+.vscode/
+*.user
+*.suo

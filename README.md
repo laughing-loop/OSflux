@@ -17,6 +17,10 @@ The repository is currently a Rust workspace with the first platform crates in p
 - `crates/osflux-engine`
 - `crates/osflux-cli`
 
+For a beginner-friendly explanation of the project direction, read:
+
+- `DOCUMENTS/PROJECT_OVERVIEW.md`
+
 ## Development
 
 Requirements:
@@ -29,6 +33,12 @@ Run the CLI:
 
 ```powershell
 cargo run
+```
+
+List visible physical drives:
+
+```powershell
+cargo run -- --list-devices
 ```
 
 Run with demo pipeline options:

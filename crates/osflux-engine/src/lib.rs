@@ -1,3 +1,4 @@
+use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
 #[derive(Debug, Clone, Copy)]
@@ -29,4 +30,8 @@ impl Engine {
         let processed = pipeline::run_pipeline(self.config.block_count, self.config.block_size);
         println!("OSflux Core pipeline processed {processed} block(s).");
     }
+}
+
+pub fn list_devices() -> Vec<PhysicalDevice> {
+    device::list_physical_devices()
 }

@@ -45,6 +45,10 @@ It will handle things like:
 
 This layer is where performance matters most.
 
+The device layer now has a shared `BlockDevice` trait. Windows has the first implementation, while Linux and macOS have placeholder modules ready for future work.
+
+The writer layer now has a `WriteStrategy` trait. This lets Windows, Linux, and macOS use different high-performance write methods later without forcing the engine to care about operating-system details.
+
 ## OSflux Engine
 
 Location:

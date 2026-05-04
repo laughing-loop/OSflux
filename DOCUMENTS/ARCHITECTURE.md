@@ -26,6 +26,11 @@ Responsibilities:
 - Provide raw read/write access
 - Detect sector size & alignment
 
+Design:
+- Shared trait boundary lives in `osflux-core::device`.
+- Windows, Linux, and macOS implementations stay behind that boundary.
+- The engine depends on `BlockDevice` behavior, not operating-system APIs.
+
 ---
 
 ### 2. Image Layer
@@ -54,6 +59,12 @@ Key Features:
 - Multi-threaded pipeline
 - Dynamic buffer sizing
 - Queue depth tuning
+
+Design:
+- Platform-agnostic pipeline code owns orchestration and buffering.
+- Platform write strategies handle the actual I/O style.
+- Windows uses the Windows strategy boundary for overlapped I/O.
+- Unix-like systems will use a Unix strategy boundary for positional writes and later async upgrades.
 
 ---
 

@@ -1,4 +1,4 @@
-use osflux_engine::{list_devices, Engine, EngineConfig};
+use osflux_engine::{list_devices, plan_image, Engine, EngineConfig, ImagePlan};
 
 fn main() {
     match parse_command(std::env::args().skip(1)) {
@@ -8,12 +8,14 @@ fn main() {
             engine.start();
         }
         Command::ListDevices => print_devices(),
+        Command::PlanImage(path) => print_image_plan(&path),
     }
 }
 
 enum Command {
     Run(EngineConfig),
     ListDevices,
+    PlanImage(String),
 }
 
 fn parse_command<I>(args: I) -> Command
@@ -22,14 +24,28 @@ where
     I::Item: AsRef<str>,
 {
     let mut config = EngineConfig::default();
+    let args: Vec<String> = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_string())
+        .collect();
+    let mut index = 0usize;
 
-    for arg in args {
-        let arg = arg.as_ref();
+    while index < args.len() {
+        let arg = args[index].as_str();
         if arg == "--help" || arg == "-h" {
             print_help();
             std::process::exit(0);
         } else if arg == "--list-devices" {
             return Command::ListDevices;
+        } else if let Some(path) = arg.strip_prefix("--plan-image=") {
+            return Command::PlanImage(path.to_string());
+        } else if arg == "--plan-image" {
+            let Some(path) = args.get(index + 1) else {
+                eprintln!("missing path after --plan-image");
+                std::process::exit(2);
+            };
+
+            return Command::PlanImage(path.to_string());
         } else if let Some(value) = arg.strip_prefix("--blocks=") {
             if let Ok(parsed) = value.parse::<usize>() {
                 config.block_count = parsed;
@@ -39,9 +55,45 @@ where
                 config.block_size = parsed;
             }
         }
+
+        index += 1;
     }
 
     Command::Run(config)
+}
+
+fn print_image_plan(path: &str) {
+    match plan_image(path) {
+        Ok(plan) => print_plan(plan),
+        Err(error) => {
+            eprintln!("OSflux could not plan this image.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_plan(plan: ImagePlan) {
+    println!("OSflux image plan");
+    println!("source: {}", plan.source.display());
+    println!("file: {}", plan.file_name);
+    println!("size: {}", format_size(plan.size_bytes));
+    println!("kind: {}", plan.kind.as_str());
+    println!("write mode: {}", plan.write_mode.as_str());
+
+    if !plan.notes.is_empty() {
+        println!("notes:");
+        for note in plan.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !plan.warnings.is_empty() {
+        println!("warnings:");
+        for warning in plan.warnings {
+            println!("  - {warning}");
+        }
+    }
 }
 
 fn print_devices() {
@@ -110,10 +162,12 @@ fn print_help() {
     println!("OSflux CLI");
     println!("Usage:");
     println!("  cargo run -- --list-devices");
+    println!("  cargo run -- --plan-image <PATH>");
     println!("  cargo run -- --blocks=16 --block-size=1048576");
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
+    println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --blocks=<N>        Number of blocks to enqueue in the demo pipeline.");
     println!("  --block-size=<N>    Bytes per block in the demo pipeline.");
 }

@@ -45,6 +45,12 @@ List visible physical drives:
 cargo run -- --list-devices
 ```
 
+Plan an image without writing anything:
+
+```powershell
+cargo run -- --plan-image "C:\path\to\image.iso"
+```
+
 Run with demo pipeline options:
 
 ```powershell

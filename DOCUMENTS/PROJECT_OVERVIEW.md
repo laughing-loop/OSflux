@@ -136,11 +136,27 @@ The device scan now tries to show:
 - safety label
 - system-drive warning
 
-## What GitHub Actions Is Doing
+We also added the first read-only image planning command:
 
-GitHub Actions is the robot that builds and checks the project on GitHub.
+```powershell
+cargo run -- --plan-image "C:\path\to\image.iso"
+```
 
-When we push code, it will:
+This command classifies the image, reads its size, chooses an initial write mode, and prints notes/warnings. It does not open or write to any drive.
+
+## GitHub Actions Status
+
+GitHub Actions is the robot that can build and check the project on GitHub.
+
+For now, the active workflow is disabled because GitHub starts every run with a startup failure before any job is created.
+
+The workflow template is stored here:
+
+```text
+DOCUMENTS/CI_WORKFLOW_TEMPLATE.md
+```
+
+When the GitHub-side issue is fixed, that workflow can:
 
 - install/configure Rust
 - check formatting
@@ -176,20 +192,21 @@ That output means the CLI is calling the engine, and the engine is calling the c
 
 ## What Comes Next
 
-The next useful milestone is device listing.
+The next useful milestone is improving image planning.
 
-We want this command:
+We now have this command:
 
 ```powershell
-cargo run -- --list-devices
+cargo run -- --plan-image "C:\path\to\image.iso"
 ```
 
-That should show available drives in a safe way. This milestone has started, and the next improvement is to add richer device identity such as model, bus type, removable status, and system-drive warnings.
+The next improvement is deeper image inspection.
 
 After that, we build:
 
-- image input planning
 - write mode selection
+- image family detection
+- boot metadata inspection
 - real write pipeline
 - progress reporting
 - verification

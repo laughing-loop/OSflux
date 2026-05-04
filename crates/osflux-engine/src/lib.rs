@@ -1,4 +1,5 @@
 pub mod image_plan;
+pub mod image_report;
 pub mod iso;
 
 use osflux_core::device::{self, PhysicalDevice};
@@ -7,6 +8,10 @@ use osflux_core::pipeline;
 pub use image_plan::{
     plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImageSignature,
     ImageWriteStrategy, WriteMode,
+};
+pub use image_report::{
+    build_image_plan_report, plan_image_report, PlanReport, PlanReportField, PlanReportItem,
+    PlanReportSection,
 };
 pub use iso::{
     BootCatalogPlatform, BootEmulation, BootEntrySource, BootImageRange, BootImageRangeStatus,

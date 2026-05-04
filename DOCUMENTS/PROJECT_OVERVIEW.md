@@ -224,6 +224,8 @@ The planner now selects an initial write strategy:
 - raw block writing for raw disk images
 - unknown strategy for files OSflux cannot classify yet
 
+The engine now builds a structured plan report. The CLI renders that report today, and the future Studio interface can use the same report instead of rebuilding planning logic in the GUI.
+
 After that, we build:
 
 - write mode selection

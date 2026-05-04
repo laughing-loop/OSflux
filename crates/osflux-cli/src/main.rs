@@ -1,4 +1,4 @@
-use osflux_engine::{list_devices, plan_image, BootImageRange, Engine, EngineConfig, ImagePlan};
+use osflux_engine::{list_devices, plan_image_report, Engine, EngineConfig, PlanReport};
 
 fn main() {
     match parse_command(std::env::args().skip(1)) {
@@ -63,8 +63,8 @@ where
 }
 
 fn print_image_plan(path: &str) {
-    match plan_image(path) {
-        Ok(plan) => print_plan(plan),
+    match plan_image_report(path) {
+        Ok(report) => print_report(report),
         Err(error) => {
             eprintln!("OSflux could not plan this image.");
             eprintln!("{error}");
@@ -73,87 +73,22 @@ fn print_image_plan(path: &str) {
     }
 }
 
-fn print_plan(plan: ImagePlan) {
-    println!("OSflux image plan");
-    println!("source: {}", plan.source.display());
-    println!("file: {}", plan.file_name);
-    println!("size: {}", format_size(plan.size_bytes));
-    println!("kind: {}", plan.kind.as_str());
-    println!("detection: {}", plan.detection_method.as_str());
-    println!("write mode: {}", plan.write_mode.as_str());
-    println!("write strategy: {}", plan.write_strategy.as_str());
+fn print_report(report: PlanReport) {
+    println!("{}", report.title);
 
-    if !plan.signatures.is_empty() {
-        println!("signatures:");
-        for signature in plan.signatures {
-            println!("  - {}", signature.as_str());
+    for section in report.sections {
+        println!("{}:", section.title);
+
+        for field in section.fields {
+            println!("  {}: {}", field.label, field.value);
         }
-    }
 
-    if let Some(metadata) = plan.boot_metadata {
-        println!("boot metadata:");
-        println!(
-            "  bootable: {}",
-            if metadata.is_bootable() { "yes" } else { "no" }
-        );
-        println!("  boot style: {}", metadata.boot_style().as_str());
+        for item in section.items {
+            println!("  - {}", item.title);
 
-        if let Some(info) = metadata.el_torito {
-            println!("  boot catalog: found");
-            println!("  catalog lba: {}", info.catalog_lba);
-            println!("  platform: {}", info.platform.as_str());
-            println!(
-                "  validation entry: {}",
-                if info.validation_entry_valid {
-                    "valid"
-                } else {
-                    "invalid"
-                }
-            );
-            println!(
-                "  default entry: {}",
-                if info.default_entry_bootable {
-                    "bootable"
-                } else {
-                    "not bootable"
-                }
-            );
-            println!("  emulation: {}", info.emulation.as_str());
-            println!("  load rba: {}", info.load_rba);
-            println!("  sector count: {}", info.sector_count);
-            println!("  boot entries:");
-            for entry in info.boot_entries {
-                println!(
-                    "    - {} | {} | {} | {} | load rba {} | sectors {} | range {}",
-                    entry.source.as_str(),
-                    entry.platform.as_str(),
-                    if entry.bootable {
-                        "bootable"
-                    } else {
-                        "not bootable"
-                    },
-                    entry.emulation.as_str(),
-                    entry.load_rba,
-                    entry.sector_count,
-                    format_boot_image_range(entry.image_range)
-                );
+            for field in item.fields {
+                println!("      {}: {}", field.label, field.value);
             }
-        } else {
-            println!("  boot catalog: not found");
-        }
-    }
-
-    if !plan.notes.is_empty() {
-        println!("notes:");
-        for note in plan.notes {
-            println!("  - {note}");
-        }
-    }
-
-    if !plan.warnings.is_empty() {
-        println!("warnings:");
-        for warning in plan.warnings {
-            println!("  - {warning}");
         }
     }
 }
@@ -218,24 +153,6 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes} bytes")
     }
-}
-
-fn format_boot_image_range(range: BootImageRange) -> String {
-    let mut parts = vec![range.status.as_str().to_string()];
-
-    if let Some(start_offset) = range.start_offset {
-        parts.push(format!("offset {}", format_size(start_offset)));
-    }
-
-    if let Some(required_bytes) = range.required_bytes {
-        parts.push(format!("required {}", format_size(required_bytes)));
-    }
-
-    if let Some(end_offset) = range.end_offset {
-        parts.push(format!("end {}", format_size(end_offset)));
-    }
-
-    parts.join(", ")
 }
 
 fn print_help() {

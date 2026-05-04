@@ -217,6 +217,13 @@ The planner now turns that catalog data into a boot style:
 
 It also validates the byte range for each boot entry. In plain terms, OSflux checks whether the boot catalog points to real readable bytes inside the ISO instead of blindly trusting the catalog.
 
+The planner now selects an initial write strategy:
+
+- ISO filesystem boot setup when boot metadata is complete and valid
+- deeper ISO inspection when boot metadata is missing, unknown, or unsafe
+- raw block writing for raw disk images
+- unknown strategy for files OSflux cannot classify yet
+
 After that, we build:
 
 - write mode selection

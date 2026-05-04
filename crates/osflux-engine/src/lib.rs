@@ -5,7 +5,8 @@ use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
 pub use image_plan::{
-    plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImageSignature, WriteMode,
+    plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImageSignature,
+    ImageWriteStrategy, WriteMode,
 };
 pub use iso::{
     BootCatalogPlatform, BootEmulation, BootEntrySource, BootImageRange, BootImageRangeStatus,

@@ -81,6 +81,7 @@ fn print_plan(plan: ImagePlan) {
     println!("kind: {}", plan.kind.as_str());
     println!("detection: {}", plan.detection_method.as_str());
     println!("write mode: {}", plan.write_mode.as_str());
+    println!("write strategy: {}", plan.write_strategy.as_str());
 
     if !plan.signatures.is_empty() {
         println!("signatures:");

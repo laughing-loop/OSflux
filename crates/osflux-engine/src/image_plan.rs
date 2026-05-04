@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::iso::{inspect_boot_metadata, IsoBootMetadata};
+use crate::iso::{inspect_boot_metadata, BootStyle, IsoBootMetadata};
 
 const ISO_SECTOR_SIZE: u64 = 2048;
 const ISO_VOLUME_DESCRIPTOR_START: u64 = 16 * ISO_SECTOR_SIZE;
@@ -25,6 +25,7 @@ pub struct ImagePlan {
     pub signatures: Vec<ImageSignature>,
     pub boot_metadata: Option<IsoBootMetadata>,
     pub write_mode: WriteMode,
+    pub write_strategy: ImageWriteStrategy,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -101,6 +102,25 @@ impl WriteMode {
         match self {
             Self::FileSystem => "filesystem",
             Self::Raw => "raw",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageWriteStrategy {
+    IsoFileSystemBootSetup,
+    IsoNeedsDeeperInspection,
+    RawBlockWrite,
+    Unknown,
+}
+
+impl ImageWriteStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::IsoFileSystemBootSetup => "iso-filesystem-boot-setup",
+            Self::IsoNeedsDeeperInspection => "iso-needs-deeper-inspection",
+            Self::RawBlockWrite => "raw-block-write",
             Self::Unknown => "unknown",
         }
     }
@@ -190,8 +210,12 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         ImageKind::Iso => {
             match inspect_boot_metadata(&source) {
                 Ok(metadata) => {
-                    if metadata.el_torito.is_some() {
+                    if let Some(info) = metadata.el_torito.as_ref() {
                         notes.push("El Torito boot catalog detected.".to_string());
+                        if !info.validation_entry_valid {
+                            warnings.push("El Torito validation entry is invalid.".to_string());
+                        }
+
                         if metadata.boot_image_ranges_valid() {
                             notes.push("Boot image byte ranges fit inside the ISO.".to_string());
                         } else {
@@ -221,6 +245,9 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         }
     }
 
+    let write_strategy = write_strategy_for(kind, boot_metadata.as_ref());
+    add_strategy_notes(write_strategy, &mut notes, &mut warnings);
+
     if detection_method == DetectionMethod::Extension {
         warnings
             .push("Extension-based classification is weaker than signature detection.".to_string());
@@ -239,6 +266,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         signatures,
         boot_metadata,
         write_mode,
+        write_strategy,
         notes,
         warnings,
     })
@@ -362,9 +390,68 @@ fn write_mode_for(kind: ImageKind) -> WriteMode {
     }
 }
 
+fn write_strategy_for(
+    kind: ImageKind,
+    boot_metadata: Option<&IsoBootMetadata>,
+) -> ImageWriteStrategy {
+    match kind {
+        ImageKind::Iso => match boot_metadata {
+            Some(metadata) if iso_metadata_ready_for_boot_setup(metadata) => {
+                ImageWriteStrategy::IsoFileSystemBootSetup
+            }
+            _ => ImageWriteStrategy::IsoNeedsDeeperInspection,
+        },
+        ImageKind::RawDiskImage => ImageWriteStrategy::RawBlockWrite,
+        ImageKind::Unknown => ImageWriteStrategy::Unknown,
+    }
+}
+
+fn iso_metadata_ready_for_boot_setup(metadata: &IsoBootMetadata) -> bool {
+    let Some(info) = metadata.el_torito.as_ref() else {
+        return false;
+    };
+
+    info.validation_entry_valid
+        && matches!(
+            metadata.boot_style(),
+            BootStyle::Bios | BootStyle::Uefi | BootStyle::Hybrid
+        )
+        && metadata.boot_image_ranges_valid()
+}
+
+fn add_strategy_notes(
+    write_strategy: ImageWriteStrategy,
+    notes: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    match write_strategy {
+        ImageWriteStrategy::IsoFileSystemBootSetup => {
+            notes.push("Write strategy selected: extract ISO content and prepare boot files from validated metadata.".to_string());
+        }
+        ImageWriteStrategy::IsoNeedsDeeperInspection => {
+            warnings.push(
+                "Write strategy is blocked until ISO boot metadata is complete and valid."
+                    .to_string(),
+            );
+        }
+        ImageWriteStrategy::RawBlockWrite => {
+            notes.push(
+                "Write strategy selected: direct block write after device safety confirmation."
+                    .to_string(),
+            );
+        }
+        ImageWriteStrategy::Unknown => {
+            warnings.push("No write strategy can be selected for this image yet.".to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{plan_image, DetectionMethod, ImageKind, ImageSignature, WriteMode};
+    use super::{
+        plan_image, DetectionMethod, ImageKind, ImageSignature, ImageWriteStrategy, WriteMode,
+        ISO_SECTOR_SIZE,
+    };
     use std::fs;
     use std::io::{Seek, SeekFrom, Write};
 
@@ -378,6 +465,10 @@ mod tests {
         assert_eq!(plan.kind, ImageKind::Iso);
         assert_eq!(plan.detection_method, DetectionMethod::Extension);
         assert_eq!(plan.write_mode, WriteMode::FileSystem);
+        assert_eq!(
+            plan.write_strategy,
+            ImageWriteStrategy::IsoNeedsDeeperInspection
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -392,6 +483,7 @@ mod tests {
         assert_eq!(plan.kind, ImageKind::RawDiskImage);
         assert_eq!(plan.detection_method, DetectionMethod::Extension);
         assert_eq!(plan.write_mode, WriteMode::Raw);
+        assert_eq!(plan.write_strategy, ImageWriteStrategy::RawBlockWrite);
 
         let _ = fs::remove_file(path);
     }
@@ -407,6 +499,47 @@ mod tests {
         assert_eq!(plan.detection_method, DetectionMethod::Signature);
         assert_eq!(plan.signatures, vec![ImageSignature::Iso9660]);
         assert_eq!(plan.write_mode, WriteMode::FileSystem);
+        assert_eq!(
+            plan.write_strategy,
+            ImageWriteStrategy::IsoNeedsDeeperInspection
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn selects_iso_boot_setup_strategy_for_valid_boot_metadata() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_bootable_iso(&path, 20, 24);
+
+        let plan = plan_image(&path).unwrap();
+
+        assert_eq!(plan.kind, ImageKind::Iso);
+        assert_eq!(plan.detection_method, DetectionMethod::Signature);
+        assert_eq!(
+            plan.write_strategy,
+            ImageWriteStrategy::IsoFileSystemBootSetup
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blocks_iso_boot_setup_strategy_for_invalid_catalog_validation() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_bootable_iso_with_invalid_validation(&path, 20, 24);
+
+        let plan = plan_image(&path).unwrap();
+
+        assert_eq!(plan.kind, ImageKind::Iso);
+        assert_eq!(
+            plan.write_strategy,
+            ImageWriteStrategy::IsoNeedsDeeperInspection
+        );
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("validation entry is invalid")));
 
         let _ = fs::remove_file(path);
     }
@@ -422,6 +555,7 @@ mod tests {
         assert_eq!(plan.detection_method, DetectionMethod::Signature);
         assert_eq!(plan.signatures, vec![ImageSignature::Gpt]);
         assert_eq!(plan.write_mode, WriteMode::Raw);
+        assert_eq!(plan.write_strategy, ImageWriteStrategy::RawBlockWrite);
 
         let _ = fs::remove_file(path);
     }
@@ -441,6 +575,10 @@ mod tests {
             vec![ImageSignature::Iso9660, ImageSignature::Mbr]
         );
         assert_eq!(plan.write_mode, WriteMode::FileSystem);
+        assert_eq!(
+            plan.write_strategy,
+            ImageWriteStrategy::IsoNeedsDeeperInspection
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -464,6 +602,86 @@ mod tests {
 
         file.seek(SeekFrom::Start(offset)).unwrap();
         file.write_all(bytes).unwrap();
+    }
+
+    fn write_bootable_iso(path: &std::path::Path, catalog_lba: u32, load_rba: u32) {
+        write_bootable_iso_with_validation(path, catalog_lba, load_rba, true);
+    }
+
+    fn write_bootable_iso_with_invalid_validation(
+        path: &std::path::Path,
+        catalog_lba: u32,
+        load_rba: u32,
+    ) {
+        write_bootable_iso_with_validation(path, catalog_lba, load_rba, false);
+    }
+
+    fn write_bootable_iso_with_validation(
+        path: &std::path::Path,
+        catalog_lba: u32,
+        load_rba: u32,
+        valid_validation_entry: bool,
+    ) {
+        write_descriptor(path, 16, 1, |descriptor| {
+            write_ascii_field(&mut descriptor[7..39], b"OSFLUX TEST PRIMARY VOLUME");
+        });
+        write_descriptor(path, 17, 0, |descriptor| {
+            write_ascii_field(&mut descriptor[7..39], b"EL TORITO SPECIFICATION");
+            descriptor[71..75].copy_from_slice(&catalog_lba.to_le_bytes());
+        });
+        write_descriptor(path, 18, 255, |_| {});
+        write_catalog(path, catalog_lba, load_rba, valid_validation_entry);
+        write_at(path, u64::from(load_rba) * ISO_SECTOR_SIZE, &[0xF4; 2048]);
+    }
+
+    fn write_catalog(
+        path: &std::path::Path,
+        catalog_lba: u32,
+        load_rba: u32,
+        valid_validation_entry: bool,
+    ) {
+        let mut validation = [0u8; 32];
+        validation[0] = 0x01;
+        validation[1] = 0xEF;
+        validation[30] = 0x55;
+        validation[31] = 0xAA;
+        if valid_validation_entry {
+            let checksum = validation
+                .chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()))
+                .fold(0u16, u16::wrapping_add);
+            validation[28..30].copy_from_slice(&0u16.wrapping_sub(checksum).to_le_bytes());
+        }
+
+        let mut default_entry = [0u8; 32];
+        default_entry[0] = 0x88;
+        default_entry[1] = 0x00;
+        default_entry[6..8].copy_from_slice(&4u16.to_le_bytes());
+        default_entry[8..12].copy_from_slice(&load_rba.to_le_bytes());
+
+        write_at(path, u64::from(catalog_lba) * ISO_SECTOR_SIZE, &validation);
+        write_at(
+            path,
+            (u64::from(catalog_lba) * ISO_SECTOR_SIZE) + 32,
+            &default_entry,
+        );
+    }
+
+    fn write_descriptor<F>(path: &std::path::Path, sector: u64, descriptor_type: u8, build: F)
+    where
+        F: FnOnce(&mut [u8; ISO_SECTOR_SIZE as usize]),
+    {
+        let mut descriptor = [0u8; ISO_SECTOR_SIZE as usize];
+        descriptor[0] = descriptor_type;
+        descriptor[1..6].copy_from_slice(b"CD001");
+        descriptor[6] = 1;
+        build(&mut descriptor);
+        write_at(path, sector * ISO_SECTOR_SIZE, &descriptor);
+    }
+
+    fn write_ascii_field(field: &mut [u8], value: &[u8]) {
+        field.fill(b' ');
+        field[..value.len()].copy_from_slice(value);
     }
 
     fn unique_name(extension: &str) -> String {

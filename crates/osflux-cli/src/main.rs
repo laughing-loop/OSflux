@@ -95,6 +95,7 @@ fn print_plan(plan: ImagePlan) {
             "  bootable: {}",
             if metadata.is_bootable() { "yes" } else { "no" }
         );
+        println!("  boot style: {}", metadata.boot_style().as_str());
 
         if let Some(info) = metadata.el_torito {
             println!("  boot catalog: found");
@@ -119,6 +120,22 @@ fn print_plan(plan: ImagePlan) {
             println!("  emulation: {}", info.emulation.as_str());
             println!("  load rba: {}", info.load_rba);
             println!("  sector count: {}", info.sector_count);
+            println!("  boot entries:");
+            for entry in info.boot_entries {
+                println!(
+                    "    - {} | {} | {} | {} | load rba {} | sectors {}",
+                    entry.source.as_str(),
+                    entry.platform.as_str(),
+                    if entry.bootable {
+                        "bootable"
+                    } else {
+                        "not bootable"
+                    },
+                    entry.emulation.as_str(),
+                    entry.load_rba,
+                    entry.sector_count
+                );
+            }
         } else {
             println!("  boot catalog: not found");
         }

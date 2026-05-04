@@ -7,7 +7,10 @@ use osflux_core::pipeline;
 pub use image_plan::{
     plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImageSignature, WriteMode,
 };
-pub use iso::{BootCatalogPlatform, BootEmulation, ElToritoBootInfo, IsoBootMetadata};
+pub use iso::{
+    BootCatalogPlatform, BootEmulation, BootEntrySource, BootStyle, ElToritoBootEntry,
+    ElToritoBootInfo, IsoBootMetadata,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {

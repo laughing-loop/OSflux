@@ -16,6 +16,9 @@ const VALIDATION_ENTRY_HEADER_ID: u8 = 0x01;
 const VALIDATION_ENTRY_KEY_1: u8 = 0x55;
 const VALIDATION_ENTRY_KEY_2: u8 = 0xAA;
 const BOOTABLE_INDICATOR: u8 = 0x88;
+const SECTION_HEADER_INDICATOR: u8 = 0x90;
+const FINAL_SECTION_HEADER_INDICATOR: u8 = 0x91;
+const MAX_BOOT_CATALOG_SLOTS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsoBootMetadata {
@@ -24,9 +27,14 @@ pub struct IsoBootMetadata {
 
 impl IsoBootMetadata {
     pub fn is_bootable(&self) -> bool {
+        self.boot_style().is_bootable()
+    }
+
+    pub fn boot_style(&self) -> BootStyle {
         self.el_torito
             .as_ref()
-            .is_some_and(|info| info.default_entry_bootable)
+            .map(|info| info.boot_style)
+            .unwrap_or(BootStyle::None)
     }
 }
 
@@ -41,6 +49,60 @@ pub struct ElToritoBootInfo {
     pub system_type: u8,
     pub sector_count: u16,
     pub load_rba: u32,
+    pub boot_style: BootStyle,
+    pub boot_entries: Vec<ElToritoBootEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ElToritoBootEntry {
+    pub source: BootEntrySource,
+    pub platform: BootCatalogPlatform,
+    pub bootable: bool,
+    pub emulation: BootEmulation,
+    pub load_segment: u16,
+    pub system_type: u8,
+    pub sector_count: u16,
+    pub load_rba: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootEntrySource {
+    Default,
+    Section,
+}
+
+impl BootEntrySource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Section => "section",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootStyle {
+    None,
+    Bios,
+    Uefi,
+    Hybrid,
+    Unknown,
+}
+
+impl BootStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "not bootable",
+            Self::Bios => "BIOS",
+            Self::Uefi => "UEFI",
+            Self::Hybrid => "BIOS + UEFI",
+            Self::Unknown => "unknown boot platform",
+        }
+    }
+
+    fn is_bootable(self) -> bool {
+        self != Self::None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,18 +196,130 @@ fn read_boot_catalog(file: &mut File, catalog_lba: u32) -> std::io::Result<ElTor
     let validation_entry: [u8; CATALOG_ENTRY_SIZE] = read_exact_at(file, catalog_offset)?;
     let default_entry: [u8; CATALOG_ENTRY_SIZE] =
         read_exact_at(file, catalog_offset + CATALOG_ENTRY_SIZE as u64)?;
+    let platform = platform_from_id(validation_entry[1]);
+    let default_boot_entry = parse_boot_entry(&default_entry, platform, BootEntrySource::Default);
+    let mut boot_entries = vec![default_boot_entry];
+    read_section_entries(
+        file,
+        catalog_offset + (CATALOG_ENTRY_SIZE as u64 * 2),
+        &mut boot_entries,
+    )?;
+    let boot_style = boot_style_from_entries(&boot_entries);
 
     Ok(ElToritoBootInfo {
         catalog_lba,
-        platform: platform_from_id(validation_entry[1]),
+        platform,
         validation_entry_valid: is_validation_entry_valid(&validation_entry),
-        default_entry_bootable: default_entry[0] == BOOTABLE_INDICATOR,
-        emulation: emulation_from_id(default_entry[1]),
-        load_segment: u16::from_le_bytes(default_entry[2..4].try_into().unwrap()),
-        system_type: default_entry[4],
-        sector_count: u16::from_le_bytes(default_entry[6..8].try_into().unwrap()),
-        load_rba: u32::from_le_bytes(default_entry[8..12].try_into().unwrap()),
+        default_entry_bootable: default_boot_entry.bootable,
+        emulation: default_boot_entry.emulation,
+        load_segment: default_boot_entry.load_segment,
+        system_type: default_boot_entry.system_type,
+        sector_count: default_boot_entry.sector_count,
+        load_rba: default_boot_entry.load_rba,
+        boot_style,
+        boot_entries,
     })
+}
+
+fn read_section_entries(
+    file: &mut File,
+    mut offset: u64,
+    boot_entries: &mut Vec<ElToritoBootEntry>,
+) -> std::io::Result<()> {
+    let mut slots_read = 0usize;
+
+    while slots_read < MAX_BOOT_CATALOG_SLOTS {
+        let Some(header) = read_exact_at_optional::<CATALOG_ENTRY_SIZE>(file, offset)? else {
+            return Ok(());
+        };
+
+        if is_empty_catalog_entry(&header) {
+            return Ok(());
+        }
+
+        let is_section_header = matches!(
+            header[0],
+            SECTION_HEADER_INDICATOR | FINAL_SECTION_HEADER_INDICATOR
+        );
+        if !is_section_header {
+            return Ok(());
+        }
+
+        let is_final_section = header[0] == FINAL_SECTION_HEADER_INDICATOR;
+        let platform = platform_from_id(header[1]);
+        let section_entry_count = u16::from_le_bytes(header[2..4].try_into().unwrap()) as usize;
+        offset += CATALOG_ENTRY_SIZE as u64;
+        slots_read += 1;
+
+        for _ in 0..section_entry_count {
+            if slots_read >= MAX_BOOT_CATALOG_SLOTS {
+                return Ok(());
+            }
+
+            let Some(entry) = read_exact_at_optional::<CATALOG_ENTRY_SIZE>(file, offset)? else {
+                return Ok(());
+            };
+
+            if is_empty_catalog_entry(&entry) {
+                return Ok(());
+            }
+
+            boot_entries.push(parse_boot_entry(&entry, platform, BootEntrySource::Section));
+            offset += CATALOG_ENTRY_SIZE as u64;
+            slots_read += 1;
+        }
+
+        if is_final_section {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_boot_entry(
+    entry: &[u8; CATALOG_ENTRY_SIZE],
+    platform: BootCatalogPlatform,
+    source: BootEntrySource,
+) -> ElToritoBootEntry {
+    ElToritoBootEntry {
+        source,
+        platform,
+        bootable: entry[0] == BOOTABLE_INDICATOR,
+        emulation: emulation_from_id(entry[1]),
+        load_segment: u16::from_le_bytes(entry[2..4].try_into().unwrap()),
+        system_type: entry[4],
+        sector_count: u16::from_le_bytes(entry[6..8].try_into().unwrap()),
+        load_rba: u32::from_le_bytes(entry[8..12].try_into().unwrap()),
+    }
+}
+
+fn boot_style_from_entries(entries: &[ElToritoBootEntry]) -> BootStyle {
+    let mut has_bios = false;
+    let mut has_uefi = false;
+    let mut has_unknown = false;
+
+    for entry in entries.iter().filter(|entry| entry.bootable) {
+        match entry.platform {
+            BootCatalogPlatform::X86 => has_bios = true,
+            BootCatalogPlatform::Efi => has_uefi = true,
+            BootCatalogPlatform::PowerPc
+            | BootCatalogPlatform::Mac
+            | BootCatalogPlatform::Unknown(_) => has_unknown = true,
+        }
+    }
+
+    match (has_bios, has_uefi, has_unknown) {
+        (true, true, _) => BootStyle::Hybrid,
+        (true, false, _) => BootStyle::Bios,
+        (false, true, _) => BootStyle::Uefi,
+        (false, false, true) => BootStyle::Unknown,
+        (false, false, false) => BootStyle::None,
+    }
+}
+
+fn is_empty_catalog_entry(entry: &[u8; CATALOG_ENTRY_SIZE]) -> bool {
+    entry.iter().all(|byte| *byte == 0)
 }
 
 fn is_volume_descriptor(descriptor: &[u8; VOLUME_DESCRIPTOR_SIZE]) -> bool {
@@ -230,8 +404,8 @@ fn read_exact_at_optional<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        inspect_boot_metadata, BootCatalogPlatform, BootEmulation, CATALOG_ENTRY_SIZE,
-        ISO_SECTOR_SIZE,
+        inspect_boot_metadata, BootCatalogPlatform, BootEmulation, BootEntrySource, BootStyle,
+        CATALOG_ENTRY_SIZE, ISO_SECTOR_SIZE,
     };
     use std::fs;
     use std::io::{Seek, SeekFrom, Write};
@@ -253,6 +427,32 @@ mod tests {
         assert_eq!(info.emulation, BootEmulation::NoEmulation);
         assert_eq!(info.sector_count, 4);
         assert_eq!(info.load_rba, 24);
+        assert_eq!(info.boot_style, BootStyle::Uefi);
+        assert_eq!(metadata.boot_style(), BootStyle::Uefi);
+        assert_eq!(info.boot_entries.len(), 1);
+        assert_eq!(info.boot_entries[0].source, BootEntrySource::Default);
+        assert_eq!(info.boot_entries[0].platform, BootCatalogPlatform::Efi);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn detects_hybrid_el_torito_boot_catalog() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_hybrid_bootable_iso(&path, 20, 24, 40);
+
+        let metadata = inspect_boot_metadata(&path).unwrap();
+
+        assert!(metadata.is_bootable());
+        assert_eq!(metadata.boot_style(), BootStyle::Hybrid);
+        let info = metadata.el_torito.as_ref().unwrap();
+        assert_eq!(info.boot_style, BootStyle::Hybrid);
+        assert_eq!(info.boot_entries.len(), 2);
+        assert_eq!(info.boot_entries[0].source, BootEntrySource::Default);
+        assert_eq!(info.boot_entries[0].platform, BootCatalogPlatform::X86);
+        assert_eq!(info.boot_entries[1].source, BootEntrySource::Section);
+        assert_eq!(info.boot_entries[1].platform, BootCatalogPlatform::Efi);
+        assert_eq!(info.boot_entries[1].load_rba, 40);
 
         let _ = fs::remove_file(path);
     }
@@ -266,6 +466,7 @@ mod tests {
 
         assert!(metadata.el_torito.is_none());
         assert!(!metadata.is_bootable());
+        assert_eq!(metadata.boot_style(), BootStyle::None);
 
         let _ = fs::remove_file(path);
     }
@@ -273,7 +474,38 @@ mod tests {
     pub fn write_bootable_iso(path: &Path, catalog_lba: u32, load_rba: u32) {
         write_primary_descriptor_only(path);
         write_boot_record_descriptor(path, catalog_lba);
-        write_catalog(path, catalog_lba, load_rba);
+        write_catalog(path, catalog_lba, 0xEF, load_rba);
+    }
+
+    fn write_hybrid_bootable_iso(
+        path: &Path,
+        catalog_lba: u32,
+        bios_load_rba: u32,
+        uefi_load_rba: u32,
+    ) {
+        write_primary_descriptor_only(path);
+        write_boot_record_descriptor(path, catalog_lba);
+        write_catalog(path, catalog_lba, 0x00, bios_load_rba);
+
+        let section_header_offset =
+            (u64::from(catalog_lba) * ISO_SECTOR_SIZE) + (CATALOG_ENTRY_SIZE as u64 * 2);
+        let mut section_header = [0u8; CATALOG_ENTRY_SIZE];
+        section_header[0] = 0x91;
+        section_header[1] = 0xEF;
+        section_header[2..4].copy_from_slice(&1u16.to_le_bytes());
+
+        let mut section_entry = [0u8; CATALOG_ENTRY_SIZE];
+        section_entry[0] = 0x88;
+        section_entry[1] = 0x00;
+        section_entry[6..8].copy_from_slice(&8u16.to_le_bytes());
+        section_entry[8..12].copy_from_slice(&uefi_load_rba.to_le_bytes());
+
+        write_at(path, section_header_offset, &section_header);
+        write_at(
+            path,
+            section_header_offset + CATALOG_ENTRY_SIZE as u64,
+            &section_entry,
+        );
     }
 
     fn write_primary_descriptor_only(path: &Path) {
@@ -290,10 +522,10 @@ mod tests {
         });
     }
 
-    fn write_catalog(path: &Path, catalog_lba: u32, load_rba: u32) {
+    fn write_catalog(path: &Path, catalog_lba: u32, platform_id: u8, load_rba: u32) {
         let mut validation = [0u8; CATALOG_ENTRY_SIZE];
         validation[0] = 0x01;
-        validation[1] = 0xEF;
+        validation[1] = platform_id;
         validation[30] = 0x55;
         validation[31] = 0xAA;
         let checksum = validation

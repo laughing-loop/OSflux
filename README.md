@@ -52,6 +52,7 @@ cargo run -- --plan-image "C:\path\to\image.iso"
 ```
 
 The planner reads known file signatures first, then falls back to the extension when no signature is found.
+For ISO images, it also checks for an El Torito boot catalog and reports boot metadata when present.
 
 Run with demo pipeline options:
 

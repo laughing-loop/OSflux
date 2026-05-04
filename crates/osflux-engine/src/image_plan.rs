@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::iso::{inspect_boot_metadata, IsoBootMetadata};
+
 const ISO_SECTOR_SIZE: u64 = 2048;
 const ISO_VOLUME_DESCRIPTOR_START: u64 = 16 * ISO_SECTOR_SIZE;
 const GPT_HEADER_OFFSET: u64 = 512;
@@ -21,6 +23,7 @@ pub struct ImagePlan {
     pub kind: ImageKind,
     pub detection_method: DetectionMethod,
     pub signatures: Vec<ImageSignature>,
+    pub boot_metadata: Option<IsoBootMetadata>,
     pub write_mode: WriteMode,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
@@ -171,6 +174,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
     let extension_kind = classify_by_extension(&source);
     let (kind, detection_method) = classify_image(extension_kind, &signatures);
     let write_mode = write_mode_for(kind);
+    let mut boot_metadata = None;
     let mut notes = Vec::new();
     let mut warnings = Vec::new();
 
@@ -184,10 +188,21 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
 
     match kind {
         ImageKind::Iso => {
-            notes.push(
-                "ISO detected; later milestones will inspect boot catalog and OS family."
-                    .to_string(),
-            );
+            match inspect_boot_metadata(&source) {
+                Ok(metadata) => {
+                    if metadata.el_torito.is_some() {
+                        notes.push("El Torito boot catalog detected.".to_string());
+                    } else {
+                        warnings
+                            .push("No El Torito boot catalog was found in this ISO.".to_string());
+                    }
+
+                    boot_metadata = Some(metadata);
+                }
+                Err(error) => {
+                    warnings.push(format!("Could not inspect ISO boot metadata: {error}"));
+                }
+            }
             notes.push("Initial mode is filesystem planning because ISO content often needs extraction and boot setup.".to_string());
         }
         ImageKind::RawDiskImage => {
@@ -214,6 +229,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         kind,
         detection_method,
         signatures,
+        boot_metadata,
         write_mode,
         notes,
         warnings,

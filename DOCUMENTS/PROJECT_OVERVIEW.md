@@ -206,11 +206,13 @@ cargo run -- --plan-image "C:\path\to\image.iso"
 
 The deeper image inspection milestone has started. OSflux can now detect early signatures such as ISO volume descriptors, UDF descriptors, GPT headers, and MBR boot signatures.
 
+OSflux can also inspect ISO boot metadata for an El Torito boot catalog. That is how many bootable ISO images describe their boot entry, platform, emulation mode, and boot image location.
+
 After that, we build:
 
 - write mode selection
 - image family detection
-- boot metadata inspection
+- richer boot metadata inspection
 - real write pipeline
 - progress reporting
 - verification

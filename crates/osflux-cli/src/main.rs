@@ -89,6 +89,41 @@ fn print_plan(plan: ImagePlan) {
         }
     }
 
+    if let Some(metadata) = plan.boot_metadata {
+        println!("boot metadata:");
+        println!(
+            "  bootable: {}",
+            if metadata.is_bootable() { "yes" } else { "no" }
+        );
+
+        if let Some(info) = metadata.el_torito {
+            println!("  boot catalog: found");
+            println!("  catalog lba: {}", info.catalog_lba);
+            println!("  platform: {}", info.platform.as_str());
+            println!(
+                "  validation entry: {}",
+                if info.validation_entry_valid {
+                    "valid"
+                } else {
+                    "invalid"
+                }
+            );
+            println!(
+                "  default entry: {}",
+                if info.default_entry_bootable {
+                    "bootable"
+                } else {
+                    "not bootable"
+                }
+            );
+            println!("  emulation: {}", info.emulation.as_str());
+            println!("  load rba: {}", info.load_rba);
+            println!("  sector count: {}", info.sector_count);
+        } else {
+            println!("  boot catalog: not found");
+        }
+    }
+
     if !plan.notes.is_empty() {
         println!("notes:");
         for note in plan.notes {

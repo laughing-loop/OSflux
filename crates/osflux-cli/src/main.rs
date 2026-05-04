@@ -8,14 +8,20 @@ fn main() {
             engine.start();
         }
         Command::ListDevices => print_devices(),
-        Command::PlanImage(path) => print_image_plan(&path),
+        Command::PlanImage { path, output } => print_image_plan(&path, output),
     }
 }
 
 enum Command {
     Run(EngineConfig),
     ListDevices,
-    PlanImage(String),
+    PlanImage { path: String, output: OutputFormat },
+}
+
+#[derive(Clone, Copy)]
+enum OutputFormat {
+    Text,
+    Json,
 }
 
 fn parse_command<I>(args: I) -> Command
@@ -29,23 +35,28 @@ where
         .map(|arg| arg.as_ref().to_string())
         .collect();
     let mut index = 0usize;
+    let mut output = OutputFormat::Text;
+    let mut plan_image_path = None;
 
     while index < args.len() {
         let arg = args[index].as_str();
         if arg == "--help" || arg == "-h" {
             print_help();
             std::process::exit(0);
+        } else if arg == "--json" {
+            output = OutputFormat::Json;
         } else if arg == "--list-devices" {
             return Command::ListDevices;
         } else if let Some(path) = arg.strip_prefix("--plan-image=") {
-            return Command::PlanImage(path.to_string());
+            plan_image_path = Some(path.to_string());
         } else if arg == "--plan-image" {
             let Some(path) = args.get(index + 1) else {
                 eprintln!("missing path after --plan-image");
                 std::process::exit(2);
             };
 
-            return Command::PlanImage(path.to_string());
+            plan_image_path = Some(path.to_string());
+            index += 1;
         } else if let Some(value) = arg.strip_prefix("--blocks=") {
             if let Ok(parsed) = value.parse::<usize>() {
                 config.block_count = parsed;
@@ -59,12 +70,19 @@ where
         index += 1;
     }
 
+    if let Some(path) = plan_image_path {
+        return Command::PlanImage { path, output };
+    }
+
     Command::Run(config)
 }
 
-fn print_image_plan(path: &str) {
+fn print_image_plan(path: &str, output: OutputFormat) {
     match plan_image_report(path) {
-        Ok(report) => print_report(report),
+        Ok(report) => match output {
+            OutputFormat::Text => print_report(report),
+            OutputFormat::Json => print!("{}", report.to_json_pretty()),
+        },
         Err(error) => {
             eprintln!("OSflux could not plan this image.");
             eprintln!("{error}");
@@ -160,11 +178,13 @@ fn print_help() {
     println!("Usage:");
     println!("  cargo run -- --list-devices");
     println!("  cargo run -- --plan-image <PATH>");
+    println!("  cargo run -- --plan-image <PATH> --json");
     println!("  cargo run -- --blocks=16 --block-size=1048576");
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
+    println!("  --json            Print image plan output as JSON.");
     println!("  --blocks=<N>        Number of blocks to enqueue in the demo pipeline.");
     println!("  --block-size=<N>    Bytes per block in the demo pipeline.");
 }

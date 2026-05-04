@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 
 use crate::image_plan::{plan_image, ImagePlan, ImagePlanError};
@@ -25,6 +26,14 @@ pub struct PlanReportField {
 pub struct PlanReportItem {
     pub title: String,
     pub fields: Vec<PlanReportField>,
+}
+
+impl PlanReport {
+    pub fn to_json_pretty(&self) -> String {
+        let mut output = String::new();
+        write_report_json(&mut output, self, 0);
+        output
+    }
 }
 
 impl PlanReportSection {
@@ -220,9 +229,164 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+fn write_report_json(output: &mut String, report: &PlanReport, indent: usize) {
+    write_line(output, indent, "{");
+    write_json_property(output, indent + 2, "title", &report.title, true);
+    write_line(output, indent + 2, "\"sections\": [");
+
+    for (section_index, section) in report.sections.iter().enumerate() {
+        write_section_json(
+            output,
+            section,
+            indent + 4,
+            section_index + 1 < report.sections.len(),
+        );
+    }
+
+    write_line(output, indent + 2, "]");
+    write_line(output, indent, "}");
+}
+
+fn write_section_json(
+    output: &mut String,
+    section: &PlanReportSection,
+    indent: usize,
+    trailing_comma: bool,
+) {
+    write_line(output, indent, "{");
+    write_json_property(output, indent + 2, "title", &section.title, true);
+    write_line(output, indent + 2, "\"fields\": [");
+
+    for (field_index, field) in section.fields.iter().enumerate() {
+        write_field_json(
+            output,
+            field,
+            indent + 4,
+            field_index + 1 < section.fields.len(),
+        );
+    }
+
+    write_line(output, indent + 2, "],");
+    write_line(output, indent + 2, "\"items\": [");
+
+    for (item_index, item) in section.items.iter().enumerate() {
+        write_item_json(
+            output,
+            item,
+            indent + 4,
+            item_index + 1 < section.items.len(),
+        );
+    }
+
+    write_line(output, indent + 2, "]");
+    write!(
+        output,
+        "{}{}{}",
+        " ".repeat(indent),
+        "}",
+        if trailing_comma { ",\n" } else { "\n" }
+    )
+    .expect("writing JSON to string should not fail");
+}
+
+fn write_item_json(
+    output: &mut String,
+    item: &PlanReportItem,
+    indent: usize,
+    trailing_comma: bool,
+) {
+    write_line(output, indent, "{");
+    write_json_property(output, indent + 2, "title", &item.title, true);
+    write_line(output, indent + 2, "\"fields\": [");
+
+    for (field_index, field) in item.fields.iter().enumerate() {
+        write_field_json(
+            output,
+            field,
+            indent + 4,
+            field_index + 1 < item.fields.len(),
+        );
+    }
+
+    write_line(output, indent + 2, "]");
+    write!(
+        output,
+        "{}{}{}",
+        " ".repeat(indent),
+        "}",
+        if trailing_comma { ",\n" } else { "\n" }
+    )
+    .expect("writing JSON to string should not fail");
+}
+
+fn write_field_json(
+    output: &mut String,
+    field: &PlanReportField,
+    indent: usize,
+    trailing_comma: bool,
+) {
+    write_line(output, indent, "{");
+    write_json_property(output, indent + 2, "label", &field.label, true);
+    write_json_property(output, indent + 2, "value", &field.value, false);
+    write!(
+        output,
+        "{}{}{}",
+        " ".repeat(indent),
+        "}",
+        if trailing_comma { ",\n" } else { "\n" }
+    )
+    .expect("writing JSON to string should not fail");
+}
+
+fn write_json_property(
+    output: &mut String,
+    indent: usize,
+    key: &str,
+    value: &str,
+    trailing_comma: bool,
+) {
+    write!(
+        output,
+        "{}\"{}\": \"{}\"{}\n",
+        " ".repeat(indent),
+        escape_json_string(key),
+        escape_json_string(value),
+        if trailing_comma { "," } else { "" }
+    )
+    .expect("writing JSON to string should not fail");
+}
+
+fn write_line(output: &mut String, indent: usize, value: &str) {
+    writeln!(output, "{}{}", " ".repeat(indent), value)
+        .expect("writing JSON to string should not fail");
+}
+
+fn escape_json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0C}' => escaped.push_str("\\f"),
+            character if character.is_control() => {
+                write!(escaped, "\\u{:04x}", character as u32)
+                    .expect("writing JSON escape should not fail");
+            }
+            character => escaped.push(character),
+        }
+    }
+
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_image_plan_report, PlanReportSection};
+    use super::{build_image_plan_report, PlanReport, PlanReportField, PlanReportSection};
     use crate::image_plan::{
         DetectionMethod, ImageKind, ImagePlan, ImageSignature, ImageWriteStrategy, WriteMode,
     };
@@ -254,6 +418,28 @@ mod tests {
         assert_eq!(section(&report.sections, "signatures").items.len(), 1);
         assert_eq!(section(&report.sections, "notes").items.len(), 1);
         assert_eq!(section(&report.sections, "warnings").items.len(), 1);
+    }
+
+    #[test]
+    fn serializes_report_as_json() {
+        let report = PlanReport {
+            title: "OSflux \"image\" plan".to_string(),
+            sections: vec![PlanReportSection {
+                title: "summary".to_string(),
+                fields: vec![PlanReportField {
+                    label: "source".to_string(),
+                    value: "C:\\images\\sample.iso".to_string(),
+                }],
+                items: Vec::new(),
+            }],
+        };
+
+        let json = report.to_json_pretty();
+
+        assert!(json.starts_with("{\n"));
+        assert!(json.contains("\"title\": \"OSflux \\\"image\\\" plan\""));
+        assert!(json.contains("\"value\": \"C:\\\\images\\\\sample.iso\""));
+        assert!(json.contains("\"sections\": ["));
     }
 
     fn section<'a>(sections: &'a [PlanReportSection], title: &str) -> &'a PlanReportSection {

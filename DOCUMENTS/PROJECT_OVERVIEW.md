@@ -226,6 +226,14 @@ The planner now selects an initial write strategy:
 
 The engine now builds a structured plan report. The CLI renders that report today, and the future Studio interface can use the same report instead of rebuilding planning logic in the GUI.
 
+The CLI can now print that plan report as JSON:
+
+```powershell
+cargo run -- --plan-image "C:\path\to\image.iso" --json
+```
+
+That gives OSflux a machine-readable output path for future automation, testing, and GUI integration.
+
 After that, we build:
 
 - write mode selection

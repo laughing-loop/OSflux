@@ -13,7 +13,7 @@ env:
 jobs:
   rust:
     name: Rust workspace
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Verify runner

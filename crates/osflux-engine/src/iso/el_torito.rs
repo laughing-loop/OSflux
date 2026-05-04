@@ -19,6 +19,7 @@ const BOOTABLE_INDICATOR: u8 = 0x88;
 const SECTION_HEADER_INDICATOR: u8 = 0x90;
 const FINAL_SECTION_HEADER_INDICATOR: u8 = 0x91;
 const MAX_BOOT_CATALOG_SLOTS: usize = 256;
+const EL_TORITO_VIRTUAL_SECTOR_SIZE: u64 = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsoBootMetadata {
@@ -35,6 +36,12 @@ impl IsoBootMetadata {
             .as_ref()
             .map(|info| info.boot_style)
             .unwrap_or(BootStyle::None)
+    }
+
+    pub fn boot_image_ranges_valid(&self) -> bool {
+        self.el_torito
+            .as_ref()
+            .is_none_or(ElToritoBootInfo::boot_image_ranges_valid)
     }
 }
 
@@ -53,6 +60,15 @@ pub struct ElToritoBootInfo {
     pub boot_entries: Vec<ElToritoBootEntry>,
 }
 
+impl ElToritoBootInfo {
+    pub fn boot_image_ranges_valid(&self) -> bool {
+        self.boot_entries
+            .iter()
+            .filter(|entry| entry.bootable)
+            .all(|entry| entry.image_range.status.is_valid())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElToritoBootEntry {
     pub source: BootEntrySource,
@@ -63,6 +79,42 @@ pub struct ElToritoBootEntry {
     pub system_type: u8,
     pub sector_count: u16,
     pub load_rba: u32,
+    pub image_range: BootImageRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootImageRange {
+    pub start_offset: Option<u64>,
+    pub required_bytes: Option<u64>,
+    pub end_offset: Option<u64>,
+    pub status: BootImageRangeStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootImageRangeStatus {
+    Valid,
+    NotBootable,
+    UnknownLength,
+    StartsBeyondImage,
+    ExtendsBeyondImage,
+    Overflow,
+}
+
+impl BootImageRangeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::NotBootable => "not checked: entry is not bootable",
+            Self::UnknownLength => "unknown: sector count is zero",
+            Self::StartsBeyondImage => "invalid: starts beyond ISO size",
+            Self::ExtendsBeyondImage => "invalid: extends beyond ISO size",
+            Self::Overflow => "invalid: range overflow",
+        }
+    }
+
+    pub fn is_valid(self) -> bool {
+        self == Self::Valid
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,9 +203,10 @@ impl BootEmulation {
 
 pub fn inspect_boot_metadata(path: impl AsRef<Path>) -> std::io::Result<IsoBootMetadata> {
     let mut file = File::open(path)?;
+    let iso_size = file.metadata()?.len();
     let catalog_lba = find_el_torito_catalog_lba(&mut file)?;
     let el_torito = match catalog_lba {
-        Some(catalog_lba) => Some(read_boot_catalog(&mut file, catalog_lba)?),
+        Some(catalog_lba) => Some(read_boot_catalog(&mut file, catalog_lba, iso_size)?),
         None => None,
     };
 
@@ -191,18 +244,24 @@ fn find_el_torito_catalog_lba(file: &mut File) -> std::io::Result<Option<u32>> {
     Ok(None)
 }
 
-fn read_boot_catalog(file: &mut File, catalog_lba: u32) -> std::io::Result<ElToritoBootInfo> {
+fn read_boot_catalog(
+    file: &mut File,
+    catalog_lba: u32,
+    iso_size: u64,
+) -> std::io::Result<ElToritoBootInfo> {
     let catalog_offset = u64::from(catalog_lba) * ISO_SECTOR_SIZE;
     let validation_entry: [u8; CATALOG_ENTRY_SIZE] = read_exact_at(file, catalog_offset)?;
     let default_entry: [u8; CATALOG_ENTRY_SIZE] =
         read_exact_at(file, catalog_offset + CATALOG_ENTRY_SIZE as u64)?;
     let platform = platform_from_id(validation_entry[1]);
-    let default_boot_entry = parse_boot_entry(&default_entry, platform, BootEntrySource::Default);
+    let default_boot_entry =
+        parse_boot_entry(&default_entry, platform, BootEntrySource::Default, iso_size);
     let mut boot_entries = vec![default_boot_entry];
     read_section_entries(
         file,
         catalog_offset + (CATALOG_ENTRY_SIZE as u64 * 2),
         &mut boot_entries,
+        iso_size,
     )?;
     let boot_style = boot_style_from_entries(&boot_entries);
 
@@ -225,6 +284,7 @@ fn read_section_entries(
     file: &mut File,
     mut offset: u64,
     boot_entries: &mut Vec<ElToritoBootEntry>,
+    iso_size: u64,
 ) -> std::io::Result<()> {
     let mut slots_read = 0usize;
 
@@ -264,7 +324,12 @@ fn read_section_entries(
                 return Ok(());
             }
 
-            boot_entries.push(parse_boot_entry(&entry, platform, BootEntrySource::Section));
+            boot_entries.push(parse_boot_entry(
+                &entry,
+                platform,
+                BootEntrySource::Section,
+                iso_size,
+            ));
             offset += CATALOG_ENTRY_SIZE as u64;
             slots_read += 1;
         }
@@ -281,16 +346,59 @@ fn parse_boot_entry(
     entry: &[u8; CATALOG_ENTRY_SIZE],
     platform: BootCatalogPlatform,
     source: BootEntrySource,
+    iso_size: u64,
 ) -> ElToritoBootEntry {
+    let bootable = entry[0] == BOOTABLE_INDICATOR;
+    let sector_count = u16::from_le_bytes(entry[6..8].try_into().unwrap());
+    let load_rba = u32::from_le_bytes(entry[8..12].try_into().unwrap());
+
     ElToritoBootEntry {
         source,
         platform,
-        bootable: entry[0] == BOOTABLE_INDICATOR,
+        bootable,
         emulation: emulation_from_id(entry[1]),
         load_segment: u16::from_le_bytes(entry[2..4].try_into().unwrap()),
         system_type: entry[4],
-        sector_count: u16::from_le_bytes(entry[6..8].try_into().unwrap()),
-        load_rba: u32::from_le_bytes(entry[8..12].try_into().unwrap()),
+        sector_count,
+        load_rba,
+        image_range: validate_boot_image_range(bootable, load_rba, sector_count, iso_size),
+    }
+}
+
+fn validate_boot_image_range(
+    bootable: bool,
+    load_rba: u32,
+    sector_count: u16,
+    iso_size: u64,
+) -> BootImageRange {
+    let start_offset = u64::from(load_rba).checked_mul(ISO_SECTOR_SIZE);
+    let required_bytes = u64::from(sector_count).checked_mul(EL_TORITO_VIRTUAL_SECTOR_SIZE);
+    let end_offset = start_offset
+        .zip(required_bytes)
+        .and_then(|(start, length)| {
+            if length == 0 {
+                Some(start)
+            } else {
+                start.checked_add(length)
+            }
+        });
+
+    let status = match (bootable, start_offset, required_bytes, end_offset) {
+        (false, _, _, _) => BootImageRangeStatus::NotBootable,
+        (true, None, _, _) | (true, _, None, _) | (true, _, _, None) => {
+            BootImageRangeStatus::Overflow
+        }
+        (true, Some(start), _, _) if start >= iso_size => BootImageRangeStatus::StartsBeyondImage,
+        (true, _, Some(0), _) => BootImageRangeStatus::UnknownLength,
+        (true, _, _, Some(end)) if end > iso_size => BootImageRangeStatus::ExtendsBeyondImage,
+        (true, _, _, _) => BootImageRangeStatus::Valid,
+    };
+
+    BootImageRange {
+        start_offset,
+        required_bytes,
+        end_offset,
+        status,
     }
 }
 
@@ -404,8 +512,8 @@ fn read_exact_at_optional<const N: usize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        inspect_boot_metadata, BootCatalogPlatform, BootEmulation, BootEntrySource, BootStyle,
-        CATALOG_ENTRY_SIZE, ISO_SECTOR_SIZE,
+        inspect_boot_metadata, BootCatalogPlatform, BootEmulation, BootEntrySource,
+        BootImageRangeStatus, BootStyle, CATALOG_ENTRY_SIZE, ISO_SECTOR_SIZE,
     };
     use std::fs;
     use std::io::{Seek, SeekFrom, Write};
@@ -432,6 +540,30 @@ mod tests {
         assert_eq!(info.boot_entries.len(), 1);
         assert_eq!(info.boot_entries[0].source, BootEntrySource::Default);
         assert_eq!(info.boot_entries[0].platform, BootCatalogPlatform::Efi);
+        assert_eq!(
+            info.boot_entries[0].image_range.status,
+            BootImageRangeStatus::Valid
+        );
+        assert_eq!(info.boot_entries[0].image_range.start_offset, Some(49152));
+        assert_eq!(info.boot_entries[0].image_range.required_bytes, Some(2048));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn flags_boot_image_range_that_extends_past_iso() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_bootable_iso_with_partial_boot_image(&path, 20, 24);
+
+        let metadata = inspect_boot_metadata(&path).unwrap();
+        let info = metadata.el_torito.as_ref().unwrap();
+
+        assert!(metadata.is_bootable());
+        assert!(!metadata.boot_image_ranges_valid());
+        assert_eq!(
+            info.boot_entries[0].image_range.status,
+            BootImageRangeStatus::ExtendsBeyondImage
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -453,6 +585,15 @@ mod tests {
         assert_eq!(info.boot_entries[1].source, BootEntrySource::Section);
         assert_eq!(info.boot_entries[1].platform, BootCatalogPlatform::Efi);
         assert_eq!(info.boot_entries[1].load_rba, 40);
+        assert!(info.boot_image_ranges_valid());
+        assert_eq!(
+            info.boot_entries[0].image_range.status,
+            BootImageRangeStatus::Valid
+        );
+        assert_eq!(
+            info.boot_entries[1].image_range.status,
+            BootImageRangeStatus::Valid
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -467,6 +608,7 @@ mod tests {
         assert!(metadata.el_torito.is_none());
         assert!(!metadata.is_bootable());
         assert_eq!(metadata.boot_style(), BootStyle::None);
+        assert!(metadata.boot_image_ranges_valid());
 
         let _ = fs::remove_file(path);
     }
@@ -475,6 +617,14 @@ mod tests {
         write_primary_descriptor_only(path);
         write_boot_record_descriptor(path, catalog_lba);
         write_catalog(path, catalog_lba, 0xEF, load_rba);
+        write_boot_image(path, load_rba, 2048);
+    }
+
+    fn write_bootable_iso_with_partial_boot_image(path: &Path, catalog_lba: u32, load_rba: u32) {
+        write_primary_descriptor_only(path);
+        write_boot_record_descriptor(path, catalog_lba);
+        write_catalog(path, catalog_lba, 0xEF, load_rba);
+        write_boot_image(path, load_rba, 1);
     }
 
     fn write_hybrid_bootable_iso(
@@ -506,6 +656,8 @@ mod tests {
             section_header_offset + CATALOG_ENTRY_SIZE as u64,
             &section_entry,
         );
+        write_boot_image(path, bios_load_rba, 2048);
+        write_boot_image(path, uefi_load_rba, 4096);
     }
 
     fn write_primary_descriptor_only(path: &Path) {
@@ -571,6 +723,11 @@ mod tests {
 
         file.seek(SeekFrom::Start(offset)).unwrap();
         file.write_all(bytes).unwrap();
+    }
+
+    fn write_boot_image(path: &Path, load_rba: u32, size_bytes: usize) {
+        let bytes = vec![0xF4; size_bytes];
+        write_at(path, u64::from(load_rba) * ISO_SECTOR_SIZE, &bytes);
     }
 
     fn write_ascii_field(field: &mut [u8], value: &[u8]) {

@@ -1,4 +1,4 @@
-use osflux_engine::{list_devices, plan_image, Engine, EngineConfig, ImagePlan};
+use osflux_engine::{list_devices, plan_image, BootImageRange, Engine, EngineConfig, ImagePlan};
 
 fn main() {
     match parse_command(std::env::args().skip(1)) {
@@ -123,7 +123,7 @@ fn print_plan(plan: ImagePlan) {
             println!("  boot entries:");
             for entry in info.boot_entries {
                 println!(
-                    "    - {} | {} | {} | {} | load rba {} | sectors {}",
+                    "    - {} | {} | {} | {} | load rba {} | sectors {} | range {}",
                     entry.source.as_str(),
                     entry.platform.as_str(),
                     if entry.bootable {
@@ -133,7 +133,8 @@ fn print_plan(plan: ImagePlan) {
                     },
                     entry.emulation.as_str(),
                     entry.load_rba,
-                    entry.sector_count
+                    entry.sector_count,
+                    format_boot_image_range(entry.image_range)
                 );
             }
         } else {
@@ -216,6 +217,24 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{bytes} bytes")
     }
+}
+
+fn format_boot_image_range(range: BootImageRange) -> String {
+    let mut parts = vec![range.status.as_str().to_string()];
+
+    if let Some(start_offset) = range.start_offset {
+        parts.push(format!("offset {}", format_size(start_offset)));
+    }
+
+    if let Some(required_bytes) = range.required_bytes {
+        parts.push(format!("required {}", format_size(required_bytes)));
+    }
+
+    if let Some(end_offset) = range.end_offset {
+        parts.push(format!("end {}", format_size(end_offset)));
+    }
+
+    parts.join(", ")
 }
 
 fn print_help() {

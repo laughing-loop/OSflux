@@ -215,6 +215,8 @@ The planner now turns that catalog data into a boot style:
 - BIOS + UEFI hybrid
 - unknown or not bootable
 
+It also validates the byte range for each boot entry. In plain terms, OSflux checks whether the boot catalog points to real readable bytes inside the ISO instead of blindly trusting the catalog.
+
 After that, we build:
 
 - write mode selection

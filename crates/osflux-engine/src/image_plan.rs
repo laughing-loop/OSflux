@@ -192,6 +192,14 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
                 Ok(metadata) => {
                     if metadata.el_torito.is_some() {
                         notes.push("El Torito boot catalog detected.".to_string());
+                        if metadata.boot_image_ranges_valid() {
+                            notes.push("Boot image byte ranges fit inside the ISO.".to_string());
+                        } else {
+                            warnings.push(
+                                "One or more ISO boot entries could not be fully range-validated."
+                                    .to_string(),
+                            );
+                        }
                     } else {
                         warnings
                             .push("No El Torito boot catalog was found in this ISO.".to_string());

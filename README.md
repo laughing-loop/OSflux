@@ -21,6 +21,10 @@ For a beginner-friendly explanation of the project direction, read:
 
 - `DOCUMENTS/PROJECT_OVERVIEW.md`
 
+The GitHub Actions workflow is stored as a template until repository Actions startup is fixed:
+
+- `DOCUMENTS/CI_WORKFLOW_TEMPLATE.md`
+
 ## Development
 
 Requirements:

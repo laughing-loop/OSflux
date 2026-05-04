@@ -61,12 +61,31 @@ fn print_devices() {
             .unwrap_or_else(|| "size unknown".to_string());
 
         println!(
-            "[{}] {} | {} | {}",
+            "[{}] {} | {} | {} | {}",
             device.index,
             device.path,
             size,
-            device.access.as_str()
+            device.access.as_str(),
+            device.safety_label()
         );
+
+        if let Some(model) = &device.model {
+            println!("    model: {model}");
+        }
+
+        if let Some(interface_type) = &device.interface_type {
+            println!("    interface: {interface_type}");
+        }
+
+        if let Some(media_type) = &device.media_type {
+            println!("    media: {media_type}");
+        }
+
+        if device.contains_system_volume {
+            println!("    warning: contains the Windows system volume; do not write to this drive");
+        } else if device.is_likely_removable_target() {
+            println!("    note: likely removable/external target candidate");
+        }
 
         if let Some(note) = device.note {
             println!("    {note}");

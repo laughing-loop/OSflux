@@ -1,3 +1,14 @@
+# CI Workflow Template
+
+GitHub Actions is currently disabled in the active repository because workflow runs fail before any job starts. This is likely a GitHub account or repository setting issue, not a Rust build issue.
+
+When Actions is ready, restore this file as:
+
+```text
+.github/workflows/rust.yml
+```
+
+```yaml
 name: OSflux CI
 
 on:
@@ -37,3 +48,4 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+```

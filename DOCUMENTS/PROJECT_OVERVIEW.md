@@ -110,13 +110,13 @@ We pushed the first commit to GitHub:
 https://github.com/laughing-loop/OSflux
 ```
 
-We also added a GitHub Actions workflow:
+We prepared a GitHub Actions workflow template:
 
 ```text
-.github/workflows/rust.yml
+DOCUMENTS/CI_WORKFLOW_TEMPLATE.md
 ```
 
-That workflow checks the project automatically whenever code is pushed.
+The active workflow is disabled for now because GitHub is failing before any job starts. Local Rust checks still work, and we can restore the workflow when the GitHub-side setting is fixed.
 
 We added the first read-only device command:
 
@@ -125,6 +125,16 @@ cargo run -- --list-devices
 ```
 
 This is the first step toward safe drive selection.
+
+The device scan now tries to show:
+
+- disk path
+- size
+- model
+- interface type
+- media type
+- safety label
+- system-drive warning
 
 ## What GitHub Actions Is Doing
 

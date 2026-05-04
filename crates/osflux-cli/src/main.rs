@@ -79,7 +79,15 @@ fn print_plan(plan: ImagePlan) {
     println!("file: {}", plan.file_name);
     println!("size: {}", format_size(plan.size_bytes));
     println!("kind: {}", plan.kind.as_str());
+    println!("detection: {}", plan.detection_method.as_str());
     println!("write mode: {}", plan.write_mode.as_str());
+
+    if !plan.signatures.is_empty() {
+        println!("signatures:");
+        for signature in plan.signatures {
+            println!("  - {}", signature.as_str());
+        }
+    }
 
     if !plan.notes.is_empty() {
         println!("notes:");

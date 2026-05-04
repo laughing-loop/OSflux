@@ -3,7 +3,9 @@ pub mod image_plan;
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
-pub use image_plan::{plan_image, ImageKind, ImagePlan, ImagePlanError, WriteMode};
+pub use image_plan::{
+    plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImageSignature, WriteMode,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {

@@ -51,6 +51,8 @@ Plan an image without writing anything:
 cargo run -- --plan-image "C:\path\to\image.iso"
 ```
 
+The planner reads known file signatures first, then falls back to the extension when no signature is found.
+
 Run with demo pipeline options:
 
 ```powershell

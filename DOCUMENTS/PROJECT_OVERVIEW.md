@@ -142,7 +142,7 @@ We also added the first read-only image planning command:
 cargo run -- --plan-image "C:\path\to\image.iso"
 ```
 
-This command classifies the image, reads its size, chooses an initial write mode, and prints notes/warnings. It does not open or write to any drive.
+This command classifies the image, reads its size, chooses an initial write mode, and prints notes/warnings. It reads known file signatures first, then falls back to the extension when no signature is found. It does not open or write to any drive.
 
 ## GitHub Actions Status
 
@@ -200,7 +200,7 @@ We now have this command:
 cargo run -- --plan-image "C:\path\to\image.iso"
 ```
 
-The next improvement is deeper image inspection.
+The deeper image inspection milestone has started. OSflux can now detect early signatures such as ISO volume descriptors, UDF descriptors, GPT headers, and MBR boot signatures.
 
 After that, we build:
 

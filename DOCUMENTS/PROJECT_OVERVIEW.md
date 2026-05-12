@@ -224,6 +224,12 @@ The planner now selects an initial write strategy:
 - raw block writing for raw disk images
 - unknown strategy for files OSflux cannot classify yet
 
+The planner now also assigns a status:
+
+- ready: the image plan is trusted for the next safety phase
+- needs-inspection: OSflux recognizes the image, but needs stronger metadata before trusting it
+- blocked: OSflux cannot safely use the image plan yet
+
 The engine now builds a structured plan report. The CLI renders that report today, and the future Studio interface can use the same report instead of rebuilding planning logic in the GUI.
 
 The CLI can now print that plan report as JSON:

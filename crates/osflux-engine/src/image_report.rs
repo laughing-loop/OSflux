@@ -93,6 +93,8 @@ pub fn build_image_plan_report(plan: &ImagePlan) -> PlanReport {
             .field("source", plan.source.display().to_string())
             .field("file", plan.file_name.clone())
             .field("size", format_size(plan.size_bytes))
+            .field("status", plan.status.as_str())
+            .field("status reason", plan.status_reason.clone())
             .field("kind", plan.kind.as_str())
             .field("detection", plan.detection_method.as_str())
             .field("write mode", plan.write_mode.as_str())
@@ -388,7 +390,8 @@ fn escape_json_string(value: &str) -> String {
 mod tests {
     use super::{build_image_plan_report, PlanReport, PlanReportField, PlanReportSection};
     use crate::image_plan::{
-        DetectionMethod, ImageKind, ImagePlan, ImageSignature, ImageWriteStrategy, WriteMode,
+        DetectionMethod, ImageKind, ImagePlan, ImagePlanStatus, ImageSignature, ImageWriteStrategy,
+        WriteMode,
     };
 
     #[test]
@@ -397,6 +400,8 @@ mod tests {
             source: "C:\\images\\sample.img".into(),
             file_name: "sample.img".to_string(),
             size_bytes: 4096,
+            status: ImagePlanStatus::Ready,
+            status_reason: "image plan is trusted for the next safety phase".to_string(),
             kind: ImageKind::RawDiskImage,
             detection_method: DetectionMethod::Signature,
             signatures: vec![ImageSignature::Gpt],
@@ -410,7 +415,11 @@ mod tests {
         let report = build_image_plan_report(&plan);
 
         assert_eq!(report.title, "OSflux image plan");
-        assert_eq!(section(&report.sections, "summary").fields.len(), 7);
+        assert_eq!(section(&report.sections, "summary").fields.len(), 9);
+        assert_eq!(
+            field(section(&report.sections, "summary"), "status"),
+            "ready"
+        );
         assert_eq!(
             field(section(&report.sections, "summary"), "write strategy"),
             "raw-block-write"

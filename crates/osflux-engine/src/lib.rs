@@ -6,8 +6,8 @@ use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
 pub use image_plan::{
-    plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImageSignature,
-    ImageWriteStrategy, WriteMode,
+    plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImagePlanStatus,
+    ImageSignature, ImageWriteStrategy, WriteMode,
 };
 pub use image_report::{
     build_image_plan_report, plan_image_report, PlanReport, PlanReportField, PlanReportItem,

@@ -20,6 +20,8 @@ pub struct ImagePlan {
     pub source: PathBuf,
     pub file_name: String,
     pub size_bytes: u64,
+    pub status: ImagePlanStatus,
+    pub status_reason: String,
     pub kind: ImageKind,
     pub detection_method: DetectionMethod,
     pub signatures: Vec<ImageSignature>,
@@ -28,6 +30,23 @@ pub struct ImagePlan {
     pub write_strategy: ImageWriteStrategy,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImagePlanStatus {
+    Ready,
+    NeedsInspection,
+    Blocked,
+}
+
+impl ImagePlanStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::NeedsInspection => "needs-inspection",
+            Self::Blocked => "blocked",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,10 +276,22 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         warnings.push("Image file is empty.".to_string());
     }
 
+    let status = status_for(kind, detection_method, write_strategy, metadata.len());
+    let status_reason = status_reason_for(
+        status,
+        kind,
+        detection_method,
+        write_strategy,
+        metadata.len(),
+    )
+    .to_string();
+
     Ok(ImagePlan {
         source,
         file_name,
         size_bytes: metadata.len(),
+        status,
+        status_reason,
         kind,
         detection_method,
         signatures,
@@ -446,11 +477,63 @@ fn add_strategy_notes(
     }
 }
 
+fn status_for(
+    kind: ImageKind,
+    detection_method: DetectionMethod,
+    write_strategy: ImageWriteStrategy,
+    size_bytes: u64,
+) -> ImagePlanStatus {
+    if size_bytes == 0
+        || kind == ImageKind::Unknown
+        || write_strategy == ImageWriteStrategy::Unknown
+    {
+        return ImagePlanStatus::Blocked;
+    }
+
+    if detection_method == DetectionMethod::Extension
+        || write_strategy == ImageWriteStrategy::IsoNeedsDeeperInspection
+    {
+        return ImagePlanStatus::NeedsInspection;
+    }
+
+    ImagePlanStatus::Ready
+}
+
+fn status_reason_for(
+    status: ImagePlanStatus,
+    kind: ImageKind,
+    detection_method: DetectionMethod,
+    write_strategy: ImageWriteStrategy,
+    size_bytes: u64,
+) -> &'static str {
+    if size_bytes == 0 {
+        return "image file is empty";
+    }
+
+    if kind == ImageKind::Unknown || write_strategy == ImageWriteStrategy::Unknown {
+        return "image type is unknown";
+    }
+
+    if detection_method == DetectionMethod::Extension {
+        return "image classification used extension fallback";
+    }
+
+    if write_strategy == ImageWriteStrategy::IsoNeedsDeeperInspection {
+        return "ISO boot metadata needs deeper inspection";
+    }
+
+    match status {
+        ImagePlanStatus::Ready => "image plan is trusted for the next safety phase",
+        ImagePlanStatus::NeedsInspection => "image plan needs deeper inspection",
+        ImagePlanStatus::Blocked => "image plan is blocked",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        plan_image, DetectionMethod, ImageKind, ImageSignature, ImageWriteStrategy, WriteMode,
-        ISO_SECTOR_SIZE,
+        plan_image, DetectionMethod, ImageKind, ImagePlanStatus, ImageSignature,
+        ImageWriteStrategy, WriteMode, ISO_SECTOR_SIZE,
     };
     use std::fs;
     use std::io::{Seek, SeekFrom, Write};
@@ -469,6 +552,7 @@ mod tests {
             plan.write_strategy,
             ImageWriteStrategy::IsoNeedsDeeperInspection
         );
+        assert_eq!(plan.status, ImagePlanStatus::NeedsInspection);
 
         let _ = fs::remove_file(path);
     }
@@ -484,6 +568,7 @@ mod tests {
         assert_eq!(plan.detection_method, DetectionMethod::Extension);
         assert_eq!(plan.write_mode, WriteMode::Raw);
         assert_eq!(plan.write_strategy, ImageWriteStrategy::RawBlockWrite);
+        assert_eq!(plan.status, ImagePlanStatus::NeedsInspection);
 
         let _ = fs::remove_file(path);
     }
@@ -503,6 +588,7 @@ mod tests {
             plan.write_strategy,
             ImageWriteStrategy::IsoNeedsDeeperInspection
         );
+        assert_eq!(plan.status, ImagePlanStatus::NeedsInspection);
 
         let _ = fs::remove_file(path);
     }
@@ -520,6 +606,7 @@ mod tests {
             plan.write_strategy,
             ImageWriteStrategy::IsoFileSystemBootSetup
         );
+        assert_eq!(plan.status, ImagePlanStatus::Ready);
 
         let _ = fs::remove_file(path);
     }
@@ -540,6 +627,7 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("validation entry is invalid")));
+        assert_eq!(plan.status, ImagePlanStatus::NeedsInspection);
 
         let _ = fs::remove_file(path);
     }
@@ -556,6 +644,7 @@ mod tests {
         assert_eq!(plan.signatures, vec![ImageSignature::Gpt]);
         assert_eq!(plan.write_mode, WriteMode::Raw);
         assert_eq!(plan.write_strategy, ImageWriteStrategy::RawBlockWrite);
+        assert_eq!(plan.status, ImagePlanStatus::Ready);
 
         let _ = fs::remove_file(path);
     }
@@ -579,6 +668,21 @@ mod tests {
             plan.write_strategy,
             ImageWriteStrategy::IsoNeedsDeeperInspection
         );
+        assert_eq!(plan.status, ImagePlanStatus::NeedsInspection);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn blocks_unknown_images() {
+        let path = std::env::temp_dir().join(unique_name("unknown"));
+        fs::write(&path, b"not a recognized image").unwrap();
+
+        let plan = plan_image(&path).unwrap();
+
+        assert_eq!(plan.kind, ImageKind::Unknown);
+        assert_eq!(plan.status, ImagePlanStatus::Blocked);
+        assert_eq!(plan.status_reason, "image type is unknown");
 
         let _ = fs::remove_file(path);
     }

@@ -59,6 +59,7 @@ cargo run -- --plan-image "C:\path\to\image.iso" --json
 
 The planner reads known file signatures first, then falls back to the extension when no signature is found.
 For ISO images, it also checks for an El Torito boot catalog and reports boot metadata, including BIOS, UEFI, or hybrid boot style when present. It validates each boot entry's byte range so OSflux can reject unsafe or incomplete image plans before write support is enabled. The planner also reports the selected write strategy, such as ISO filesystem boot setup, deeper ISO inspection, or raw block writing.
+Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
 
 Run with demo pipeline options:

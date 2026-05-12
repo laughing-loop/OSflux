@@ -1,6 +1,7 @@
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
+pub mod preflight;
 pub mod target;
 
 use osflux_core::device::{self, PhysicalDevice};
@@ -17,6 +18,10 @@ pub use image_report::{
 pub use iso::{
     BootCatalogPlatform, BootEmulation, BootEntrySource, BootImageRange, BootImageRangeStatus,
     BootStyle, ElToritoBootEntry, ElToritoBootInfo, IsoBootMetadata,
+};
+pub use preflight::{
+    build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,
+    WritePreflightStatus,
 };
 pub use target::{
     assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,

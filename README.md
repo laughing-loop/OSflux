@@ -57,6 +57,18 @@ Print the target assessment as JSON:
 cargo run -- --assess-target 2 --json
 ```
 
+Run a read-only write preflight for an image and target:
+
+```powershell
+cargo run -- --preflight --image "C:\path\to\image.iso" --target 2
+```
+
+Print the preflight as JSON:
+
+```powershell
+cargo run -- --preflight --image "C:\path\to\image.iso" --target 2 --json
+```
+
 Plan an image without writing anything:
 
 ```powershell

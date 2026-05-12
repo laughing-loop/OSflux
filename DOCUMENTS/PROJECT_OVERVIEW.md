@@ -148,6 +148,14 @@ cargo run -- --assess-target 2
 
 This is still read-only. It classifies the selected drive as blocked or needing confirmation before any future write workflow can touch it.
 
+OSflux can now combine image planning and target assessment into a write preflight:
+
+```powershell
+cargo run -- --preflight --image "C:\path\to\image.iso" --target 2
+```
+
+This is also read-only. It gives one verdict for the image and target pair: blocked, needs-inspection, needs-confirmation, or ready.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -247,6 +255,12 @@ cargo run -- --plan-image "C:\path\to\image.iso" --json
 ```
 
 That gives OSflux a machine-readable output path for future automation, testing, and GUI integration.
+
+The preflight can also be printed as JSON:
+
+```powershell
+cargo run -- --preflight --image "C:\path\to\image.iso" --target 2 --json
+```
 
 After that, we build:
 

@@ -1,4 +1,7 @@
-use osflux_engine::{list_devices, plan_image_report, Engine, EngineConfig, PlanReport};
+use osflux_engine::{
+    assess_target, list_devices, plan_image_report, Engine, EngineConfig, PlanReport,
+    TargetAssessment,
+};
 
 fn main() {
     match parse_command(std::env::args().skip(1)) {
@@ -9,6 +12,7 @@ fn main() {
         }
         Command::ListDevices => print_devices(),
         Command::PlanImage { path, output } => print_image_plan(&path, output),
+        Command::AssessTarget { index, output } => print_target_assessment(index, output),
     }
 }
 
@@ -16,6 +20,7 @@ enum Command {
     Run(EngineConfig),
     ListDevices,
     PlanImage { path: String, output: OutputFormat },
+    AssessTarget { index: u32, output: OutputFormat },
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +42,7 @@ where
     let mut index = 0usize;
     let mut output = OutputFormat::Text;
     let mut plan_image_path = None;
+    let mut target_index = None;
 
     while index < args.len() {
         let arg = args[index].as_str();
@@ -47,6 +53,16 @@ where
             output = OutputFormat::Json;
         } else if arg == "--list-devices" {
             return Command::ListDevices;
+        } else if let Some(value) = arg.strip_prefix("--assess-target=") {
+            target_index = Some(parse_target_index(value));
+        } else if arg == "--assess-target" {
+            let Some(value) = args.get(index + 1) else {
+                eprintln!("missing index after --assess-target");
+                std::process::exit(2);
+            };
+
+            target_index = Some(parse_target_index(value));
+            index += 1;
         } else if let Some(path) = arg.strip_prefix("--plan-image=") {
             plan_image_path = Some(path.to_string());
         } else if arg == "--plan-image" {
@@ -74,7 +90,21 @@ where
         return Command::PlanImage { path, output };
     }
 
+    if let Some(index) = target_index {
+        return Command::AssessTarget { index, output };
+    }
+
     Command::Run(config)
+}
+
+fn parse_target_index(value: &str) -> u32 {
+    match value.parse::<u32>() {
+        Ok(index) => index,
+        Err(_) => {
+            eprintln!("target index must be a non-negative number");
+            std::process::exit(2);
+        }
+    }
 }
 
 fn print_image_plan(path: &str, output: OutputFormat) {
@@ -87,6 +117,86 @@ fn print_image_plan(path: &str, output: OutputFormat) {
             eprintln!("OSflux could not plan this image.");
             eprintln!("{error}");
             std::process::exit(1);
+        }
+    }
+}
+
+fn print_target_assessment(index: u32, output: OutputFormat) {
+    match assess_target(index) {
+        Ok(assessment) => match output {
+            OutputFormat::Text => print_assessment(assessment),
+            OutputFormat::Json => print!("{}", assessment.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not assess this target.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_assessment(assessment: TargetAssessment) {
+    println!("OSflux target assessment");
+    println!("index: {}", assessment.index);
+    println!("path: {}", assessment.path);
+    println!("status: {}", assessment.status.as_str());
+    println!("reason: {}", assessment.reason);
+    println!(
+        "size: {}",
+        assessment
+            .size_bytes
+            .map(format_size)
+            .unwrap_or_else(|| "size unknown".to_string())
+    );
+    println!("access: {}", assessment.access.as_str());
+    println!(
+        "system volume: {}",
+        if assessment.contains_system_volume {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "likely removable: {}",
+        if assessment.likely_removable {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "requires confirmation: {}",
+        if assessment.requires_confirmation {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+
+    if let Some(model) = assessment.model {
+        println!("model: {model}");
+    }
+
+    if let Some(interface_type) = assessment.interface_type {
+        println!("interface: {interface_type}");
+    }
+
+    if let Some(media_type) = assessment.media_type {
+        println!("media: {media_type}");
+    }
+
+    if !assessment.notes.is_empty() {
+        println!("notes:");
+        for note in assessment.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !assessment.warnings.is_empty() {
+        println!("warnings:");
+        for warning in assessment.warnings {
+            println!("  - {warning}");
         }
     }
 }
@@ -177,12 +287,15 @@ fn print_help() {
     println!("OSflux CLI");
     println!("Usage:");
     println!("  cargo run -- --list-devices");
+    println!("  cargo run -- --assess-target <INDEX>");
+    println!("  cargo run -- --assess-target <INDEX> --json");
     println!("  cargo run -- --plan-image <PATH>");
     println!("  cargo run -- --plan-image <PATH> --json");
     println!("  cargo run -- --blocks=16 --block-size=1048576");
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
+    println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --json            Print image plan output as JSON.");
     println!("  --blocks=<N>        Number of blocks to enqueue in the demo pipeline.");

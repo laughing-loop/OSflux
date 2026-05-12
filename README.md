@@ -45,6 +45,18 @@ List visible physical drives:
 cargo run -- --list-devices
 ```
 
+Assess one target drive without writing:
+
+```powershell
+cargo run -- --assess-target 2
+```
+
+Print the target assessment as JSON:
+
+```powershell
+cargo run -- --assess-target 2 --json
+```
+
 Plan an image without writing anything:
 
 ```powershell

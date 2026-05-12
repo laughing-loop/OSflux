@@ -1,6 +1,7 @@
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
+pub mod target;
 
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
@@ -16,6 +17,10 @@ pub use image_report::{
 pub use iso::{
     BootCatalogPlatform, BootEmulation, BootEntrySource, BootImageRange, BootImageRangeStatus,
     BootStyle, ElToritoBootEntry, ElToritoBootInfo, IsoBootMetadata,
+};
+pub use target::{
+    assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,
+    TargetAssessmentStatus,
 };
 
 #[derive(Debug, Clone, Copy)]

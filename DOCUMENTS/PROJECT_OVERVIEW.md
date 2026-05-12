@@ -140,6 +140,14 @@ The device scan now tries to show:
 - safety label
 - system-drive warning
 
+OSflux can now assess a target drive by index:
+
+```powershell
+cargo run -- --assess-target 2
+```
+
+This is still read-only. It classifies the selected drive as blocked or needing confirmation before any future write workflow can touch it.
+
 We also added the first read-only image planning command:
 
 ```powershell

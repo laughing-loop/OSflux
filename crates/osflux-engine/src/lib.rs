@@ -5,6 +5,7 @@ pub mod preflight;
 pub mod target;
 pub mod write_command;
 pub mod write_intent;
+pub mod write_session;
 
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
@@ -33,6 +34,10 @@ pub use write_command::{
     build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,
 };
 pub use write_intent::{build_write_intent, create_write_intent, WriteIntent, WriteIntentStatus};
+pub use write_session::{
+    build_write_session, build_write_session_at, prepare_write_session, WriteSession,
+    WriteSessionStatus,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {

@@ -186,6 +186,23 @@ This still does not write to any drive. It checks:
 
 If everything matches, the command reports `ready-dry-run` and keeps `write access attempted` as `no`.
 
+OSflux can now prepare a locked write session:
+
+```powershell
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+This still does not write to any drive. It turns the confirmed dry-run write command into a session record with:
+
+- a session ID
+- the locked image path
+- the locked target index and path
+- confirmation status
+- dry-run status
+- write access status
+
+For now, a prepared session means the safety chain is complete, not that OSflux is allowed to write yet.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -304,9 +321,15 @@ The write command dry-run can also be printed as JSON:
 cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
 ```
 
+The locked write session can also be printed as JSON:
+
+```powershell
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+```
+
 After that, we build:
 
-- locked write session model
+- chunk plan model
 - write mode selection
 - image family detection
 - richer boot metadata inspection

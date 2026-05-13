@@ -93,6 +93,18 @@ Print the write command plan as JSON:
 cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
 ```
 
+Prepare a locked dry-run write session:
+
+```powershell
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+Print the write session as JSON:
+
+```powershell
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+```
+
 Plan an image without writing anything:
 
 ```powershell
@@ -111,6 +123,7 @@ Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
+The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.
 
 Run with demo pipeline options:
 

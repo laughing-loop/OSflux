@@ -1,7 +1,7 @@
 use osflux_engine::{
     assess_target, create_write_intent, list_devices, plan_image_report, prepare_write_command,
-    run_write_preflight, Engine, EngineConfig, PlanReport, TargetAssessment, WriteCommandPlan,
-    WriteIntent, WritePreflight,
+    prepare_write_session, run_write_preflight, Engine, EngineConfig, PlanReport, TargetAssessment,
+    WriteCommandPlan, WriteIntent, WritePreflight, WriteSession,
 };
 
 fn main() {
@@ -30,6 +30,12 @@ fn main() {
             confirm,
             output,
         } => print_write_command(&image, target, confirm.as_deref(), output),
+        Command::Session {
+            image,
+            target,
+            confirm,
+            output,
+        } => print_write_session(&image, target, confirm.as_deref(), output),
     }
 }
 
@@ -60,6 +66,12 @@ enum Command {
         confirm: Option<String>,
         output: OutputFormat,
     },
+    Session {
+        image: String,
+        target: u32,
+        confirm: Option<String>,
+        output: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +97,7 @@ where
     let mut preflight_requested = false;
     let mut intent_requested = false;
     let mut write_requested = false;
+    let mut session_requested = false;
     let mut preflight_image = None;
     let mut preflight_target = None;
     let mut confirmation_phrase = None;
@@ -102,6 +115,8 @@ where
             intent_requested = true;
         } else if arg == "--write" {
             write_requested = true;
+        } else if arg == "--session" {
+            session_requested = true;
         } else if let Some(path) = arg.strip_prefix("--image=") {
             preflight_image = Some(path.to_string());
         } else if arg == "--image" {
@@ -167,6 +182,24 @@ where
         index += 1;
     }
 
+    if session_requested {
+        let Some(image) = preflight_image else {
+            eprintln!("missing --image <PATH> for --session");
+            std::process::exit(2);
+        };
+        let Some(target) = preflight_target else {
+            eprintln!("missing --target <INDEX> for --session");
+            std::process::exit(2);
+        };
+
+        return Command::Session {
+            image,
+            target,
+            confirm: confirmation_phrase,
+            output,
+        };
+    }
+
     if write_requested {
         let Some(image) = preflight_image else {
             eprintln!("missing --image <PATH> for --write");
@@ -228,6 +261,68 @@ where
     }
 
     Command::Run(config)
+}
+
+fn print_write_session(
+    image: &str,
+    target: u32,
+    confirmation_phrase: Option<&str>,
+    output: OutputFormat,
+) {
+    match prepare_write_session(image, target, confirmation_phrase) {
+        Ok(session) => match output {
+            OutputFormat::Text => print_write_session_report(session),
+            OutputFormat::Json => print!("{}", session.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not prepare write session.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_write_session_report(session: WriteSession) {
+    println!("OSflux write session");
+    println!("session id: {}", session.session_id);
+    println!("status: {}", session.status.as_str());
+    println!("reason: {}", session.reason);
+    println!(
+        "created at unix seconds: {}",
+        session.created_at_unix_seconds
+    );
+    println!("image: {}", session.image_source);
+    println!("target index: {}", session.target_index);
+    println!("target path: {}", session.target_path);
+    println!("command status: {}", session.command_status.as_str());
+    println!(
+        "confirmed: {}",
+        if session.confirmed { "yes" } else { "no" }
+    );
+    println!("locked: {}", if session.locked { "yes" } else { "no" });
+    println!("dry run: {}", if session.dry_run { "yes" } else { "no" });
+    println!(
+        "write access attempted: {}",
+        if session.write_access_attempted {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+
+    if !session.notes.is_empty() {
+        println!("notes:");
+        for note in session.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !session.warnings.is_empty() {
+        println!("warnings:");
+        for warning in session.warnings {
+            println!("  - {warning}");
+        }
+    }
 }
 
 fn print_write_command(
@@ -590,6 +685,12 @@ fn print_help() {
     println!("Usage:");
     println!("  cargo run -- --list-devices");
     println!(
+        "  cargo run -- --session --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+    );
+    println!(
+        "  cargo run -- --session --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --json"
+    );
+    println!(
         "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
     );
     println!(
@@ -607,12 +708,15 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
+    println!("  --session         Prepare a locked dry-run write session.");
     println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
-    println!("  --image           Image path for --write, --intent, or --preflight.");
-    println!("  --target          Physical drive index for --write, --intent, or --preflight.");
-    println!("  --confirm         Exact confirmation phrase for --write.");
+    println!("  --image           Image path for --session, --write, --intent, or --preflight.");
+    println!(
+        "  --target          Physical drive index for --session, --write, --intent, or --preflight."
+    );
+    println!("  --confirm         Exact confirmation phrase for --session or --write.");
     println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --json            Print image plan output as JSON.");

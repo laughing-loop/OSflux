@@ -170,6 +170,22 @@ OSFLUX ERASE TARGET 2
 
 That phrase is the safety gate a future write command must require before opening a target drive for write access.
 
+OSflux can now validate a confirmed write command as a dry-run skeleton:
+
+```powershell
+cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+This still does not write to any drive. It checks:
+
+- the image plan
+- the target assessment
+- the write preflight
+- the write intent
+- the exact confirmation phrase
+
+If everything matches, the command reports `ready-dry-run` and keeps `write access attempted` as `no`.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -282,9 +298,15 @@ The write intent can also be printed as JSON:
 cargo run -- --intent --image "C:\path\to\image.iso" --target 2 --json
 ```
 
+The write command dry-run can also be printed as JSON:
+
+```powershell
+cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+```
+
 After that, we build:
 
-- confirmation-aware write command skeleton
+- locked write session model
 - write mode selection
 - image family detection
 - richer boot metadata inspection

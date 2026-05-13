@@ -1,6 +1,7 @@
 use osflux_engine::{
-    assess_target, create_write_intent, list_devices, plan_image_report, run_write_preflight,
-    Engine, EngineConfig, PlanReport, TargetAssessment, WriteIntent, WritePreflight,
+    assess_target, create_write_intent, list_devices, plan_image_report, prepare_write_command,
+    run_write_preflight, Engine, EngineConfig, PlanReport, TargetAssessment, WriteCommandPlan,
+    WriteIntent, WritePreflight,
 };
 
 fn main() {
@@ -23,6 +24,12 @@ fn main() {
             target,
             output,
         } => print_write_intent(&image, target, output),
+        Command::Write {
+            image,
+            target,
+            confirm,
+            output,
+        } => print_write_command(&image, target, confirm.as_deref(), output),
     }
 }
 
@@ -45,6 +52,12 @@ enum Command {
     Intent {
         image: String,
         target: u32,
+        output: OutputFormat,
+    },
+    Write {
+        image: String,
+        target: u32,
+        confirm: Option<String>,
         output: OutputFormat,
     },
 }
@@ -71,8 +84,10 @@ where
     let mut target_index = None;
     let mut preflight_requested = false;
     let mut intent_requested = false;
+    let mut write_requested = false;
     let mut preflight_image = None;
     let mut preflight_target = None;
+    let mut confirmation_phrase = None;
 
     while index < args.len() {
         let arg = args[index].as_str();
@@ -85,6 +100,8 @@ where
             preflight_requested = true;
         } else if arg == "--intent" {
             intent_requested = true;
+        } else if arg == "--write" {
+            write_requested = true;
         } else if let Some(path) = arg.strip_prefix("--image=") {
             preflight_image = Some(path.to_string());
         } else if arg == "--image" {
@@ -104,6 +121,16 @@ where
             };
 
             preflight_target = Some(parse_target_index(value));
+            index += 1;
+        } else if let Some(value) = arg.strip_prefix("--confirm=") {
+            confirmation_phrase = Some(value.to_string());
+        } else if arg == "--confirm" {
+            let Some(value) = args.get(index + 1) else {
+                eprintln!("missing phrase after --confirm");
+                std::process::exit(2);
+            };
+
+            confirmation_phrase = Some(value.to_string());
             index += 1;
         } else if arg == "--list-devices" {
             return Command::ListDevices;
@@ -138,6 +165,24 @@ where
         }
 
         index += 1;
+    }
+
+    if write_requested {
+        let Some(image) = preflight_image else {
+            eprintln!("missing --image <PATH> for --write");
+            std::process::exit(2);
+        };
+        let Some(target) = preflight_target else {
+            eprintln!("missing --target <INDEX> for --write");
+            std::process::exit(2);
+        };
+
+        return Command::Write {
+            image,
+            target,
+            confirm: confirmation_phrase,
+            output,
+        };
     }
 
     if intent_requested {
@@ -183,6 +228,80 @@ where
     }
 
     Command::Run(config)
+}
+
+fn print_write_command(
+    image: &str,
+    target: u32,
+    confirmation_phrase: Option<&str>,
+    output: OutputFormat,
+) {
+    match prepare_write_command(image, target, confirmation_phrase) {
+        Ok(plan) => match output {
+            OutputFormat::Text => print_write_command_plan(plan),
+            OutputFormat::Json => print!("{}", plan.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not plan write command.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_write_command_plan(plan: WriteCommandPlan) {
+    println!("OSflux write command");
+    println!("status: {}", plan.status.as_str());
+    println!("reason: {}", plan.reason);
+    println!("image: {}", plan.image_source);
+    println!("target index: {}", plan.target_index);
+    println!("target path: {}", plan.target_path);
+    println!("intent status: {}", plan.intent_status.as_str());
+    println!(
+        "supplied confirmation: {}",
+        if plan.supplied_confirmation_phrase_present {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "confirmation matches: {}",
+        if plan.confirmation_matches {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!("dry run: {}", if plan.dry_run { "yes" } else { "no" });
+    println!(
+        "write access attempted: {}",
+        if plan.write_access_attempted {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+
+    if let Some(expected_confirmation_phrase) = plan.expected_confirmation_phrase {
+        println!("expected confirmation phrase: {expected_confirmation_phrase}");
+    } else {
+        println!("expected confirmation phrase: unavailable");
+    }
+
+    if !plan.notes.is_empty() {
+        println!("notes:");
+        for note in plan.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !plan.warnings.is_empty() {
+        println!("warnings:");
+        for warning in plan.warnings {
+            println!("  - {warning}");
+        }
+    }
 }
 
 fn parse_target_index(value: &str) -> u32 {
@@ -470,6 +589,12 @@ fn print_help() {
     println!("OSflux CLI");
     println!("Usage:");
     println!("  cargo run -- --list-devices");
+    println!(
+        "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+    );
+    println!(
+        "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --json"
+    );
     println!("  cargo run -- --intent --image <PATH> --target <INDEX>");
     println!("  cargo run -- --intent --image <PATH> --target <INDEX> --json");
     println!("  cargo run -- --preflight --image <PATH> --target <INDEX>");
@@ -482,10 +607,12 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
+    println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
-    println!("  --image           Image path for --intent or --preflight.");
-    println!("  --target          Physical drive index for --intent or --preflight.");
+    println!("  --image           Image path for --write, --intent, or --preflight.");
+    println!("  --target          Physical drive index for --write, --intent, or --preflight.");
+    println!("  --confirm         Exact confirmation phrase for --write.");
     println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --json            Print image plan output as JSON.");

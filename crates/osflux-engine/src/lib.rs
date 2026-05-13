@@ -3,6 +3,7 @@ pub mod image_report;
 pub mod iso;
 pub mod preflight;
 pub mod target;
+pub mod write_command;
 pub mod write_intent;
 
 use osflux_core::device::{self, PhysicalDevice};
@@ -27,6 +28,9 @@ pub use preflight::{
 pub use target::{
     assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,
     TargetAssessmentStatus,
+};
+pub use write_command::{
+    build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,
 };
 pub use write_intent::{build_write_intent, create_write_intent, WriteIntent, WriteIntentStatus};
 

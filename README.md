@@ -69,6 +69,18 @@ Print the preflight as JSON:
 cargo run -- --preflight --image "C:\path\to\image.iso" --target 2 --json
 ```
 
+Create a read-only write intent and confirmation phrase:
+
+```powershell
+cargo run -- --intent --image "C:\path\to\image.iso" --target 2
+```
+
+Print the write intent as JSON:
+
+```powershell
+cargo run -- --intent --image "C:\path\to\image.iso" --target 2 --json
+```
+
 Plan an image without writing anything:
 
 ```powershell
@@ -85,6 +97,7 @@ The planner reads known file signatures first, then falls back to the extension 
 For ISO images, it also checks for an El Torito boot catalog and reports boot metadata, including BIOS, UEFI, or hybrid boot style when present. It validates each boot entry's byte range so OSflux can reject unsafe or incomplete image plans before write support is enabled. The planner also reports the selected write strategy, such as ISO filesystem boot setup, deeper ISO inspection, or raw block writing.
 Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
+The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 
 Run with demo pipeline options:
 

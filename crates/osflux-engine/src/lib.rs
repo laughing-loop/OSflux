@@ -3,6 +3,7 @@ pub mod image_report;
 pub mod iso;
 pub mod preflight;
 pub mod target;
+pub mod write_intent;
 
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
@@ -27,6 +28,7 @@ pub use target::{
     assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,
     TargetAssessmentStatus,
 };
+pub use write_intent::{build_write_intent, create_write_intent, WriteIntent, WriteIntentStatus};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EngineConfig {

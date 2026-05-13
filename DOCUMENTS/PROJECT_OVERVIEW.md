@@ -156,6 +156,20 @@ cargo run -- --preflight --image "C:\path\to\image.iso" --target 2
 
 This is also read-only. It gives one verdict for the image and target pair: blocked, needs-inspection, needs-confirmation, or ready.
 
+OSflux can now create a write intent:
+
+```powershell
+cargo run -- --intent --image "C:\path\to\image.iso" --target 2
+```
+
+This is still read-only. It turns a passing preflight into a deliberate confirmation phrase, such as:
+
+```text
+OSFLUX ERASE TARGET 2
+```
+
+That phrase is the safety gate a future write command must require before opening a target drive for write access.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -262,8 +276,15 @@ The preflight can also be printed as JSON:
 cargo run -- --preflight --image "C:\path\to\image.iso" --target 2 --json
 ```
 
+The write intent can also be printed as JSON:
+
+```powershell
+cargo run -- --intent --image "C:\path\to\image.iso" --target 2 --json
+```
+
 After that, we build:
 
+- confirmation-aware write command skeleton
 - write mode selection
 - image family detection
 - richer boot metadata inspection

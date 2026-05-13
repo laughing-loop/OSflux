@@ -1,6 +1,6 @@
 use osflux_engine::{
-    assess_target, list_devices, plan_image_report, run_write_preflight, Engine, EngineConfig,
-    PlanReport, TargetAssessment, WritePreflight,
+    assess_target, create_write_intent, list_devices, plan_image_report, run_write_preflight,
+    Engine, EngineConfig, PlanReport, TargetAssessment, WriteIntent, WritePreflight,
 };
 
 fn main() {
@@ -18,6 +18,11 @@ fn main() {
             target,
             output,
         } => print_preflight(&image, target, output),
+        Command::Intent {
+            image,
+            target,
+            output,
+        } => print_write_intent(&image, target, output),
     }
 }
 
@@ -33,6 +38,11 @@ enum Command {
         output: OutputFormat,
     },
     Preflight {
+        image: String,
+        target: u32,
+        output: OutputFormat,
+    },
+    Intent {
         image: String,
         target: u32,
         output: OutputFormat,
@@ -60,6 +70,7 @@ where
     let mut plan_image_path = None;
     let mut target_index = None;
     let mut preflight_requested = false;
+    let mut intent_requested = false;
     let mut preflight_image = None;
     let mut preflight_target = None;
 
@@ -72,6 +83,8 @@ where
             output = OutputFormat::Json;
         } else if arg == "--preflight" {
             preflight_requested = true;
+        } else if arg == "--intent" {
+            intent_requested = true;
         } else if let Some(path) = arg.strip_prefix("--image=") {
             preflight_image = Some(path.to_string());
         } else if arg == "--image" {
@@ -127,6 +140,23 @@ where
         index += 1;
     }
 
+    if intent_requested {
+        let Some(image) = preflight_image else {
+            eprintln!("missing --image <PATH> for --intent");
+            std::process::exit(2);
+        };
+        let Some(target) = preflight_target else {
+            eprintln!("missing --target <INDEX> for --intent");
+            std::process::exit(2);
+        };
+
+        return Command::Intent {
+            image,
+            target,
+            output,
+        };
+    }
+
     if preflight_requested {
         let Some(image) = preflight_image else {
             eprintln!("missing --image <PATH> for --preflight");
@@ -161,6 +191,51 @@ fn parse_target_index(value: &str) -> u32 {
         Err(_) => {
             eprintln!("target index must be a non-negative number");
             std::process::exit(2);
+        }
+    }
+}
+
+fn print_write_intent(image: &str, target: u32, output: OutputFormat) {
+    match create_write_intent(image, target) {
+        Ok(intent) => match output {
+            OutputFormat::Text => print_write_intent_report(intent),
+            OutputFormat::Json => print!("{}", intent.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not create write intent.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_write_intent_report(intent: WriteIntent) {
+    println!("OSflux write intent");
+    println!("status: {}", intent.status.as_str());
+    println!("reason: {}", intent.reason);
+    println!("image: {}", intent.image_source);
+    println!("target index: {}", intent.target_index);
+    println!("target path: {}", intent.target_path);
+    println!("preflight status: {}", intent.preflight_status.as_str());
+    println!("preflight reason: {}", intent.preflight_reason);
+
+    if let Some(confirmation_phrase) = intent.confirmation_phrase {
+        println!("confirmation phrase: {confirmation_phrase}");
+    } else {
+        println!("confirmation phrase: unavailable");
+    }
+
+    if !intent.notes.is_empty() {
+        println!("notes:");
+        for note in intent.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !intent.warnings.is_empty() {
+        println!("warnings:");
+        for warning in intent.warnings {
+            println!("  - {warning}");
         }
     }
 }
@@ -395,6 +470,8 @@ fn print_help() {
     println!("OSflux CLI");
     println!("Usage:");
     println!("  cargo run -- --list-devices");
+    println!("  cargo run -- --intent --image <PATH> --target <INDEX>");
+    println!("  cargo run -- --intent --image <PATH> --target <INDEX> --json");
     println!("  cargo run -- --preflight --image <PATH> --target <INDEX>");
     println!("  cargo run -- --preflight --image <PATH> --target <INDEX> --json");
     println!("  cargo run -- --assess-target <INDEX>");
@@ -405,9 +482,10 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
+    println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
-    println!("  --image           Image path for --preflight.");
-    println!("  --target          Physical drive index for --preflight.");
+    println!("  --image           Image path for --intent or --preflight.");
+    println!("  --target          Physical drive index for --intent or --preflight.");
     println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --json            Print image plan output as JSON.");

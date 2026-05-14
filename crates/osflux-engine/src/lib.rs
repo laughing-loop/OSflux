@@ -7,6 +7,7 @@ pub mod progress;
 pub mod target;
 pub mod write_command;
 pub mod write_intent;
+pub mod write_mode_selection;
 pub mod write_session;
 
 use osflux_core::device::{self, PhysicalDevice};
@@ -44,6 +45,10 @@ pub use write_command::{
     build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,
 };
 pub use write_intent::{build_write_intent, create_write_intent, WriteIntent, WriteIntentStatus};
+pub use write_mode_selection::{
+    build_write_mode_selection, select_write_mode, SelectedWriteMode, WriteModeSelection,
+    WriteModeSelectionError, WriteModeSelectionStatus,
+};
 pub use write_session::{
     build_write_session, build_write_session_at, prepare_write_session, WriteSession,
     WriteSessionStatus,

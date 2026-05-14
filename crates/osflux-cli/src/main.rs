@@ -1,8 +1,9 @@
 use osflux_engine::{
     assess_target, create_write_intent, list_devices, plan_image_report, plan_write_chunks,
     prepare_write_command, prepare_write_session, preview_write_progress, run_write_preflight,
-    ChunkPlan, Engine, EngineConfig, PlanReport, ProgressPreview, TargetAssessment,
-    WriteCommandPlan, WriteIntent, WritePreflight, WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
+    select_write_mode, ChunkPlan, Engine, EngineConfig, PlanReport, ProgressPreview,
+    TargetAssessment, WriteCommandPlan, WriteIntent, WriteModeSelection, WritePreflight,
+    WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 fn main() {
@@ -51,6 +52,13 @@ fn main() {
             chunk_size,
             output,
         } => print_progress_preview(&image, target, confirm.as_deref(), chunk_size, output),
+        Command::ModeSelection {
+            image,
+            target,
+            confirm,
+            chunk_size,
+            output,
+        } => print_mode_selection(&image, target, confirm.as_deref(), chunk_size, output),
     }
 }
 
@@ -101,6 +109,13 @@ enum Command {
         chunk_size: u64,
         output: OutputFormat,
     },
+    ModeSelection {
+        image: String,
+        target: u32,
+        confirm: Option<String>,
+        chunk_size: u64,
+        output: OutputFormat,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +144,7 @@ where
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
+    let mut mode_selection_requested = false;
     let mut preflight_image = None;
     let mut preflight_target = None;
     let mut confirmation_phrase = None;
@@ -153,6 +169,8 @@ where
             chunk_plan_requested = true;
         } else if arg == "--progress-preview" {
             progress_preview_requested = true;
+        } else if arg == "--select-mode" {
+            mode_selection_requested = true;
         } else if let Some(path) = arg.strip_prefix("--image=") {
             preflight_image = Some(path.to_string());
         } else if arg == "--image" {
@@ -226,6 +244,25 @@ where
         }
 
         index += 1;
+    }
+
+    if mode_selection_requested {
+        let Some(image) = preflight_image else {
+            eprintln!("missing --image <PATH> for --select-mode");
+            std::process::exit(2);
+        };
+        let Some(target) = preflight_target else {
+            eprintln!("missing --target <INDEX> for --select-mode");
+            std::process::exit(2);
+        };
+
+        return Command::ModeSelection {
+            image,
+            target,
+            confirm: confirmation_phrase,
+            chunk_size: chunk_size_bytes,
+            output,
+        };
     }
 
     if progress_preview_requested {
@@ -345,6 +382,74 @@ where
     }
 
     Command::Run(config)
+}
+
+fn print_mode_selection(
+    image: &str,
+    target: u32,
+    confirmation_phrase: Option<&str>,
+    chunk_size: u64,
+    output: OutputFormat,
+) {
+    match select_write_mode(image, target, confirmation_phrase, chunk_size) {
+        Ok(selection) => match output {
+            OutputFormat::Text => print_mode_selection_report(selection),
+            OutputFormat::Json => print!("{}", selection.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not select write mode.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_mode_selection_report(selection: WriteModeSelection) {
+    println!("OSflux write mode selection");
+    println!("status: {}", selection.status.as_str());
+    println!("reason: {}", selection.reason);
+    println!(
+        "selected mode: {}",
+        selection
+            .selected_mode
+            .map(|mode| mode.as_str().to_string())
+            .unwrap_or_else(|| "unavailable".to_string())
+    );
+    println!("image: {}", selection.image_source);
+    println!("image kind: {}", selection.image_kind);
+    println!("image status: {}", selection.image_status.as_str());
+    println!(
+        "image strategy: {}",
+        selection.image_write_strategy.as_str()
+    );
+    println!("session id: {}", selection.session_id);
+    println!("target index: {}", selection.target_index);
+    println!("target path: {}", selection.target_path);
+    println!("chunk count: {}", selection.chunk_count);
+    println!("planned bytes: {}", format_size(selection.planned_bytes));
+    println!("dry run: {}", if selection.dry_run { "yes" } else { "no" });
+    println!(
+        "write access attempted: {}",
+        if selection.write_access_attempted {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+
+    if !selection.notes.is_empty() {
+        println!("notes:");
+        for note in selection.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !selection.warnings.is_empty() {
+        println!("warnings:");
+        for warning in selection.warnings {
+            println!("  - {warning}");
+        }
+    }
 }
 
 fn print_progress_preview(
@@ -912,6 +1017,12 @@ fn print_help() {
     println!("Usage:");
     println!("  cargo run -- --list-devices");
     println!(
+        "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+    );
+    println!(
+        "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --chunk-size 4194304 --json"
+    );
+    println!(
         "  cargo run -- --progress-preview --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
     );
     println!(
@@ -947,6 +1058,7 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --list-devices    List visible physical drives without writing to them.");
+    println!("  --select-mode     Select the read-only write mode for the planned image.");
     println!("  --progress-preview  Prepare dry-run progress events from a chunk plan.");
     println!("  --chunk-plan      Prepare a dry-run chunk plan for progress scheduling.");
     println!("  --session         Prepare a locked dry-run write session.");
@@ -954,15 +1066,15 @@ fn print_help() {
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
     println!(
-        "  --image           Image path for --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
+        "  --image           Image path for --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
     );
     println!(
-        "  --target          Physical drive index for --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
+        "  --target          Physical drive index for --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
     );
     println!(
-        "  --confirm         Exact confirmation phrase for --progress-preview, --chunk-plan, --session, or --write."
+        "  --confirm         Exact confirmation phrase for --select-mode, --progress-preview, --chunk-plan, --session, or --write."
     );
-    println!("  --chunk-size      Chunk size in bytes for --progress-preview or --chunk-plan.");
+    println!("  --chunk-size      Chunk size in bytes for --select-mode, --progress-preview, or --chunk-plan.");
     println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --json            Print image plan output as JSON.");

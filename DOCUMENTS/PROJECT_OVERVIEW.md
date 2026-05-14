@@ -235,6 +235,19 @@ This still does not write to any drive. It turns a chunk plan into progress snap
 
 The preview reports progress as integer basis points. In plain terms, `10000` means `100.00%`, `5000` means `50.00%`, and `4000` means `40.00%`.
 
+OSflux can now select a write mode:
+
+```powershell
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+This still does not write to any drive. It decides which future execution path is appropriate:
+
+- ISO filesystem boot setup when ISO boot metadata is trusted
+- raw block writing when the image is a raw disk image
+- needs-inspection when the image is recognized but not trusted enough
+- blocked when the safety chain or image plan does not pass
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -371,9 +384,14 @@ The progress preview can also be printed as JSON:
 cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
 ```
 
+The write mode selection can also be printed as JSON:
+
+```powershell
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+```
+
 After that, we build:
 
-- write mode selection
 - image family detection
 - richer boot metadata inspection
 - real write pipeline

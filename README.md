@@ -129,6 +129,18 @@ Print the progress preview as JSON:
 cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
 ```
 
+Select the read-only write mode:
+
+```powershell
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+Print the write mode selection as JSON:
+
+```powershell
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+```
+
 Plan an image without writing anything:
 
 ```powershell
@@ -150,6 +162,7 @@ The write command skeleton is also read-only. It checks the exact confirmation p
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.
 The chunk plan command is still read-only. It calculates image size, chunk size, chunk count, final chunk size, and planned bytes for future progress reporting.
 The progress preview command is still read-only. It turns the chunk plan into sampled progress events with integer percentage basis points.
+The write mode selection command is still read-only. It chooses the future execution path, such as ISO filesystem boot setup or raw block writing, only after the safety chain has passed.
 
 Run with demo pipeline options:
 

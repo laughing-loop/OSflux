@@ -203,6 +203,23 @@ This still does not write to any drive. It turns the confirmed dry-run write com
 
 For now, a prepared session means the safety chain is complete, not that OSflux is allowed to write yet.
 
+OSflux can now prepare a dry-run chunk plan:
+
+```powershell
+cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+The chunk plan reads the image size and calculates:
+
+- chunk size
+- chunk count
+- final chunk size
+- planned bytes
+- dry-run status
+- write access status
+
+This is the foundation for progress reporting. If an image is 10 MiB and the chunk size is 4 MiB, OSflux plans 3 chunks: 4 MiB, 4 MiB, and 2 MiB.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -327,9 +344,15 @@ The locked write session can also be printed as JSON:
 cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
 ```
 
+The chunk plan can also be printed as JSON:
+
+```powershell
+cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+```
+
 After that, we build:
 
-- chunk plan model
+- progress model
 - write mode selection
 - image family detection
 - richer boot metadata inspection

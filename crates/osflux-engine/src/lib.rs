@@ -1,3 +1,4 @@
+pub mod chunk_plan;
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
@@ -10,6 +11,10 @@ pub mod write_session;
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
+pub use chunk_plan::{
+    build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
+    DEFAULT_CHUNK_SIZE_BYTES,
+};
 pub use image_plan::{
     plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImagePlanStatus,
     ImageSignature, ImageWriteStrategy, WriteMode,

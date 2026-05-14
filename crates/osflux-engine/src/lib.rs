@@ -1,4 +1,5 @@
 pub mod chunk_plan;
+pub mod image_family;
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
@@ -16,6 +17,10 @@ use osflux_core::pipeline;
 pub use chunk_plan::{
     build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
     DEFAULT_CHUNK_SIZE_BYTES,
+};
+pub use image_family::{
+    build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
+    ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,
 };
 pub use image_plan::{
     plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImagePlanStatus,

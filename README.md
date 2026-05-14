@@ -153,10 +153,23 @@ Print the same plan as JSON:
 cargo run -- --plan-image "C:\path\to\image.iso" --json
 ```
 
+Detect the image family without writing anything:
+
+```powershell
+cargo run -- --detect-family --image "C:\path\to\image.iso"
+```
+
+Print the image family report as JSON:
+
+```powershell
+cargo run -- --detect-family --image "C:\path\to\image.iso" --json
+```
+
 The planner reads known file signatures first, then falls back to the extension when no signature is found.
 For ISO images, it also checks for an El Torito boot catalog and reports boot metadata, including BIOS, UEFI, or hybrid boot style when present. It validates each boot entry's byte range so OSflux can reject unsafe or incomplete image plans before write support is enabled. The planner also reports the selected write strategy, such as ISO filesystem boot setup, deeper ISO inspection, or raw block writing.
 Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
+The image family command is still read-only. It scans the early image bytes for family markers and classifies images as Windows installer, Linux installer, multi-family image, raw disk image, or unknown.
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.

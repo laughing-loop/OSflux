@@ -248,6 +248,24 @@ This still does not write to any drive. It decides which future execution path i
 - needs-inspection when the image is recognized but not trusted enough
 - blocked when the safety chain or image plan does not pass
 
+OSflux can now detect an image family:
+
+```powershell
+cargo run -- --detect-family --image "C:\path\to\image.iso"
+```
+
+This still does not write to any drive. It uses the image planner first, then scans the early image bytes for family markers.
+
+The family detector can currently classify:
+
+- Windows installer images
+- Linux installer images
+- multi-family images
+- raw disk images
+- unknown images that need deeper inspection
+
+This matters because the future writer should not treat every image the same way. A raw disk image can follow a raw block path, while an installer ISO may need filesystem-aware boot setup.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -390,9 +408,14 @@ The write mode selection can also be printed as JSON:
 cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
 ```
 
+The image family report can also be printed as JSON:
+
+```powershell
+cargo run -- --detect-family --image "C:\path\to\image.iso" --json
+```
+
 After that, we build:
 
-- image family detection
 - richer boot metadata inspection
 - real write pipeline
 - progress reporting

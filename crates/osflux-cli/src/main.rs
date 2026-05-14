@@ -1,9 +1,9 @@
 use osflux_engine::{
-    assess_target, create_write_intent, list_devices, plan_image_report, plan_write_chunks,
-    prepare_write_command, prepare_write_session, preview_write_progress, run_write_preflight,
-    select_write_mode, ChunkPlan, Engine, EngineConfig, PlanReport, ProgressPreview,
-    TargetAssessment, WriteCommandPlan, WriteIntent, WriteModeSelection, WritePreflight,
-    WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
+    assess_target, create_write_intent, detect_image_family, list_devices, plan_image_report,
+    plan_write_chunks, prepare_write_command, prepare_write_session, preview_write_progress,
+    run_write_preflight, select_write_mode, ChunkPlan, Engine, EngineConfig, ImageFamilyReport,
+    PlanReport, ProgressPreview, TargetAssessment, WriteCommandPlan, WriteIntent,
+    WriteModeSelection, WritePreflight, WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 fn main() {
@@ -15,6 +15,7 @@ fn main() {
         }
         Command::ListDevices => print_devices(),
         Command::PlanImage { path, output } => print_image_plan(&path, output),
+        Command::DetectFamily { path, output } => print_image_family(&path, output),
         Command::AssessTarget { index, output } => print_target_assessment(index, output),
         Command::Preflight {
             image,
@@ -66,6 +67,10 @@ enum Command {
     Run(EngineConfig),
     ListDevices,
     PlanImage {
+        path: String,
+        output: OutputFormat,
+    },
+    DetectFamily {
         path: String,
         output: OutputFormat,
     },
@@ -145,6 +150,7 @@ where
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
     let mut mode_selection_requested = false;
+    let mut family_detection_requested = false;
     let mut preflight_image = None;
     let mut preflight_target = None;
     let mut confirmation_phrase = None;
@@ -171,6 +177,11 @@ where
             progress_preview_requested = true;
         } else if arg == "--select-mode" {
             mode_selection_requested = true;
+        } else if let Some(path) = arg.strip_prefix("--detect-family=") {
+            family_detection_requested = true;
+            preflight_image = Some(path.to_string());
+        } else if arg == "--detect-family" {
+            family_detection_requested = true;
         } else if let Some(path) = arg.strip_prefix("--image=") {
             preflight_image = Some(path.to_string());
         } else if arg == "--image" {
@@ -373,6 +384,15 @@ where
         };
     }
 
+    if family_detection_requested {
+        let Some(path) = preflight_image else {
+            eprintln!("missing --image <PATH> for --detect-family");
+            std::process::exit(2);
+        };
+
+        return Command::DetectFamily { path, output };
+    }
+
     if let Some(path) = plan_image_path {
         return Command::PlanImage { path, output };
     }
@@ -382,6 +402,67 @@ where
     }
 
     Command::Run(config)
+}
+
+fn print_image_family(path: &str, output: OutputFormat) {
+    match detect_image_family(path) {
+        Ok(report) => match output {
+            OutputFormat::Text => print_image_family_report(report),
+            OutputFormat::Json => print!("{}", report.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not detect this image family.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_image_family_report(report: ImageFamilyReport) {
+    println!("OSflux image family");
+    println!("status: {}", report.status.as_str());
+    println!("family: {}", report.family.as_str());
+    println!("reason: {}", report.reason);
+    println!("image: {}", report.image_source);
+    println!("image kind: {}", report.image_kind.as_str());
+    println!("image status: {}", report.image_status.as_str());
+    println!("detection method: {}", report.detection_method.as_str());
+    println!(
+        "scanned bytes: {} ({})",
+        report.scanned_bytes,
+        format_size(report.scanned_bytes)
+    );
+    println!(
+        "scan limit: {} ({})",
+        report.scan_limit_bytes,
+        format_size(report.scan_limit_bytes)
+    );
+
+    if !report.evidence.is_empty() {
+        println!("evidence:");
+        for item in &report.evidence {
+            println!(
+                "  - {} | {} | {}",
+                item.family.as_str(),
+                item.marker,
+                item.description
+            );
+        }
+    }
+
+    if !report.notes.is_empty() {
+        println!("notes:");
+        for note in &report.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        println!("warnings:");
+        for warning in &report.warnings {
+            println!("  - {warning}");
+        }
+    }
 }
 
 fn print_mode_selection(
@@ -1052,6 +1133,8 @@ fn print_help() {
     println!("  cargo run -- --preflight --image <PATH> --target <INDEX> --json");
     println!("  cargo run -- --assess-target <INDEX>");
     println!("  cargo run -- --assess-target <INDEX> --json");
+    println!("  cargo run -- --detect-family --image <PATH>");
+    println!("  cargo run -- --detect-family --image <PATH> --json");
     println!("  cargo run -- --plan-image <PATH>");
     println!("  cargo run -- --plan-image <PATH> --json");
     println!("  cargo run -- --blocks=16 --block-size=1048576");
@@ -1065,8 +1148,9 @@ fn print_help() {
     println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
+    println!("  --detect-family   Detect image family markers without writing.");
     println!(
-        "  --image           Image path for --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
+        "  --image           Image path for --detect-family, --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
     );
     println!(
         "  --target          Physical drive index for --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
@@ -1077,7 +1161,7 @@ fn print_help() {
     println!("  --chunk-size      Chunk size in bytes for --select-mode, --progress-preview, or --chunk-plan.");
     println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
-    println!("  --json            Print image plan output as JSON.");
+    println!("  --json            Print command output as JSON when supported.");
     println!("  --blocks=<N>        Number of blocks to enqueue in the demo pipeline.");
     println!("  --block-size=<N>    Bytes per block in the demo pipeline.");
 }

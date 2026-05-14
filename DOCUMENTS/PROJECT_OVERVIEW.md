@@ -220,6 +220,21 @@ The chunk plan reads the image size and calculates:
 
 This is the foundation for progress reporting. If an image is 10 MiB and the chunk size is 4 MiB, OSflux plans 3 chunks: 4 MiB, 4 MiB, and 2 MiB.
 
+OSflux can now preview progress events:
+
+```powershell
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+This still does not write to any drive. It turns a chunk plan into progress snapshots such as:
+
+- start
+- first completed chunk
+- midpoint checkpoint
+- final completed chunk
+
+The preview reports progress as integer basis points. In plain terms, `10000` means `100.00%`, `5000` means `50.00%`, and `4000` means `40.00%`.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -350,9 +365,14 @@ The chunk plan can also be printed as JSON:
 cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
 ```
 
+The progress preview can also be printed as JSON:
+
+```powershell
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+```
+
 After that, we build:
 
-- progress model
 - write mode selection
 - image family detection
 - richer boot metadata inspection

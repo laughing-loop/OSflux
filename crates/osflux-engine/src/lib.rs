@@ -3,6 +3,7 @@ pub mod image_plan;
 pub mod image_report;
 pub mod iso;
 pub mod preflight;
+pub mod progress;
 pub mod target;
 pub mod write_command;
 pub mod write_intent;
@@ -30,6 +31,10 @@ pub use iso::{
 pub use preflight::{
     build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,
     WritePreflightStatus,
+};
+pub use progress::{
+    build_progress_preview, preview_write_progress, ProgressEvent, ProgressPreview,
+    ProgressPreviewStatus,
 };
 pub use target::{
     assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,

@@ -117,6 +117,18 @@ Use a custom chunk size:
 cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
 ```
 
+Preview progress events from the chunk plan:
+
+```powershell
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+```
+
+Print the progress preview as JSON:
+
+```powershell
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+```
+
 Plan an image without writing anything:
 
 ```powershell
@@ -137,6 +149,7 @@ The write intent command is still read-only. It creates the confirmation phrase 
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.
 The chunk plan command is still read-only. It calculates image size, chunk size, chunk count, final chunk size, and planned bytes for future progress reporting.
+The progress preview command is still read-only. It turns the chunk plan into sampled progress events with integer percentage basis points.
 
 Run with demo pipeline options:
 

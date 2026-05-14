@@ -32,7 +32,8 @@ pub use image_report::{
 };
 pub use iso::{
     BootCatalogPlatform, BootEmulation, BootEntrySource, BootImageRange, BootImageRangeStatus,
-    BootStyle, ElToritoBootEntry, ElToritoBootInfo, IsoBootMetadata,
+    BootStyle, ElToritoBootEntry, ElToritoBootInfo, IsoBootAsset, IsoBootAssetKind,
+    IsoBootMetadata, IsoDirectoryEntry, IsoDirectoryMetadata,
 };
 pub use preflight::{
     build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,

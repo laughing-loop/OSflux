@@ -182,6 +182,35 @@ pub fn build_image_plan_report(plan: &ImagePlan) -> PlanReport {
         } else {
             sections.push(boot_metadata.field("boot catalog", "not found"));
         }
+
+        if let Some(directory) = metadata.directory.as_ref() {
+            sections.push(
+                PlanReportSection::new("iso directory")
+                    .field("root extent lba", directory.root_extent_lba.to_string())
+                    .field(
+                        "root data length",
+                        format_size(u64::from(directory.root_data_length)),
+                    )
+                    .field(
+                        "scanned directories",
+                        directory.scanned_directories.to_string(),
+                    )
+                    .field("entries", directory.entries.len().to_string())
+                    .field("truncated", yes_no(directory.truncated)),
+            );
+
+            let boot_assets = directory.boot_assets.iter().fold(
+                PlanReportSection::new("iso boot assets"),
+                |section, asset| {
+                    section.item(
+                        PlanReportItem::new(asset.path.clone()).field("kind", asset.kind.as_str()),
+                    )
+                },
+            );
+            if boot_assets.has_content() {
+                sections.push(boot_assets);
+            }
+        }
     }
 
     let notes = plan

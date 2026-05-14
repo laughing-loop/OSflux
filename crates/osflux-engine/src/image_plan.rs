@@ -248,6 +248,37 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
                             .push("No El Torito boot catalog was found in this ISO.".to_string());
                     }
 
+                    if let Some(directory) = metadata.directory.as_ref() {
+                        notes.push(format!(
+                            "ISO directory records scanned: {} directories, {} entries.",
+                            directory.scanned_directories,
+                            directory.entries.len()
+                        ));
+
+                        if directory.boot_assets.is_empty() {
+                            warnings.push(
+                                "No known boot asset paths were found in ISO directory records."
+                                    .to_string(),
+                            );
+                        } else {
+                            notes.push(format!(
+                                "ISO directory records exposed {} boot asset path(s).",
+                                directory.boot_assets.len()
+                            ));
+                        }
+
+                        if directory.truncated {
+                            warnings.push(
+                                "ISO directory inspection reached a safety limit and was truncated."
+                                    .to_string(),
+                            );
+                        }
+                    } else {
+                        warnings.push(
+                            "Could not read the ISO primary directory record yet.".to_string(),
+                        );
+                    }
+
                     boot_metadata = Some(metadata);
                 }
                 Err(error) => {

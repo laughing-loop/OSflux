@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
 
+use super::directory::{inspect_directory_metadata_from_file, IsoDirectoryMetadata};
+
 const ISO_SECTOR_SIZE: u64 = 2048;
 const VOLUME_DESCRIPTOR_START_SECTOR: u64 = 16;
 const VOLUME_DESCRIPTOR_SIZE: usize = 2048;
@@ -24,6 +26,7 @@ const EL_TORITO_VIRTUAL_SECTOR_SIZE: u64 = 512;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsoBootMetadata {
     pub el_torito: Option<ElToritoBootInfo>,
+    pub directory: Option<IsoDirectoryMetadata>,
 }
 
 impl IsoBootMetadata {
@@ -204,13 +207,17 @@ impl BootEmulation {
 pub fn inspect_boot_metadata(path: impl AsRef<Path>) -> std::io::Result<IsoBootMetadata> {
     let mut file = File::open(path)?;
     let iso_size = file.metadata()?.len();
+    let directory = inspect_directory_metadata_from_file(&mut file, iso_size)?;
     let catalog_lba = find_el_torito_catalog_lba(&mut file)?;
     let el_torito = match catalog_lba {
         Some(catalog_lba) => Some(read_boot_catalog(&mut file, catalog_lba, iso_size)?),
         None => None,
     };
 
-    Ok(IsoBootMetadata { el_torito })
+    Ok(IsoBootMetadata {
+        el_torito,
+        directory,
+    })
 }
 
 fn find_el_torito_catalog_lba(file: &mut File) -> std::io::Result<Option<u32>> {

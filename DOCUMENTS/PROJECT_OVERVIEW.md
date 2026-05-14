@@ -266,6 +266,27 @@ The family detector can currently classify:
 
 This matters because the future writer should not treat every image the same way. A raw disk image can follow a raw block path, while an installer ISO may need filesystem-aware boot setup.
 
+OSflux can now inspect ISO directory records:
+
+```powershell
+cargo run -- --plan-image "C:\path\to\image.iso"
+```
+
+This still does not write to any drive. The image planner now reads the ISO Primary Volume Descriptor, finds the root directory record, walks real ISO directory entries with safety limits, and reports boot-related paths when they are present.
+
+The directory inspector can currently identify paths such as:
+
+- boot managers
+- UEFI bootloaders
+- installer image files
+- Linux bootloaders
+- Linux kernel files
+- initrd files
+- live filesystem images
+- GRUB boot paths
+
+This is more reliable than only scanning raw bytes because OSflux is now reading the ISO's actual filesystem records.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -343,6 +364,8 @@ The planner now turns that catalog data into a boot style:
 
 It also validates the byte range for each boot entry. In plain terms, OSflux checks whether the boot catalog points to real readable bytes inside the ISO instead of blindly trusting the catalog.
 
+OSflux now also reads ISO directory records. In plain terms, it can inspect the ISO's real file table and report boot asset paths instead of relying only on extension checks or raw marker searches.
+
 The planner now selects an initial write strategy:
 
 - ISO filesystem boot setup when boot metadata is complete and valid
@@ -416,7 +439,7 @@ cargo run -- --detect-family --image "C:\path\to\image.iso" --json
 
 After that, we build:
 
-- richer boot metadata inspection
+- richer filesystem-aware ISO planning
 - real write pipeline
 - progress reporting
 - verification

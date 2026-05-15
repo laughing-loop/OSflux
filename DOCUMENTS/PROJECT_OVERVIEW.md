@@ -287,6 +287,29 @@ The directory inspector can currently identify paths such as:
 
 This is more reliable than only scanning raw bytes because OSflux is now reading the ISO's actual filesystem records.
 
+OSflux can now build a filesystem-aware ISO plan:
+
+```powershell
+cargo run -- --filesystem-plan --image "C:\path\to\image.iso"
+```
+
+This still does not write to any drive. It combines:
+
+- image family evidence
+- ISO boot catalog validity
+- boot image range validation
+- ISO directory boot assets
+
+The result is a higher-level plan that can choose paths such as:
+
+- Windows installer boot setup
+- Linux installer boot setup
+- multi-family boot setup
+- deeper inspection
+- unsupported
+
+This matters because the future write engine needs a clean decision before it can safely choose filesystem setup behavior.
+
 We also added the first read-only image planning command:
 
 ```powershell
@@ -437,9 +460,15 @@ The image family report can also be printed as JSON:
 cargo run -- --detect-family --image "C:\path\to\image.iso" --json
 ```
 
+The filesystem-aware ISO plan can also be printed as JSON:
+
+```powershell
+cargo run -- --filesystem-plan --image "C:\path\to\image.iso" --json
+```
+
 After that, we build:
 
-- richer filesystem-aware ISO planning
+- filesystem staging plan
 - real write pipeline
 - progress reporting
 - verification

@@ -165,6 +165,18 @@ Print the image family report as JSON:
 cargo run -- --detect-family --image "C:\path\to\image.iso" --json
 ```
 
+Build a read-only ISO filesystem plan:
+
+```powershell
+cargo run -- --filesystem-plan --image "C:\path\to\image.iso"
+```
+
+Print the ISO filesystem plan as JSON:
+
+```powershell
+cargo run -- --filesystem-plan --image "C:\path\to\image.iso" --json
+```
+
 The planner reads known file signatures first, then falls back to the extension when no signature is found.
 For ISO images, it also checks for an El Torito boot catalog and reports boot metadata, including BIOS, UEFI, or hybrid boot style when present. It validates each boot entry's byte range so OSflux can reject unsafe or incomplete image plans before write support is enabled.
 OSflux also reads ISO directory records from the Primary Volume Descriptor and reports boot-related paths such as boot managers, UEFI loaders, installer images, Linux kernels, initrd files, live filesystems, and GRUB paths when they are present.
@@ -172,6 +184,7 @@ The planner reports the selected write strategy, such as ISO filesystem boot set
 Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
 The image family command is still read-only. It scans the early image bytes for family markers and classifies images as Windows installer, Linux installer, multi-family image, raw disk image, or unknown.
+The filesystem plan command is still read-only. It combines image family evidence, ISO boot catalog validity, and directory boot assets into one filesystem-aware plan.
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.

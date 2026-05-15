@@ -3,6 +3,7 @@ pub mod image_family;
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
+pub mod iso_filesystem_plan;
 pub mod preflight;
 pub mod progress;
 pub mod target;
@@ -34,6 +35,10 @@ pub use iso::{
     BootCatalogPlatform, BootEmulation, BootEntrySource, BootImageRange, BootImageRangeStatus,
     BootStyle, ElToritoBootEntry, ElToritoBootInfo, IsoBootAsset, IsoBootAssetKind,
     IsoBootMetadata, IsoDirectoryEntry, IsoDirectoryMetadata,
+};
+pub use iso_filesystem_plan::{
+    build_iso_filesystem_plan, plan_iso_filesystem, IsoFilesystemCapabilities, IsoFilesystemPlan,
+    IsoFilesystemPlanError, IsoFilesystemPlanStatus, IsoFilesystemStrategy,
 };
 pub use preflight::{
     build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,

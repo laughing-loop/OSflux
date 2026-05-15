@@ -1,9 +1,10 @@
 use osflux_engine::{
     assess_target, create_write_intent, detect_image_family, list_devices, plan_image_report,
-    plan_write_chunks, prepare_write_command, prepare_write_session, preview_write_progress,
-    run_write_preflight, select_write_mode, ChunkPlan, Engine, EngineConfig, ImageFamilyReport,
-    PlanReport, ProgressPreview, TargetAssessment, WriteCommandPlan, WriteIntent,
-    WriteModeSelection, WritePreflight, WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
+    plan_iso_filesystem, plan_write_chunks, prepare_write_command, prepare_write_session,
+    preview_write_progress, run_write_preflight, select_write_mode, ChunkPlan, Engine,
+    EngineConfig, ImageFamilyReport, IsoFilesystemPlan, PlanReport, ProgressPreview,
+    TargetAssessment, WriteCommandPlan, WriteIntent, WriteModeSelection, WritePreflight,
+    WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 fn main() {
@@ -16,6 +17,7 @@ fn main() {
         Command::ListDevices => print_devices(),
         Command::PlanImage { path, output } => print_image_plan(&path, output),
         Command::DetectFamily { path, output } => print_image_family(&path, output),
+        Command::FilesystemPlan { path, output } => print_iso_filesystem_plan(&path, output),
         Command::AssessTarget { index, output } => print_target_assessment(index, output),
         Command::Preflight {
             image,
@@ -71,6 +73,10 @@ enum Command {
         output: OutputFormat,
     },
     DetectFamily {
+        path: String,
+        output: OutputFormat,
+    },
+    FilesystemPlan {
         path: String,
         output: OutputFormat,
     },
@@ -151,6 +157,7 @@ where
     let mut progress_preview_requested = false;
     let mut mode_selection_requested = false;
     let mut family_detection_requested = false;
+    let mut filesystem_plan_requested = false;
     let mut preflight_image = None;
     let mut preflight_target = None;
     let mut confirmation_phrase = None;
@@ -182,6 +189,11 @@ where
             preflight_image = Some(path.to_string());
         } else if arg == "--detect-family" {
             family_detection_requested = true;
+        } else if let Some(path) = arg.strip_prefix("--filesystem-plan=") {
+            filesystem_plan_requested = true;
+            preflight_image = Some(path.to_string());
+        } else if arg == "--filesystem-plan" {
+            filesystem_plan_requested = true;
         } else if let Some(path) = arg.strip_prefix("--image=") {
             preflight_image = Some(path.to_string());
         } else if arg == "--image" {
@@ -393,6 +405,15 @@ where
         return Command::DetectFamily { path, output };
     }
 
+    if filesystem_plan_requested {
+        let Some(path) = preflight_image else {
+            eprintln!("missing --image <PATH> for --filesystem-plan");
+            std::process::exit(2);
+        };
+
+        return Command::FilesystemPlan { path, output };
+    }
+
     if let Some(path) = plan_image_path {
         return Command::PlanImage { path, output };
     }
@@ -460,6 +481,105 @@ fn print_image_family_report(report: ImageFamilyReport) {
     if !report.warnings.is_empty() {
         println!("warnings:");
         for warning in &report.warnings {
+            println!("  - {warning}");
+        }
+    }
+}
+
+fn print_iso_filesystem_plan(path: &str, output: OutputFormat) {
+    match plan_iso_filesystem(path) {
+        Ok(plan) => match output {
+            OutputFormat::Text => print_iso_filesystem_plan_report(plan),
+            OutputFormat::Json => print!("{}", plan.to_json_pretty()),
+        },
+        Err(error) => {
+            eprintln!("OSflux could not build an ISO filesystem plan.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_iso_filesystem_plan_report(plan: IsoFilesystemPlan) {
+    println!("OSflux ISO filesystem plan");
+    println!("status: {}", plan.status.as_str());
+    println!("strategy: {}", plan.strategy.as_str());
+    println!("reason: {}", plan.reason);
+    println!("image: {}", plan.image_source);
+    println!("image status: {}", plan.image_status.as_str());
+    println!("detected family: {}", plan.detected_family.as_str());
+    println!("planned family: {}", plan.planned_family.as_str());
+    println!("boot style: {}", plan.boot_style.as_str());
+    println!(
+        "valid boot catalog: {}",
+        if plan.capabilities.has_valid_boot_catalog() {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "directory scanned: {}",
+        if plan.capabilities.directory_scanned {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "directory truncated: {}",
+        if plan.capabilities.directory_truncated {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!("boot assets: {}", plan.capabilities.boot_asset_count);
+    println!("windows assets: {}", plan.capabilities.windows_asset_count);
+    println!("linux assets: {}", plan.capabilities.linux_asset_count);
+    println!(
+        "has installer image: {}",
+        if plan.capabilities.has_installer_image {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "has linux kernel: {}",
+        if plan.capabilities.has_linux_kernel {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "has initrd: {}",
+        if plan.capabilities.has_initrd {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "has live filesystem: {}",
+        if plan.capabilities.has_live_filesystem {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+
+    if !plan.notes.is_empty() {
+        println!("notes:");
+        for note in &plan.notes {
+            println!("  - {note}");
+        }
+    }
+
+    if !plan.warnings.is_empty() {
+        println!("warnings:");
+        for warning in &plan.warnings {
             println!("  - {warning}");
         }
     }
@@ -1135,6 +1255,8 @@ fn print_help() {
     println!("  cargo run -- --assess-target <INDEX> --json");
     println!("  cargo run -- --detect-family --image <PATH>");
     println!("  cargo run -- --detect-family --image <PATH> --json");
+    println!("  cargo run -- --filesystem-plan --image <PATH>");
+    println!("  cargo run -- --filesystem-plan --image <PATH> --json");
     println!("  cargo run -- --plan-image <PATH>");
     println!("  cargo run -- --plan-image <PATH> --json");
     println!("  cargo run -- --blocks=16 --block-size=1048576");
@@ -1150,7 +1272,10 @@ fn print_help() {
     println!("  --preflight       Combine image and target checks without writing.");
     println!("  --detect-family   Detect image family markers without writing.");
     println!(
-        "  --image           Image path for --detect-family, --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
+        "  --filesystem-plan  Combine ISO family and boot assets into a read-only filesystem plan."
+    );
+    println!(
+        "  --image           Image path for --filesystem-plan, --detect-family, --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
     );
     println!(
         "  --target          Physical drive index for --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."

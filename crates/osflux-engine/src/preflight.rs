@@ -16,6 +16,9 @@ pub struct WritePreflight {
     pub image_write_strategy: String,
     pub target_index: u32,
     pub target_path: String,
+    pub target_model: Option<String>,
+    pub target_size_bytes: Option<u64>,
+    pub target_identity_code: Option<String>,
     pub target_status: TargetAssessmentStatus,
     pub target_reason: String,
     pub requires_confirmation: bool,
@@ -36,6 +39,9 @@ impl WritePreflight {
                 "  \"imageWriteStrategy\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
+                "  \"targetModel\": {},\n",
+                "  \"targetSizeBytes\": {},\n",
+                "  \"targetIdentityCode\": {},\n",
                 "  \"targetStatus\": \"{}\",\n",
                 "  \"targetReason\": \"{}\",\n",
                 "  \"requiresConfirmation\": {},\n",
@@ -51,6 +57,9 @@ impl WritePreflight {
             escape_json_string(&self.image_write_strategy),
             self.target_index,
             escape_json_string(&self.target_path),
+            optional_string_json(self.target_model.as_deref()),
+            optional_number_json(self.target_size_bytes),
+            optional_string_json(self.target_identity_code.as_deref()),
             self.target_status.as_str(),
             escape_json_string(&self.target_reason),
             self.requires_confirmation,
@@ -153,6 +162,9 @@ pub fn build_write_preflight(image_plan: &ImagePlan, target: &TargetAssessment) 
         image_write_strategy: image_plan.write_strategy.as_str().to_string(),
         target_index: target.index,
         target_path: target.path.clone(),
+        target_model: target.model.clone(),
+        target_size_bytes: target.size_bytes,
+        target_identity_code: target.identity_code.clone(),
         target_status: target.status,
         target_reason: target.reason.clone(),
         requires_confirmation: target.requires_confirmation,
@@ -210,6 +222,18 @@ fn image_exceeds_target(image_plan: &ImagePlan, target: &TargetAssessment) -> bo
     target
         .size_bytes
         .is_some_and(|target_size| image_plan.size_bytes > target_size)
+}
+
+fn optional_string_json(value: Option<&str>) -> String {
+    value
+        .map(|value| format!("\"{}\"", escape_json_string(value)))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn optional_number_json(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn string_array_json(values: &[String]) -> String {
@@ -324,6 +348,7 @@ mod tests {
 
         assert!(json.contains("\"status\": \"needs-confirmation\""));
         assert!(json.contains("\"targetIndex\": 2"));
+        assert!(json.contains("\"targetIdentityCode\": \"7F3A\""));
         assert!(json.contains("\"requiresConfirmation\": true"));
     }
 
@@ -368,6 +393,8 @@ mod tests {
             model: Some("Test Drive".to_string()),
             interface_type: Some("USB".to_string()),
             media_type: Some("Removable Media".to_string()),
+            serial_number: Some("SN-0001".to_string()),
+            identity_code: Some("7F3A".to_string()),
             access: DeviceAccess::Readable,
             contains_system_volume: blocked,
             likely_removable: !blocked,

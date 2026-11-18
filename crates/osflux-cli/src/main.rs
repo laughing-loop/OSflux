@@ -845,6 +845,10 @@ fn print_write_session_report(session: WriteSession) {
     println!("image: {}", session.image_source);
     println!("target index: {}", session.target_index);
     println!("target path: {}", session.target_path);
+    println!(
+        "target identity code: {}",
+        session.target_identity_code.as_deref().unwrap_or("unknown")
+    );
     println!("command status: {}", session.command_status.as_str());
     println!(
         "confirmed: {}",
@@ -906,6 +910,10 @@ fn print_write_command_plan(plan: WriteCommandPlan) {
     println!("image: {}", plan.image_source);
     println!("target index: {}", plan.target_index);
     println!("target path: {}", plan.target_path);
+    println!(
+        "target identity code: {}",
+        plan.target_identity_code.as_deref().unwrap_or("unknown")
+    );
     println!("intent status: {}", plan.intent_status.as_str());
     println!(
         "supplied confirmation: {}",
@@ -1016,6 +1024,21 @@ fn print_write_intent_report(intent: WriteIntent) {
     println!("image: {}", intent.image_source);
     println!("target index: {}", intent.target_index);
     println!("target path: {}", intent.target_path);
+    println!(
+        "target model: {}",
+        intent.target_model.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "target size: {}",
+        intent
+            .target_size_bytes
+            .map(format_size)
+            .unwrap_or_else(|| "size unknown".to_string())
+    );
+    println!(
+        "target identity code: {}",
+        intent.target_identity_code.as_deref().unwrap_or("unknown")
+    );
     println!("preflight status: {}", intent.preflight_status.as_str());
     println!("preflight reason: {}", intent.preflight_reason);
 
@@ -1071,6 +1094,24 @@ fn print_preflight_report(preflight: WritePreflight) {
     println!("image strategy: {}", preflight.image_write_strategy);
     println!("target index: {}", preflight.target_index);
     println!("target path: {}", preflight.target_path);
+    println!(
+        "target model: {}",
+        preflight.target_model.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "target size: {}",
+        preflight
+            .target_size_bytes
+            .map(format_size)
+            .unwrap_or_else(|| "size unknown".to_string())
+    );
+    println!(
+        "target identity code: {}",
+        preflight
+            .target_identity_code
+            .as_deref()
+            .unwrap_or("unknown")
+    );
     println!("target status: {}", preflight.target_status.as_str());
     println!("target reason: {}", preflight.target_reason);
     println!(
@@ -1145,6 +1186,17 @@ fn print_assessment(assessment: TargetAssessment) {
             .size_bytes
             .map(format_size)
             .unwrap_or_else(|| "size unknown".to_string())
+    );
+    println!(
+        "identity code: {}",
+        assessment.identity_code.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "serial number: {}",
+        assessment
+            .serial_number
+            .as_deref()
+            .unwrap_or("not reported")
     );
     println!("access: {}", assessment.access.as_str());
     println!(
@@ -1248,6 +1300,10 @@ fn print_devices() {
             println!("    model: {model}");
         }
 
+        if let Some(serial_number) = &device.serial_number {
+            println!("    serial: {serial_number}");
+        }
+
         if let Some(interface_type) = &device.interface_type {
             println!("    interface: {interface_type}");
         }
@@ -1290,34 +1346,34 @@ fn print_help() {
     println!("Usage:");
     println!("  cargo run -- --list-devices");
     println!(
-        "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+        "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
     );
     println!(
-        "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --chunk-size 4194304 --json"
+        "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --chunk-size 4194304 --json"
     );
     println!(
-        "  cargo run -- --progress-preview --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+        "  cargo run -- --progress-preview --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
     );
     println!(
-        "  cargo run -- --progress-preview --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --chunk-size 4194304 --json"
+        "  cargo run -- --progress-preview --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --chunk-size 4194304 --json"
     );
     println!(
-        "  cargo run -- --chunk-plan --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+        "  cargo run -- --chunk-plan --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
     );
     println!(
-        "  cargo run -- --chunk-plan --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --chunk-size 4194304 --json"
+        "  cargo run -- --chunk-plan --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --chunk-size 4194304 --json"
     );
     println!(
-        "  cargo run -- --session --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+        "  cargo run -- --session --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
     );
     println!(
-        "  cargo run -- --session --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --json"
+        "  cargo run -- --session --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --json"
     );
     println!(
-        "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\""
+        "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
     );
     println!(
-        "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX>\" --json"
+        "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --json"
     );
     println!("  cargo run -- --intent --image <PATH> --target <INDEX>");
     println!("  cargo run -- --intent --image <PATH> --target <INDEX> --json");

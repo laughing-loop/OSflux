@@ -80,6 +80,7 @@ pub struct PhysicalDevice {
     pub interface_type: Option<String>,
     pub media_type: Option<String>,
     pub pnp_device_id: Option<String>,
+    pub serial_number: Option<String>,
     pub contains_system_volume: bool,
     pub access: DeviceAccess,
     pub note: Option<String>,

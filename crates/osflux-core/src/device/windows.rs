@@ -118,6 +118,7 @@ fn probe_physical_device(index: u32) -> Option<PhysicalDevice> {
                 interface_type: None,
                 media_type: None,
                 pnp_device_id: None,
+                serial_number: None,
                 contains_system_volume: false,
                 access: DeviceAccess::Readable,
                 note: None,
@@ -135,6 +136,7 @@ fn probe_physical_device(index: u32) -> Option<PhysicalDevice> {
                     interface_type: None,
                     media_type: None,
                     pnp_device_id: None,
+                    serial_number: None,
                     contains_system_volume: false,
                     access: DeviceAccess::MetadataOnly,
                     note: Some(format!("read access unavailable: {read_error}")),
@@ -151,6 +153,7 @@ fn apply_metadata(device: &mut PhysicalDevice, metadata: &DiskMetadata) {
     device.interface_type = metadata.interface_type.clone();
     device.media_type = metadata.media_type.clone();
     device.pnp_device_id = metadata.pnp_device_id.clone();
+    device.serial_number = metadata.serial_number.clone();
     device.contains_system_volume = metadata.contains_system_volume;
 }
 
@@ -163,6 +166,7 @@ fn device_from_metadata(metadata: &DiskMetadata) -> PhysicalDevice {
         interface_type: metadata.interface_type.clone(),
         media_type: metadata.media_type.clone(),
         pnp_device_id: metadata.pnp_device_id.clone(),
+        serial_number: metadata.serial_number.clone(),
         contains_system_volume: metadata.contains_system_volume,
         access: DeviceAccess::MetadataOnly,
         note: Some("listed by Windows disk metadata; direct handle unavailable".to_string()),
@@ -177,6 +181,7 @@ struct DiskMetadata {
     media_type: Option<String>,
     size_bytes: Option<u64>,
     pnp_device_id: Option<String>,
+    serial_number: Option<String>,
     contains_system_volume: bool,
 }
 
@@ -222,6 +227,7 @@ fn parse_disk_metadata_line(line: &str) -> Option<DiskMetadata> {
         size_bytes: fields[4].trim().parse::<u64>().ok(),
         pnp_device_id: optional_field(fields[5]),
         contains_system_volume: fields[6].trim().eq_ignore_ascii_case("true"),
+        serial_number: fields.get(7).copied().and_then(optional_field),
     })
 }
 
@@ -317,7 +323,8 @@ Get-CimInstance Win32_DiskDrive | Sort-Object Index | ForEach-Object {
         (Clean $disk.MediaType),
         (Clean $disk.Size),
         (Clean $disk.PNPDeviceID),
-        (Clean $containsSystem)
+        (Clean $containsSystem),
+        (Clean $disk.SerialNumber)
     ))
 }
 "#;

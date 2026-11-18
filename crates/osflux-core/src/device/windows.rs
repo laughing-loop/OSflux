@@ -14,6 +14,7 @@ use windows::Win32::System::IO::DeviceIoControl;
 use super::{
     is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceResult, PhysicalDevice,
 };
+use crate::windows_io::{query_overlapped, write_overlapped};
 
 const DEFAULT_SCAN_LIMIT: u32 = 32;
 
@@ -47,12 +48,23 @@ impl BlockDevice for WindowsBlockDevice {
     }
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> DeviceResult<usize> {
-        crate::windows_io::write_overlapped(self.handle, buffer, offset).map_err(|error| {
-            DeviceError::Io {
+        let written =
+            write_overlapped(self.handle, buffer, offset).map_err(|error| DeviceError::Io {
                 operation: "write_at",
                 message: error.to_string(),
-            }
-        })
+            })?;
+
+        if written != buffer.len() {
+            return Err(DeviceError::Io {
+                operation: "write_at",
+                message: format!(
+                    "wrote {written} of {} bytes at offset {offset}",
+                    buffer.len()
+                ),
+            });
+        }
+
+        Ok(written)
     }
 
     fn flush(&self) -> DeviceResult<()> {
@@ -63,7 +75,15 @@ impl BlockDevice for WindowsBlockDevice {
     }
 
     fn size(&self) -> DeviceResult<u64> {
-        query_device_length(self.handle).ok_or_else(|| DeviceError::Io {
+        let length: GET_LENGTH_INFORMATION =
+            query_overlapped(self.handle, IOCTL_DISK_GET_LENGTH_INFO).map_err(|error| {
+                DeviceError::Io {
+                    operation: "size",
+                    message: error.to_string(),
+                }
+            })?;
+
+        u64::try_from(length.Length).map_err(|_| DeviceError::Io {
             operation: "size",
             message: "device length unavailable".to_string(),
         })

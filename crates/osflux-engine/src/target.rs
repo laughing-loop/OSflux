@@ -118,10 +118,15 @@ pub fn assess_target_device(device: &PhysicalDevice) -> TargetAssessment {
     let likely_removable = device.is_likely_removable_target();
     let identity_code = target_identity_code(device);
 
-    if likely_removable {
-        notes.push("Device looks removable or external.".to_string());
+    if device.is_external_disk() {
+        warnings.push(
+            "Device is an external hard disk or SSD; OSflux only writes to removable media such as USB sticks and SD cards."
+                .to_string(),
+        );
+    } else if likely_removable {
+        notes.push("Device reports removable media.".to_string());
     } else {
-        warnings.push("Device is not clearly removable or external.".to_string());
+        warnings.push("Device does not report removable media.".to_string());
     }
 
     if device.access == DeviceAccess::MetadataOnly {
@@ -179,6 +184,14 @@ fn classify_target(
         );
     }
 
+    if device.is_external_disk() {
+        return (
+            TargetAssessmentStatus::Blocked,
+            "target is an external hard disk or SSD",
+            false,
+        );
+    }
+
     if device.size_bytes.is_none() {
         return (
             TargetAssessmentStatus::Blocked,
@@ -198,7 +211,7 @@ fn classify_target(
     if !likely_removable {
         return (
             TargetAssessmentStatus::Blocked,
-            "target is not clearly removable or external",
+            "target does not report removable media",
             false,
         );
     }
@@ -299,10 +312,32 @@ mod tests {
         let assessment = assess_target_device(&target);
 
         assert_eq!(assessment.status, TargetAssessmentStatus::Blocked);
-        assert_eq!(
-            assessment.reason,
-            "target is not clearly removable or external"
-        );
+        assert_eq!(assessment.reason, "target does not report removable media");
+    }
+
+    #[test]
+    fn blocks_external_ssd_connected_over_usb() {
+        let mut target = device(false, true, Some(238 * 1024 * 1024 * 1024));
+        target.model = Some("SAMSUNG SSD PM830 2.5\" 7 USB Device".to_string());
+        target.media_type = Some("External hard disk media".to_string());
+
+        let assessment = assess_target_device(&target);
+
+        assert_eq!(assessment.status, TargetAssessmentStatus::Blocked);
+        assert_eq!(assessment.reason, "target is an external hard disk or SSD");
+        assert!(!assessment.likely_removable);
+        assert!(!assessment.requires_confirmation);
+    }
+
+    #[test]
+    fn blocks_usb_drive_that_does_not_report_removable_media() {
+        let mut target = device(false, true, Some(32 * 1024 * 1024));
+        target.media_type = None;
+
+        let assessment = assess_target_device(&target);
+
+        assert_eq!(assessment.status, TargetAssessmentStatus::Blocked);
+        assert_eq!(assessment.reason, "target does not report removable media");
     }
 
     #[test]

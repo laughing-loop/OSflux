@@ -1314,8 +1314,10 @@ fn print_devices() {
 
         if device.contains_system_volume {
             println!("    warning: contains the Windows system volume; do not write to this drive");
+        } else if device.is_external_disk() {
+            println!("    warning: external hard disk or SSD; OSflux will not write to this drive");
         } else if device.is_likely_removable_target() {
-            println!("    note: likely removable/external target candidate");
+            println!("    note: removable media; possible write target");
         }
 
         if let Some(note) = device.note {

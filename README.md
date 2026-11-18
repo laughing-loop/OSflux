@@ -185,6 +185,7 @@ Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
 The image family command is still read-only. It scans the early image bytes for family markers and classifies images as Windows installer, Linux installer, multi-family image, raw disk image, or unknown.
 The filesystem plan command is still read-only. It combines image family evidence, ISO boot catalog validity, and directory boot assets into one filesystem-aware plan.
+Target assessment only accepts drives that report removable media, such as USB sticks and SD cards. External hard disks and SSDs are always blocked, even when they connect over USB, because they usually hold data. Some high-end USB sticks report themselves as fixed disks and are blocked for the same reason.
 The preflight blocks any image that is larger than the target drive, so an oversized image never reaches the confirmation step.
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 The phrase ends with the target drive's identity code, built from its model, serial number, and Windows device ID. `7F3A` in these examples is only a placeholder: run `--intent` to get the real phrase for your drive. If a different drive takes the same index, the code changes and the old phrase stops matching.

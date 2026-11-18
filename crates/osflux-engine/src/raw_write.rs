@@ -6,8 +6,12 @@ use std::time::Instant;
 
 use osflux_core::device::{BlockDevice, DeviceError, NativeBlockDevice};
 
+use crate::clock::now_unix_seconds;
 use crate::target::{
     assess_target, TargetAssessment, TargetAssessmentError, TargetAssessmentStatus,
+};
+use crate::write_authorization::{
+    AuthorizationProblem, AuthorizationStore, AuthorizationStoreError, ImageIdentity,
 };
 use crate::write_intent::confirmation_phrase;
 use crate::write_mode_selection::{
@@ -31,6 +35,9 @@ pub struct RawWritePlan {
     pub target_size_bytes: u64,
     pub target_identity_code: String,
     pub chunk_size_bytes: u64,
+    /// When the one-time confirmation for this write expires; zero until
+    /// `prepare_raw_write` has checked it.
+    pub authorization_expires_at_unix_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +120,12 @@ pub enum RawWriteError {
     TargetChanged {
         reason: String,
     },
+    /// There is no usable one-time confirmation from `--intent` for this write.
+    Authorization {
+        target_index: u32,
+        problem: AuthorizationProblem,
+    },
+    AuthorizationStore(AuthorizationStoreError),
     Plan(WriteModeSelectionError),
     Target(TargetAssessmentError),
     ImageChanged {
@@ -145,6 +158,11 @@ impl fmt::Display for RawWriteError {
             Self::TargetChanged { reason } => {
                 write!(formatter, "target changed before writing: {reason}")
             }
+            Self::Authorization {
+                target_index,
+                problem,
+            } => formatter.write_str(&problem.describe(*target_index)),
+            Self::AuthorizationStore(error) => write!(formatter, "{error}"),
             Self::Plan(error) => write!(formatter, "write planning failed: {error}"),
             Self::Target(error) => write!(formatter, "target check failed: {error}"),
             Self::ImageChanged {
@@ -176,6 +194,7 @@ pub fn prepare_raw_write(
     target_index: u32,
     supplied_confirmation_phrase: &str,
     chunk_size_bytes: u64,
+    authorizations: &AuthorizationStore,
 ) -> Result<RawWritePlan, RawWriteError> {
     let image_path = image_path.as_ref();
     validate_chunk_size(chunk_size_bytes)?;
@@ -189,13 +208,44 @@ pub fn prepare_raw_write(
     // A second, fresh look at the drive just before it is opened.
     let target = assess_target(target_index).map_err(RawWriteError::Target)?;
 
-    build_raw_write_plan(
+    let plan = build_raw_write_plan(
         image_path,
         &selection,
         &target,
         supplied_confirmation_phrase,
         chunk_size_bytes,
-    )
+    )?;
+
+    // The phrase alone stays valid for as long as the same drive sits at the
+    // same index. The recorded confirmation also ties the write to this
+    // image, a time limit, and a single use.
+    let image = ImageIdentity::read(image_path).map_err(|source| RawWriteError::Image {
+        path: image_path.to_path_buf(),
+        source,
+    })?;
+    let authorization_error = |problem| RawWriteError::Authorization {
+        target_index,
+        problem,
+    };
+    let authorization = authorizations
+        .load(target_index)
+        .map_err(RawWriteError::AuthorizationStore)?
+        .ok_or_else(|| authorization_error(AuthorizationProblem::Missing))?;
+    authorization
+        .check(
+            plan.target_index,
+            &plan.target_path,
+            &plan.target_identity_code,
+            &image,
+            supplied_confirmation_phrase,
+            now_unix_seconds(),
+        )
+        .map_err(authorization_error)?;
+
+    Ok(RawWritePlan {
+        authorization_expires_at_unix_seconds: authorization.expires_at_unix_seconds,
+        ..plan
+    })
 }
 
 pub fn build_raw_write_plan(
@@ -269,15 +319,23 @@ pub fn build_raw_write_plan(
         target_size_bytes,
         target_identity_code: identity_code,
         chunk_size_bytes,
+        authorization_expires_at_unix_seconds: 0,
     })
 }
 
-/// Opens the planned target, which locks and dismounts its volumes, then
-/// writes and verifies the image. The drive is closed before this returns.
+/// Uses up the confirmation, opens the planned target, which locks and
+/// dismounts its volumes, then writes and verifies the image. The drive is
+/// closed before this returns.
 pub fn write_image_to_target(
     plan: &RawWritePlan,
+    authorizations: &AuthorizationStore,
     on_progress: impl FnMut(RawWriteProgress),
 ) -> Result<RawWriteReport, RawWriteError> {
+    // Used up before the drive is touched, so one confirmation can never
+    // erase a drive twice, even when this write fails part-way.
+    authorizations
+        .consume(plan.target_index)
+        .map_err(RawWriteError::AuthorizationStore)?;
     let device = NativeBlockDevice::open(&plan.target_path).map_err(RawWriteError::Open)?;
     execute_raw_write(plan, &device, on_progress)
 }
@@ -454,11 +512,13 @@ fn escape_json_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_write_plan, execute_raw_write, RawWriteError, RawWritePhase, RawWritePlan,
-        RawWriteProgress, RAW_WRITE_ALIGNMENT_BYTES,
+        build_raw_write_plan, execute_raw_write, write_image_to_target, RawWriteError,
+        RawWritePhase, RawWritePlan, RawWriteProgress, RAW_WRITE_ALIGNMENT_BYTES,
     };
+    use crate::clock::now_unix_seconds;
     use crate::image_plan::{ImagePlanStatus, ImageWriteStrategy};
     use crate::target::{TargetAssessment, TargetAssessmentStatus};
+    use crate::write_authorization::{AuthorizationStore, ImageIdentity, WriteAuthorization};
     use crate::write_mode_selection::{
         SelectedWriteMode, WriteModeSelection, WriteModeSelectionStatus,
     };
@@ -649,6 +709,39 @@ mod tests {
     }
 
     #[test]
+    fn uses_up_the_confirmation_even_when_the_drive_cannot_be_opened() {
+        // Drive 250 never exists, so opening it fails without touching a disk.
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let store = AuthorizationStore::new(path.with_extension("authorizations"));
+        let mut write_plan = plan(&path, image.len() as u64, MIB);
+        write_plan.target_index = 250;
+        write_plan.target_path = r"\\.\PhysicalDrive250".to_string();
+        store
+            .save(&WriteAuthorization {
+                target_index: 250,
+                target_path: write_plan.target_path.clone(),
+                target_identity_code: "7F3A".to_string(),
+                confirmation_phrase: "OSFLUX ERASE TARGET 250 7F3A".to_string(),
+                image: ImageIdentity::read(&path).unwrap(),
+                issued_at_unix_seconds: now_unix_seconds(),
+                expires_at_unix_seconds: now_unix_seconds() + 600,
+            })
+            .unwrap();
+
+        let first = write_image_to_target(&write_plan, &store, |_| {}).unwrap_err();
+        let second = write_image_to_target(&write_plan, &store, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(store.directory());
+
+        assert!(matches!(first, RawWriteError::Open(_)), "{first}");
+        assert!(
+            matches!(second, RawWriteError::AuthorizationStore(_)),
+            "{second}"
+        );
+    }
+
+    #[test]
     fn plans_a_raw_write_for_a_confirmed_removable_target() {
         let plan = build_raw_write_plan(
             Path::new("disk.img"),
@@ -789,6 +882,7 @@ mod tests {
             target_size_bytes: target_size,
             target_identity_code: "7F3A".to_string(),
             chunk_size_bytes: 4 * MIB,
+            authorization_expires_at_unix_seconds: 0,
         }
     }
 

@@ -342,6 +342,7 @@ mod tests {
                 WritePreflightStatus::NeedsConfirmation
             },
             preflight_reason: "preflight result".to_string(),
+            authorization_expires_at_unix_seconds: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

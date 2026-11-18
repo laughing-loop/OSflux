@@ -1,4 +1,5 @@
 pub mod chunk_plan;
+pub mod clock;
 mod fingerprint;
 pub mod image_family;
 pub mod image_plan;
@@ -9,6 +10,7 @@ pub mod preflight;
 pub mod progress;
 pub mod raw_write;
 pub mod target;
+pub mod write_authorization;
 pub mod write_command;
 pub mod write_intent;
 pub mod write_mode_selection;
@@ -21,6 +23,7 @@ pub use chunk_plan::{
     build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
     DEFAULT_CHUNK_SIZE_BYTES,
 };
+pub use clock::{format_unix_utc, now_unix_seconds};
 pub use image_family::{
     build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
     ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,
@@ -58,6 +61,11 @@ pub use raw_write::{
 pub use target::{
     assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,
     TargetAssessmentStatus,
+};
+pub use write_authorization::{
+    record_write_authorization, state_directory, AuthorizationProblem, AuthorizationStore,
+    AuthorizationStoreError, ImageIdentity, WriteAuthorization, AUTHORIZATION_LIFETIME_SECONDS,
+    STATE_DIR_ENV,
 };
 pub use write_command::{
     build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,

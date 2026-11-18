@@ -18,6 +18,8 @@ pub struct WriteIntent {
     pub target_identity_code: Option<String>,
     pub preflight_status: WritePreflightStatus,
     pub preflight_reason: String,
+    /// Set once a one-time confirmation has been recorded for this intent.
+    pub authorization_expires_at_unix_seconds: Option<u64>,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -38,6 +40,7 @@ impl WriteIntent {
                 "  \"targetIdentityCode\": {},\n",
                 "  \"preflightStatus\": \"{}\",\n",
                 "  \"preflightReason\": \"{}\",\n",
+                "  \"authorizationExpiresAtUnixSeconds\": {},\n",
                 "  \"notes\": {},\n",
                 "  \"warnings\": {}\n",
                 "}}\n"
@@ -53,6 +56,7 @@ impl WriteIntent {
             optional_string_json(self.target_identity_code.as_deref()),
             self.preflight_status.as_str(),
             escape_json_string(&self.preflight_reason),
+            optional_number_json(self.authorization_expires_at_unix_seconds),
             string_array_json(&self.notes),
             string_array_json(&self.warnings),
         )
@@ -108,7 +112,7 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
     let mut notes = Vec::new();
     notes.push("Write intent is read-only; no device writes were attempted.".to_string());
     notes.push(
-        "Future write execution must require the exact confirmation phrase before opening the target for write access."
+        "--write --execute needs this exact phrase, and the confirmation works for one write within 10 minutes."
             .to_string(),
     );
     notes.push(
@@ -136,6 +140,7 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         target_identity_code: preflight.target_identity_code.clone(),
         preflight_status: preflight.status,
         preflight_reason: preflight.reason.clone(),
+        authorization_expires_at_unix_seconds: None,
         notes,
         warnings,
     }

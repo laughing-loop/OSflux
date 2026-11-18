@@ -1,16 +1,17 @@
 use std::io::Write;
 
 use osflux_engine::{
-    assess_target, build_image_plan_report, create_write_intent, detect_image_family, list_devices,
-    plan_image, plan_iso_filesystem, plan_write_chunks, prepare_raw_write, prepare_write_command,
-    prepare_write_session, preview_write_progress, run_write_preflight, select_write_mode,
-    write_image_to_target, ChunkPlan, ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport,
-    ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport,
-    ProgressPreview, ProgressPreviewStatus, RawWriteError, RawWritePhase, RawWritePlan,
-    RawWriteProgress, RawWriteReport, TargetAssessment, TargetAssessmentStatus, WriteCommandPlan,
-    WriteCommandStatus, WriteIntent, WriteIntentStatus, WriteModeSelection,
-    WriteModeSelectionStatus, WritePreflight, WritePreflightStatus, WriteSession,
-    WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
+    assess_target, build_image_plan_report, create_write_intent, detect_image_family,
+    format_unix_utc, list_devices, now_unix_seconds, plan_image, plan_iso_filesystem,
+    plan_write_chunks, prepare_raw_write, prepare_write_command, prepare_write_session,
+    preview_write_progress, record_write_authorization, run_write_preflight, select_write_mode,
+    write_image_to_target, AuthorizationStore, ChunkPlan, ChunkPlanStatus, Engine, EngineConfig,
+    ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
+    IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
+    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
+    TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
+    WriteModeSelection, WriteModeSelectionStatus, WritePreflight, WritePreflightStatus,
+    WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 /// Exit code for a command that ran but whose result is blocked or needs inspection.
@@ -917,7 +918,14 @@ fn run_raw_write(
         std::process::exit(2);
     };
 
-    let plan = match prepare_raw_write(image, target, confirmation_phrase, chunk_size) {
+    let authorizations = open_authorization_store();
+    let plan = match prepare_raw_write(
+        image,
+        target,
+        confirmation_phrase,
+        chunk_size,
+        &authorizations,
+    ) {
         Ok(plan) => plan,
         Err(error) => exit_with_raw_write_error(error),
     };
@@ -927,7 +935,7 @@ fn run_raw_write(
     }
 
     let mut progress = RawWriteProgressPrinter::new(output);
-    let result = write_image_to_target(&plan, |event| progress.update(event));
+    let result = write_image_to_target(&plan, &authorizations, |event| progress.update(event));
     progress.finish();
 
     match result {
@@ -936,6 +944,17 @@ fn run_raw_write(
             OutputFormat::Json => print!("{}", report.to_json_pretty()),
         },
         Err(error) => exit_with_raw_write_error(error),
+    }
+}
+
+fn open_authorization_store() -> AuthorizationStore {
+    match AuthorizationStore::default_location() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("OSflux could not find where to keep write confirmations.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -988,6 +1007,7 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
         RawWriteError::InvalidChunkSize { .. } => 2,
         RawWriteError::Blocked { .. }
         | RawWriteError::ConfirmationMismatch { .. }
+        | RawWriteError::Authorization { .. }
         | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
         _ => 1,
     };
@@ -1176,8 +1196,22 @@ fn exit_unless_ready(ready: bool) {
 
 fn print_write_intent(image: &str, target: u32, output: OutputFormat) {
     match create_write_intent(image, target) {
-        Ok(intent) => {
+        Ok(mut intent) => {
             let ready = intent.status == WriteIntentStatus::ConfirmationRequired;
+            if ready {
+                let authorizations = open_authorization_store();
+                if let Err(error) = record_write_authorization(
+                    &mut intent,
+                    image,
+                    &authorizations,
+                    now_unix_seconds(),
+                ) {
+                    eprintln!("OSflux could not record the confirmation.");
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+
             match output {
                 OutputFormat::Text => print_write_intent_report(intent),
                 OutputFormat::Json => print!("{}", intent.to_json_pretty()),
@@ -1221,6 +1255,13 @@ fn print_write_intent_report(intent: WriteIntent) {
         println!("confirmation phrase: {confirmation_phrase}");
     } else {
         println!("confirmation phrase: unavailable");
+    }
+
+    if let Some(expires_at) = intent.authorization_expires_at_unix_seconds {
+        println!(
+            "confirmation valid: for one write, until {}",
+            format_unix_utc(expires_at)
+        );
     }
 
     if !intent.notes.is_empty() {

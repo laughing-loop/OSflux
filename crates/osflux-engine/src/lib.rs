@@ -7,6 +7,7 @@ pub mod iso;
 pub mod iso_filesystem_plan;
 pub mod preflight;
 pub mod progress;
+pub mod raw_write;
 pub mod target;
 pub mod write_command;
 pub mod write_intent;
@@ -49,6 +50,11 @@ pub use progress::{
     build_progress_preview, preview_write_progress, ProgressEvent, ProgressPreview,
     ProgressPreviewStatus,
 };
+pub use raw_write::{
+    build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport,
+    MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
+};
 pub use target::{
     assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,
     TargetAssessmentStatus,
@@ -56,7 +62,9 @@ pub use target::{
 pub use write_command::{
     build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,
 };
-pub use write_intent::{build_write_intent, create_write_intent, WriteIntent, WriteIntentStatus};
+pub use write_intent::{
+    build_write_intent, confirmation_phrase, create_write_intent, WriteIntent, WriteIntentStatus,
+};
 pub use write_mode_selection::{
     build_write_mode_selection, select_write_mode, SelectedWriteMode, WriteModeSelection,
     WriteModeSelectionError, WriteModeSelectionStatus,

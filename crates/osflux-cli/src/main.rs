@@ -2,11 +2,12 @@ use std::io::Write;
 
 use osflux_engine::{
     assess_target, build_image_plan_report, create_write_intent, detect_image_family, list_devices,
-    plan_image, plan_iso_filesystem, plan_write_chunks, prepare_write_command,
+    plan_image, plan_iso_filesystem, plan_write_chunks, prepare_raw_write, prepare_write_command,
     prepare_write_session, preview_write_progress, run_write_preflight, select_write_mode,
-    ChunkPlan, ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport, ImageFamilyStatus,
-    ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport, ProgressPreview,
-    ProgressPreviewStatus, TargetAssessment, TargetAssessmentStatus, WriteCommandPlan,
+    write_image_to_target, ChunkPlan, ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport,
+    ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport,
+    ProgressPreview, ProgressPreviewStatus, RawWriteError, RawWritePhase, RawWritePlan,
+    RawWriteProgress, RawWriteReport, TargetAssessment, TargetAssessmentStatus, WriteCommandPlan,
     WriteCommandStatus, WriteIntent, WriteIntentStatus, WriteModeSelection,
     WriteModeSelectionStatus, WritePreflight, WritePreflightStatus, WriteSession,
     WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
@@ -41,8 +42,16 @@ fn main() {
             image,
             target,
             confirm,
+            chunk_size,
+            execute,
             output,
-        } => print_write_command(&image, target, confirm.as_deref(), output),
+        } => {
+            if execute {
+                run_raw_write(&image, target, confirm.as_deref(), chunk_size, output);
+            } else {
+                print_write_command(&image, target, confirm.as_deref(), output);
+            }
+        }
         Command::Session {
             image,
             target,
@@ -106,6 +115,8 @@ enum Command {
         image: String,
         target: u32,
         confirm: Option<String>,
+        chunk_size: u64,
+        execute: bool,
         output: OutputFormat,
     },
     Session {
@@ -160,6 +171,7 @@ where
     let mut preflight_requested = false;
     let mut intent_requested = false;
     let mut write_requested = false;
+    let mut execute_requested = false;
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
@@ -184,6 +196,8 @@ where
             intent_requested = true;
         } else if arg == "--write" {
             write_requested = true;
+        } else if arg == "--execute" {
+            execute_requested = true;
         } else if arg == "--session" {
             session_requested = true;
         } else if arg == "--chunk-plan" {
@@ -277,6 +291,15 @@ where
         index += 1;
     }
 
+    let other_mode_requested = mode_selection_requested
+        || progress_preview_requested
+        || chunk_plan_requested
+        || session_requested;
+    if execute_requested && (!write_requested || other_mode_requested) {
+        eprintln!("--execute can only be used with --write");
+        std::process::exit(2);
+    }
+
     if mode_selection_requested {
         let Some(image) = preflight_image else {
             eprintln!("missing --image <PATH> for --select-mode");
@@ -366,6 +389,8 @@ where
             image,
             target,
             confirm: confirmation_phrase,
+            chunk_size: chunk_size_bytes,
+            execute: execute_requested,
             output,
         };
     }
@@ -880,6 +905,154 @@ fn print_write_session_report(session: WriteSession) {
     }
 }
 
+fn run_raw_write(
+    image: &str,
+    target: u32,
+    confirmation_phrase: Option<&str>,
+    chunk_size: u64,
+    output: OutputFormat,
+) {
+    let Some(confirmation_phrase) = confirmation_phrase else {
+        eprintln!("--write --execute needs --confirm with the phrase printed by --intent");
+        std::process::exit(2);
+    };
+
+    let plan = match prepare_raw_write(image, target, confirmation_phrase, chunk_size) {
+        Ok(plan) => plan,
+        Err(error) => exit_with_raw_write_error(error),
+    };
+
+    if let OutputFormat::Text = output {
+        print_raw_write_plan(&plan);
+    }
+
+    let mut progress = RawWriteProgressPrinter::new(output);
+    let result = write_image_to_target(&plan, |event| progress.update(event));
+    progress.finish();
+
+    match result {
+        Ok(report) => match output {
+            OutputFormat::Text => print_raw_write_report(&report),
+            OutputFormat::Json => print!("{}", report.to_json_pretty()),
+        },
+        Err(error) => exit_with_raw_write_error(error),
+    }
+}
+
+fn print_raw_write_plan(plan: &RawWritePlan) {
+    println!("OSflux raw write");
+    println!("session id: {}", plan.session_id);
+    println!(
+        "image: {} ({})",
+        plan.image_path.display(),
+        format_size(plan.image_size_bytes)
+    );
+    println!("target index: {}", plan.target_index);
+    println!("target path: {}", plan.target_path);
+    println!(
+        "target model: {}",
+        plan.target_model.as_deref().unwrap_or("unknown")
+    );
+    println!("target size: {}", format_size(plan.target_size_bytes));
+    println!("target identity code: {}", plan.target_identity_code);
+    println!("Erasing the target and writing the image. Do not unplug the drive.");
+}
+
+fn print_raw_write_report(report: &RawWriteReport) {
+    println!("status: written");
+    println!(
+        "wrote {} in {}",
+        format_size(report.bytes_written),
+        format_rate(report.bytes_written, report.write_millis)
+    );
+    println!(
+        "verified {} in {}",
+        format_size(report.bytes_verified),
+        format_rate(report.bytes_verified, report.verify_millis)
+    );
+    println!("The drive can be removed.");
+}
+
+fn format_rate(bytes: u64, millis: u64) -> String {
+    let seconds = millis as f64 / 1000.0;
+    if seconds <= 0.0 {
+        return format!("{seconds:.1} s");
+    }
+
+    let mib_per_second = bytes as f64 / (1024.0 * 1024.0) / seconds;
+    format!("{seconds:.1} s ({mib_per_second:.1} MiB/s)")
+}
+
+fn exit_with_raw_write_error(error: RawWriteError) -> ! {
+    let exit_code = match error {
+        RawWriteError::InvalidChunkSize { .. } => 2,
+        RawWriteError::Blocked { .. } | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
+        _ => 1,
+    };
+
+    eprintln!("OSflux did not write the image.");
+    eprintln!("{error}");
+    match error {
+        RawWriteError::Open(_) => eprintln!(
+            "Run PowerShell as Administrator, and close any programs or windows using the drive."
+        ),
+        RawWriteError::Device(_) | RawWriteError::VerifyMismatch { .. } => eprintln!(
+            "The drive may now hold a partial or damaged image. Write it again, or try another drive."
+        ),
+        _ => {}
+    }
+
+    let _ = std::io::stdout().flush();
+    std::process::exit(exit_code);
+}
+
+/// Shows progress on one line, redrawn only when the whole percentage changes.
+struct RawWriteProgressPrinter {
+    enabled: bool,
+    last: Option<(RawWritePhase, u64)>,
+}
+
+impl RawWriteProgressPrinter {
+    fn new(output: OutputFormat) -> Self {
+        Self {
+            enabled: matches!(output, OutputFormat::Text),
+            last: None,
+        }
+    }
+
+    fn update(&mut self, event: RawWriteProgress) {
+        if !self.enabled {
+            return;
+        }
+
+        let percent = (event.completed_bytes * 100)
+            .checked_div(event.total_bytes)
+            .unwrap_or(100);
+        match self.last {
+            Some((phase, last_percent)) if phase == event.phase && last_percent == percent => {
+                return
+            }
+            Some((phase, _)) if phase != event.phase => eprintln!(),
+            _ => {}
+        }
+
+        eprint!(
+            "\r{}: {percent:>3}% ({} of {})",
+            event.phase.as_str(),
+            format_size(event.completed_bytes),
+            format_size(event.total_bytes)
+        );
+        let _ = std::io::stderr().flush();
+        self.last = Some((event.phase, percent));
+    }
+
+    fn finish(&mut self) {
+        if self.enabled && self.last.is_some() {
+            eprintln!();
+        }
+    }
+}
+
 fn print_write_command(
     image: &str,
     target: u32,
@@ -1377,6 +1550,9 @@ fn print_help() {
     println!(
         "  cargo run -- --write --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --json"
     );
+    println!(
+        "  cargo run -- --write --image <PATH.img> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\" --execute"
+    );
     println!("  cargo run -- --intent --image <PATH> --target <INDEX>");
     println!("  cargo run -- --intent --image <PATH> --target <INDEX> --json");
     println!("  cargo run -- --preflight --image <PATH> --target <INDEX>");
@@ -1398,6 +1574,9 @@ fn print_help() {
     println!("  --chunk-plan      Prepare a dry-run chunk plan for progress scheduling.");
     println!("  --session         Prepare a locked dry-run write session.");
     println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
+    println!(
+        "  --execute         With --write: erase the target and write a raw disk image, then verify it."
+    );
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
     println!("  --detect-family   Detect image family markers without writing.");
@@ -1413,7 +1592,9 @@ fn print_help() {
     println!(
         "  --confirm         Exact confirmation phrase for --select-mode, --progress-preview, --chunk-plan, --session, or --write."
     );
-    println!("  --chunk-size      Chunk size in bytes for --select-mode, --progress-preview, or --chunk-plan.");
+    println!(
+        "  --chunk-size      Chunk size in bytes for --select-mode, --progress-preview, --chunk-plan, or --write --execute."
+    );
     println!("  --assess-target   Assess a physical drive index without writing to it.");
     println!("  --plan-image      Inspect an ISO or disk image and show the planned mode.");
     println!("  --json            Print command output as JSON when supported.");

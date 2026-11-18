@@ -13,6 +13,9 @@ pub struct WriteIntent {
     pub image_source: String,
     pub target_index: u32,
     pub target_path: String,
+    pub target_model: Option<String>,
+    pub target_size_bytes: Option<u64>,
+    pub target_identity_code: Option<String>,
     pub preflight_status: WritePreflightStatus,
     pub preflight_reason: String,
     pub notes: Vec<String>,
@@ -30,6 +33,9 @@ impl WriteIntent {
                 "  \"imageSource\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
+                "  \"targetModel\": {},\n",
+                "  \"targetSizeBytes\": {},\n",
+                "  \"targetIdentityCode\": {},\n",
                 "  \"preflightStatus\": \"{}\",\n",
                 "  \"preflightReason\": \"{}\",\n",
                 "  \"notes\": {},\n",
@@ -42,6 +48,9 @@ impl WriteIntent {
             escape_json_string(&self.image_source),
             self.target_index,
             escape_json_string(&self.target_path),
+            optional_string_json(self.target_model.as_deref()),
+            optional_number_json(self.target_size_bytes),
+            optional_string_json(self.target_identity_code.as_deref()),
             self.preflight_status.as_str(),
             escape_json_string(&self.preflight_reason),
             string_array_json(&self.notes),
@@ -82,10 +91,14 @@ pub fn create_write_intent(
 
 pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
     let status = classify_intent_status(preflight.status);
-    let confirmation_phrase = if status == WriteIntentStatus::ConfirmationRequired {
-        Some(format!("OSFLUX ERASE TARGET {}", preflight.target_index))
-    } else {
-        None
+    // The identity code ties the phrase to this drive, so a phrase confirmed
+    // for one drive stops matching if a different drive takes the same index.
+    let confirmation_phrase = match (status, preflight.target_identity_code.as_deref()) {
+        (WriteIntentStatus::ConfirmationRequired, Some(identity_code)) => Some(format!(
+            "OSFLUX ERASE TARGET {} {identity_code}",
+            preflight.target_index
+        )),
+        _ => None,
     };
 
     let mut notes = Vec::new();
@@ -94,7 +107,10 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         "Future write execution must require the exact confirmation phrase before opening the target for write access."
             .to_string(),
     );
-    notes.push("Re-run preflight if the target list changes before writing.".to_string());
+    notes.push(
+        "The phrase includes the target's identity code, so it stops matching if a different drive takes this index."
+            .to_string(),
+    );
 
     let mut warnings = preflight.warnings.clone();
     if status == WriteIntentStatus::ConfirmationRequired {
@@ -111,6 +127,9 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         image_source: preflight.image_source.clone(),
         target_index: preflight.target_index,
         target_path: preflight.target_path.clone(),
+        target_model: preflight.target_model.clone(),
+        target_size_bytes: preflight.target_size_bytes,
+        target_identity_code: preflight.target_identity_code.clone(),
         preflight_status: preflight.status,
         preflight_reason: preflight.reason.clone(),
         notes,
@@ -147,6 +166,13 @@ fn intent_reason(status: WritePreflightStatus) -> &'static str {
 fn optional_string_json(value: Option<&str>) -> String {
     match value {
         Some(value) => format!("\"{}\"", escape_json_string(value)),
+        None => "null".to_string(),
+    }
+}
+
+fn optional_number_json(value: Option<u64>) -> String {
+    match value {
+        Some(value) => value.to_string(),
         None => "null".to_string(),
     }
 }
@@ -198,8 +224,29 @@ mod tests {
         assert_eq!(intent.status, WriteIntentStatus::ConfirmationRequired);
         assert_eq!(
             intent.confirmation_phrase.as_deref(),
-            Some("OSFLUX ERASE TARGET 2")
+            Some("OSFLUX ERASE TARGET 2 7F3A")
         );
+    }
+
+    #[test]
+    fn phrase_changes_when_a_different_drive_takes_the_index() {
+        let mut other_drive = preflight(WritePreflightStatus::NeedsConfirmation);
+        other_drive.target_identity_code = Some("0B21".to_string());
+
+        let first = build_write_intent(&preflight(WritePreflightStatus::NeedsConfirmation));
+        let second = build_write_intent(&other_drive);
+
+        assert_ne!(first.confirmation_phrase, second.confirmation_phrase);
+    }
+
+    #[test]
+    fn withholds_phrase_when_target_identity_is_unknown() {
+        let mut unknown_drive = preflight(WritePreflightStatus::NeedsConfirmation);
+        unknown_drive.target_identity_code = None;
+
+        let intent = build_write_intent(&unknown_drive);
+
+        assert_eq!(intent.confirmation_phrase, None);
     }
 
     #[test]
@@ -238,7 +285,8 @@ mod tests {
         let json = intent.to_json_pretty();
 
         assert!(json.contains("\"status\": \"confirmation-required\""));
-        assert!(json.contains("\"confirmationPhrase\": \"OSFLUX ERASE TARGET 2\""));
+        assert!(json.contains("\"confirmationPhrase\": \"OSFLUX ERASE TARGET 2 7F3A\""));
+        assert!(json.contains("\"targetModel\": \"Test Drive\""));
         assert!(json.contains("\"targetIndex\": 2"));
     }
 
@@ -252,6 +300,9 @@ mod tests {
             image_write_strategy: "iso-filesystem-boot-setup".to_string(),
             target_index: 2,
             target_path: "\\\\.\\PhysicalDrive2".to_string(),
+            target_model: Some("Test Drive".to_string()),
+            target_size_bytes: Some(32 * 1024 * 1024),
+            target_identity_code: Some("7F3A".to_string()),
             target_status: TargetAssessmentStatus::NeedsConfirmation,
             target_reason: "target looks eligible but still requires explicit confirmation"
                 .to_string(),

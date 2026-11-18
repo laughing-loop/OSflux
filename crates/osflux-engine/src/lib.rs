@@ -1,4 +1,5 @@
 pub mod chunk_plan;
+mod fingerprint;
 pub mod image_family;
 pub mod image_plan;
 pub mod image_report;

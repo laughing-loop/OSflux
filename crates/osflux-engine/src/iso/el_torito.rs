@@ -8,6 +8,7 @@ const ISO_SECTOR_SIZE: u64 = 2048;
 const VOLUME_DESCRIPTOR_START_SECTOR: u64 = 16;
 const VOLUME_DESCRIPTOR_SIZE: usize = 2048;
 const VOLUME_DESCRIPTOR_IDENTIFIER: &[u8; 5] = b"CD001";
+const MAX_VOLUME_DESCRIPTORS: u64 = 32;
 const BOOT_RECORD_DESCRIPTOR_TYPE: u8 = 0;
 const TERMINATOR_DESCRIPTOR_TYPE: u8 = 255;
 const EL_TORITO_SYSTEM_ID: &[u8] = b"EL TORITO SPECIFICATION";
@@ -221,10 +222,19 @@ pub fn inspect_boot_metadata(path: impl AsRef<Path>) -> std::io::Result<IsoBootM
 }
 
 fn find_el_torito_catalog_lba(file: &mut File) -> std::io::Result<Option<u32>> {
-    for sector in VOLUME_DESCRIPTOR_START_SECTOR.. {
+    let descriptor_sectors =
+        VOLUME_DESCRIPTOR_START_SECTOR..VOLUME_DESCRIPTOR_START_SECTOR + MAX_VOLUME_DESCRIPTORS;
+
+    for sector in descriptor_sectors {
         let Some(descriptor) = read_sector_optional(file, sector)? else {
             return Ok(None);
         };
+
+        // Volume descriptors are recorded in consecutive sectors, so the first
+        // sector without the identifier ends the set.
+        if !has_volume_descriptor_identifier(&descriptor) {
+            return Ok(None);
+        }
 
         if !is_volume_descriptor(&descriptor) {
             continue;
@@ -437,8 +447,12 @@ fn is_empty_catalog_entry(entry: &[u8; CATALOG_ENTRY_SIZE]) -> bool {
     entry.iter().all(|byte| *byte == 0)
 }
 
+fn has_volume_descriptor_identifier(descriptor: &[u8; VOLUME_DESCRIPTOR_SIZE]) -> bool {
+    &descriptor[1..6] == VOLUME_DESCRIPTOR_IDENTIFIER
+}
+
 fn is_volume_descriptor(descriptor: &[u8; VOLUME_DESCRIPTOR_SIZE]) -> bool {
-    &descriptor[1..6] == VOLUME_DESCRIPTOR_IDENTIFIER && descriptor[6] == 1
+    has_volume_descriptor_identifier(descriptor) && descriptor[6] == 1
 }
 
 fn is_validation_entry_valid(entry: &[u8; CATALOG_ENTRY_SIZE]) -> bool {
@@ -620,6 +634,39 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    #[test]
+    fn ignores_boot_record_after_descriptor_set_ends() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_descriptor(&path, 16, 1, |_| {});
+        write_boot_record_descriptor_at(&path, 18, 30);
+        write_descriptor(&path, 19, 255, |_| {});
+        write_catalog(&path, 30, 0xEF, 34);
+        write_boot_image(&path, 34, 2048);
+
+        let metadata = inspect_boot_metadata(&path).unwrap();
+
+        assert!(metadata.el_torito.is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn skips_newer_descriptor_versions_inside_descriptor_set() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_descriptor(&path, 16, 1, |_| {});
+        write_descriptor(&path, 17, 2, |descriptor| descriptor[6] = 2);
+        write_boot_record_descriptor_at(&path, 18, 30);
+        write_descriptor(&path, 19, 255, |_| {});
+        write_catalog(&path, 30, 0xEF, 34);
+        write_boot_image(&path, 34, 2048);
+
+        let metadata = inspect_boot_metadata(&path).unwrap();
+
+        assert_eq!(metadata.el_torito.as_ref().unwrap().catalog_lba, 30);
+
+        let _ = fs::remove_file(path);
+    }
+
     pub fn write_bootable_iso(path: &Path, catalog_lba: u32, load_rba: u32) {
         write_primary_descriptor_only(path);
         write_boot_record_descriptor(path, catalog_lba);
@@ -675,7 +722,11 @@ mod tests {
     }
 
     fn write_boot_record_descriptor(path: &Path, catalog_lba: u32) {
-        write_descriptor(path, 17, 0, |descriptor| {
+        write_boot_record_descriptor_at(path, 17, catalog_lba);
+    }
+
+    fn write_boot_record_descriptor_at(path: &Path, sector: u64, catalog_lba: u32) {
+        write_descriptor(path, sector, 0, |descriptor| {
             write_ascii_field(&mut descriptor[7..39], b"EL TORITO SPECIFICATION");
             descriptor[71..75].copy_from_slice(&catalog_lba.to_le_bytes());
         });

@@ -11,6 +11,7 @@ pub struct WriteCommandPlan {
     pub image_source: String,
     pub target_index: u32,
     pub target_path: String,
+    pub target_identity_code: Option<String>,
     pub intent_status: WriteIntentStatus,
     pub expected_confirmation_phrase: Option<String>,
     pub supplied_confirmation_phrase_present: bool,
@@ -31,6 +32,7 @@ impl WriteCommandPlan {
                 "  \"imageSource\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
+                "  \"targetIdentityCode\": {},\n",
                 "  \"intentStatus\": \"{}\",\n",
                 "  \"expectedConfirmationPhrase\": {},\n",
                 "  \"suppliedConfirmationPhrasePresent\": {},\n",
@@ -46,6 +48,7 @@ impl WriteCommandPlan {
             escape_json_string(&self.image_source),
             self.target_index,
             escape_json_string(&self.target_path),
+            optional_string_json(self.target_identity_code.as_deref()),
             self.intent_status.as_str(),
             optional_string_json(self.expected_confirmation_phrase.as_deref()),
             self.supplied_confirmation_phrase_present,
@@ -135,6 +138,7 @@ pub fn build_write_command_plan(
         image_source: intent.image_source.clone(),
         target_index: intent.target_index,
         target_path: intent.target_path.clone(),
+        target_identity_code: intent.target_identity_code.clone(),
         intent_status: intent.status,
         expected_confirmation_phrase: intent.confirmation_phrase.clone(),
         supplied_confirmation_phrase_present,
@@ -241,7 +245,7 @@ mod tests {
     fn accepts_exact_confirmation_phrase_as_dry_run() {
         let plan = build_write_command_plan(
             &intent(WriteIntentStatus::ConfirmationRequired),
-            Some("OSFLUX ERASE TARGET 2"),
+            Some("OSFLUX ERASE TARGET 2 7F3A"),
         );
 
         assert_eq!(plan.status, WriteCommandStatus::ReadyDryRun);
@@ -272,10 +276,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_phrase_confirmed_for_a_different_drive() {
+        let plan = build_write_command_plan(
+            &intent(WriteIntentStatus::ConfirmationRequired),
+            Some("OSFLUX ERASE TARGET 2 0B21"),
+        );
+
+        assert_eq!(plan.status, WriteCommandStatus::ConfirmationMismatch);
+    }
+
+    #[test]
+    fn rejects_phrase_without_identity_code() {
+        let plan = build_write_command_plan(
+            &intent(WriteIntentStatus::ConfirmationRequired),
+            Some("OSFLUX ERASE TARGET 2"),
+        );
+
+        assert_eq!(plan.status, WriteCommandStatus::ConfirmationMismatch);
+    }
+
+    #[test]
     fn blocks_when_intent_is_blocked() {
         let plan = build_write_command_plan(
             &intent(WriteIntentStatus::Blocked),
-            Some("OSFLUX ERASE TARGET 2"),
+            Some("OSFLUX ERASE TARGET 2 7F3A"),
         );
 
         assert_eq!(plan.status, WriteCommandStatus::Blocked);
@@ -288,7 +312,7 @@ mod tests {
     fn serializes_write_command_plan_as_json() {
         let plan = build_write_command_plan(
             &intent(WriteIntentStatus::ConfirmationRequired),
-            Some("OSFLUX ERASE TARGET 2"),
+            Some("OSFLUX ERASE TARGET 2 7F3A"),
         );
         let json = plan.to_json_pretty();
 
@@ -302,13 +326,16 @@ mod tests {
             status,
             reason: status.as_str().to_string(),
             confirmation_phrase: if status == WriteIntentStatus::ConfirmationRequired {
-                Some("OSFLUX ERASE TARGET 2".to_string())
+                Some("OSFLUX ERASE TARGET 2 7F3A".to_string())
             } else {
                 None
             },
             image_source: "C:\\images\\sample.iso".to_string(),
             target_index: 2,
             target_path: "\\\\.\\PhysicalDrive2".to_string(),
+            target_model: Some("Test Drive".to_string()),
+            target_size_bytes: Some(32 * 1024 * 1024),
+            target_identity_code: Some("7F3A".to_string()),
             preflight_status: if status == WriteIntentStatus::Blocked {
                 WritePreflightStatus::Blocked
             } else {

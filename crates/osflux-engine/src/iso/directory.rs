@@ -7,6 +7,7 @@ const ISO_SECTOR_SIZE: u64 = 2048;
 const VOLUME_DESCRIPTOR_START_SECTOR: u64 = 16;
 const VOLUME_DESCRIPTOR_SIZE: usize = 2048;
 const VOLUME_DESCRIPTOR_IDENTIFIER: &[u8; 5] = b"CD001";
+const MAX_VOLUME_DESCRIPTORS: u64 = 32;
 const PRIMARY_VOLUME_DESCRIPTOR_TYPE: u8 = 1;
 const TERMINATOR_DESCRIPTOR_TYPE: u8 = 255;
 const ROOT_DIRECTORY_RECORD_RANGE: std::ops::Range<usize> = 156..190;
@@ -176,10 +177,19 @@ struct ParsedDirectoryRecord {
 }
 
 fn find_root_directory_record(file: &mut File) -> std::io::Result<Option<ParsedDirectoryRecord>> {
-    for sector in VOLUME_DESCRIPTOR_START_SECTOR.. {
+    let descriptor_sectors =
+        VOLUME_DESCRIPTOR_START_SECTOR..VOLUME_DESCRIPTOR_START_SECTOR + MAX_VOLUME_DESCRIPTORS;
+
+    for sector in descriptor_sectors {
         let Some(descriptor) = read_sector_optional(file, sector)? else {
             return Ok(None);
         };
+
+        // Volume descriptors are recorded in consecutive sectors, so the first
+        // sector without the identifier ends the set.
+        if !has_volume_descriptor_identifier(&descriptor) {
+            return Ok(None);
+        }
 
         if !is_volume_descriptor(&descriptor) {
             continue;
@@ -360,8 +370,12 @@ fn next_sector_offset(offset: usize) -> usize {
     ((offset / sector_size) + 1) * sector_size
 }
 
+fn has_volume_descriptor_identifier(descriptor: &[u8; VOLUME_DESCRIPTOR_SIZE]) -> bool {
+    &descriptor[1..6] == VOLUME_DESCRIPTOR_IDENTIFIER
+}
+
 fn is_volume_descriptor(descriptor: &[u8; VOLUME_DESCRIPTOR_SIZE]) -> bool {
-    &descriptor[1..6] == VOLUME_DESCRIPTOR_IDENTIFIER && descriptor[6] == 1
+    has_volume_descriptor_identifier(descriptor) && descriptor[6] == 1
 }
 
 fn read_sector_optional(
@@ -438,20 +452,45 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    fn write_iso_with_boot_paths(path: &Path) {
+    #[test]
+    fn ignores_primary_descriptor_after_descriptor_set_ends() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        write_primary_descriptor(&path, 40, 50);
+        write_directory(
+            &path,
+            50,
+            &[
+                directory_record(&[0], 50, ISO_SECTOR_SIZE as u32, true),
+                directory_record(&[1], 50, ISO_SECTOR_SIZE as u32, true),
+                directory_record(b"BOOTMGR;1", 51, 16, false),
+            ],
+        );
+
+        let metadata = inspect_directory_metadata(&path).unwrap();
+
+        assert!(metadata.is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    fn write_primary_descriptor(path: &Path, sector: u64, root_extent_lba: u32) {
         let mut primary = [0u8; VOLUME_DESCRIPTOR_SIZE];
         primary[0] = 1;
         primary[1..6].copy_from_slice(b"CD001");
         primary[6] = 1;
-        let root_record = directory_record(&[0], 20, ISO_SECTOR_SIZE as u32, true);
+        let root_record = directory_record(&[0], root_extent_lba, ISO_SECTOR_SIZE as u32, true);
         primary[156..156 + root_record.len()].copy_from_slice(&root_record);
-        write_at(path, 16 * ISO_SECTOR_SIZE, &primary);
+        write_at(path, sector * ISO_SECTOR_SIZE, &primary);
 
         let mut terminator = [0u8; VOLUME_DESCRIPTOR_SIZE];
         terminator[0] = 255;
         terminator[1..6].copy_from_slice(b"CD001");
         terminator[6] = 1;
-        write_at(path, 17 * ISO_SECTOR_SIZE, &terminator);
+        write_at(path, (sector + 1) * ISO_SECTOR_SIZE, &terminator);
+    }
+
+    fn write_iso_with_boot_paths(path: &Path) {
+        write_primary_descriptor(path, 16, 20);
 
         write_directory(
             path,

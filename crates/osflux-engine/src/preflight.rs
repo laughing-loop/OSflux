@@ -16,6 +16,9 @@ pub struct WritePreflight {
     pub image_write_strategy: String,
     pub target_index: u32,
     pub target_path: String,
+    pub target_model: Option<String>,
+    pub target_size_bytes: Option<u64>,
+    pub target_identity_code: Option<String>,
     pub target_status: TargetAssessmentStatus,
     pub target_reason: String,
     pub requires_confirmation: bool,
@@ -36,6 +39,9 @@ impl WritePreflight {
                 "  \"imageWriteStrategy\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
+                "  \"targetModel\": {},\n",
+                "  \"targetSizeBytes\": {},\n",
+                "  \"targetIdentityCode\": {},\n",
                 "  \"targetStatus\": \"{}\",\n",
                 "  \"targetReason\": \"{}\",\n",
                 "  \"requiresConfirmation\": {},\n",
@@ -51,6 +57,9 @@ impl WritePreflight {
             escape_json_string(&self.image_write_strategy),
             self.target_index,
             escape_json_string(&self.target_path),
+            optional_string_json(self.target_model.as_deref()),
+            optional_number_json(self.target_size_bytes),
+            optional_string_json(self.target_identity_code.as_deref()),
             self.target_status.as_str(),
             escape_json_string(&self.target_reason),
             self.requires_confirmation,
@@ -131,6 +140,15 @@ pub fn build_write_preflight(image_plan: &ImagePlan, target: &TargetAssessment) 
             .map(|warning| format!("Target: {warning}")),
     );
 
+    if let Some(target_size) = target.size_bytes {
+        if image_plan.size_bytes > target_size {
+            warnings.push(format!(
+                "Image needs {} bytes but the target only holds {} bytes.",
+                image_plan.size_bytes, target_size
+            ));
+        }
+    }
+
     if status == WritePreflightStatus::NeedsConfirmation {
         warnings.push("Explicit target confirmation is still required before writing.".to_string());
     }
@@ -144,6 +162,9 @@ pub fn build_write_preflight(image_plan: &ImagePlan, target: &TargetAssessment) 
         image_write_strategy: image_plan.write_strategy.as_str().to_string(),
         target_index: target.index,
         target_path: target.path.clone(),
+        target_model: target.model.clone(),
+        target_size_bytes: target.size_bytes,
+        target_identity_code: target.identity_code.clone(),
         target_status: target.status,
         target_reason: target.reason.clone(),
         requires_confirmation: target.requires_confirmation,
@@ -170,6 +191,13 @@ fn classify_preflight(
         );
     }
 
+    if image_exceeds_target(image_plan, target) {
+        return (
+            WritePreflightStatus::Blocked,
+            "image is larger than the target device",
+        );
+    }
+
     if image_plan.status == ImagePlanStatus::NeedsInspection {
         return (
             WritePreflightStatus::NeedsInspection,
@@ -188,6 +216,24 @@ fn classify_preflight(
         WritePreflightStatus::Ready,
         "image and target passed read-only checks",
     )
+}
+
+fn image_exceeds_target(image_plan: &ImagePlan, target: &TargetAssessment) -> bool {
+    target
+        .size_bytes
+        .is_some_and(|target_size| image_plan.size_bytes > target_size)
+}
+
+fn optional_string_json(value: Option<&str>) -> String {
+    value
+        .map(|value| format!("\"{}\"", escape_json_string(value)))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn optional_number_json(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn string_array_json(values: &[String]) -> String {
@@ -271,12 +317,38 @@ mod tests {
     }
 
     #[test]
+    fn blocks_when_image_is_larger_than_target() {
+        let mut image = image(ImagePlanStatus::Ready);
+        image.size_bytes = 64 * 1024 * 1024;
+
+        let preflight = build_write_preflight(&image, &target(false));
+
+        assert_eq!(preflight.status, WritePreflightStatus::Blocked);
+        assert_eq!(preflight.reason, "image is larger than the target device");
+        assert!(preflight
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("target only holds 33554432 bytes")));
+    }
+
+    #[test]
+    fn allows_image_that_exactly_fills_target() {
+        let mut image = image(ImagePlanStatus::Ready);
+        image.size_bytes = 32 * 1024 * 1024;
+
+        let preflight = build_write_preflight(&image, &target(false));
+
+        assert_eq!(preflight.status, WritePreflightStatus::NeedsConfirmation);
+    }
+
+    #[test]
     fn serializes_preflight_as_json() {
         let preflight = build_write_preflight(&image(ImagePlanStatus::Ready), &target(false));
         let json = preflight.to_json_pretty();
 
         assert!(json.contains("\"status\": \"needs-confirmation\""));
         assert!(json.contains("\"targetIndex\": 2"));
+        assert!(json.contains("\"targetIdentityCode\": \"7F3A\""));
         assert!(json.contains("\"requiresConfirmation\": true"));
     }
 
@@ -321,6 +393,8 @@ mod tests {
             model: Some("Test Drive".to_string()),
             interface_type: Some("USB".to_string()),
             media_type: Some("Removable Media".to_string()),
+            serial_number: Some("SN-0001".to_string()),
+            identity_code: Some("7F3A".to_string()),
             access: DeviceAccess::Readable,
             contains_system_volume: blocked,
             likely_removable: !blocked,

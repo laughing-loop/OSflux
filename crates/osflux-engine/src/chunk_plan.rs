@@ -387,6 +387,7 @@ mod tests {
             image_source: "C:\\images\\sample.iso".to_string(),
             target_index: 2,
             target_path: "\\\\.\\PhysicalDrive2".to_string(),
+            target_identity_code: Some("7F3A".to_string()),
             command_status: if status == WriteSessionStatus::Prepared {
                 WriteCommandStatus::ReadyDryRun
             } else {

@@ -165,15 +165,17 @@ cargo run -- --intent --image "C:\path\to\image.iso" --target 2
 This is still read-only. It turns a passing preflight into a deliberate confirmation phrase, such as:
 
 ```text
-OSFLUX ERASE TARGET 2
+OSFLUX ERASE TARGET 2 7F3A
 ```
 
 That phrase is the safety gate a future write command must require before opening a target drive for write access.
 
+The last part, `7F3A` in this example, is the drive's identity code. OSflux builds it from the drive's model, serial number, and Windows device ID. If a different drive ends up at the same index, for example after USB sticks are swapped, the code changes and the old phrase no longer matches.
+
 OSflux can now validate a confirmed write command as a dry-run skeleton:
 
 ```powershell
-cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 This still does not write to any drive. It checks:
@@ -189,7 +191,7 @@ If everything matches, the command reports `ready-dry-run` and keeps `write acce
 OSflux can now prepare a locked write session:
 
 ```powershell
-cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 This still does not write to any drive. It turns the confirmed dry-run write command into a session record with:
@@ -206,7 +208,7 @@ For now, a prepared session means the safety chain is complete, not that OSflux 
 OSflux can now prepare a dry-run chunk plan:
 
 ```powershell
-cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 The chunk plan reads the image size and calculates:
@@ -223,7 +225,7 @@ This is the foundation for progress reporting. If an image is 10 MiB and the chu
 OSflux can now preview progress events:
 
 ```powershell
-cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 This still does not write to any drive. It turns a chunk plan into progress snapshots such as:
@@ -238,7 +240,7 @@ The preview reports progress as integer basis points. In plain terms, `10000` me
 OSflux can now select a write mode:
 
 ```powershell
-cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 This still does not write to any drive. It decides which future execution path is appropriate:
@@ -427,31 +429,31 @@ cargo run -- --intent --image "C:\path\to\image.iso" --target 2 --json
 The write command dry-run can also be printed as JSON:
 
 ```powershell
-cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
 ```
 
 The locked write session can also be printed as JSON:
 
 ```powershell
-cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
 ```
 
 The chunk plan can also be printed as JSON:
 
 ```powershell
-cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
 ```
 
 The progress preview can also be printed as JSON:
 
 ```powershell
-cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
 ```
 
 The write mode selection can also be printed as JSON:
 
 ```powershell
-cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
 ```
 
 The image family report can also be printed as JSON:

@@ -84,61 +84,61 @@ cargo run -- --intent --image "C:\path\to\image.iso" --target 2 --json
 Validate a confirmed write command as a dry-run skeleton:
 
 ```powershell
-cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 Print the write command plan as JSON:
 
 ```powershell
-cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
 ```
 
 Prepare a locked dry-run write session:
 
 ```powershell
-cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 Print the write session as JSON:
 
 ```powershell
-cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --json
+cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
 ```
 
 Prepare a dry-run chunk plan:
 
 ```powershell
-cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 Use a custom chunk size:
 
 ```powershell
-cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
 ```
 
 Preview progress events from the chunk plan:
 
 ```powershell
-cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 Print the progress preview as JSON:
 
 ```powershell
-cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
 ```
 
 Select the read-only write mode:
 
 ```powershell
-cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2"
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
 ```
 
 Print the write mode selection as JSON:
 
 ```powershell
-cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2" --chunk-size 4194304 --json
+cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
 ```
 
 Plan an image without writing anything:
@@ -185,12 +185,22 @@ Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
 The image family command is still read-only. It scans the early image bytes for family markers and classifies images as Windows installer, Linux installer, multi-family image, raw disk image, or unknown.
 The filesystem plan command is still read-only. It combines image family evidence, ISO boot catalog validity, and directory boot assets into one filesystem-aware plan.
+Target assessment only accepts drives that report removable media, such as USB sticks and SD cards. External hard disks and SSDs are always blocked, even when they connect over USB, because they usually hold data. Some high-end USB sticks report themselves as fixed disks and are blocked for the same reason.
+The preflight blocks any image that is larger than the target drive, so an oversized image never reaches the confirmation step.
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
+The phrase ends with the target drive's identity code, built from its model, serial number, and Windows device ID. `7F3A` in these examples is only a placeholder: run `--intent` to get the real phrase for your drive. If a different drive takes the same index, the code changes and the old phrase stops matching.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.
 The chunk plan command is still read-only. It calculates image size, chunk size, chunk count, final chunk size, and planned bytes for future progress reporting.
 The progress preview command is still read-only. It turns the chunk plan into sampled progress events with integer percentage basis points.
 The write mode selection command is still read-only. It chooses the future execution path, such as ISO filesystem boot setup or raw block writing, only after the safety chain has passed.
+
+Every command sets an exit code so scripts can check the result without parsing the output:
+
+- `0`: the command ran and its result passed.
+- `1`: the command could not run, for example because the image could not be read.
+- `2`: an argument was unknown, missing, or invalid.
+- `3`: the command ran, but its result is blocked or needs inspection. The report is still printed.
 
 Run with demo pipeline options:
 

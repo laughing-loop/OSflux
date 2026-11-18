@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::fingerprint::stable_fingerprint;
 use crate::preflight::WritePreflightError;
 use crate::write_command::{prepare_write_command, WriteCommandPlan, WriteCommandStatus};
 
@@ -14,6 +15,7 @@ pub struct WriteSession {
     pub image_source: String,
     pub target_index: u32,
     pub target_path: String,
+    pub target_identity_code: Option<String>,
     pub command_status: WriteCommandStatus,
     pub confirmed: bool,
     pub locked: bool,
@@ -35,6 +37,7 @@ impl WriteSession {
                 "  \"imageSource\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
+                "  \"targetIdentityCode\": {},\n",
                 "  \"commandStatus\": \"{}\",\n",
                 "  \"confirmed\": {},\n",
                 "  \"locked\": {},\n",
@@ -51,6 +54,7 @@ impl WriteSession {
             escape_json_string(&self.image_source),
             self.target_index,
             escape_json_string(&self.target_path),
+            optional_string_json(self.target_identity_code.as_deref()),
             self.command_status.as_str(),
             self.confirmed,
             self.locked,
@@ -132,6 +136,7 @@ pub fn build_write_session_at(
         image_source: command.image_source.clone(),
         target_index: command.target_index,
         target_path: command.target_path.clone(),
+        target_identity_code: command.target_identity_code.clone(),
         command_status: command.status,
         confirmed,
         locked,
@@ -168,8 +173,12 @@ fn session_reason(command_status: WriteCommandStatus) -> &'static str {
 
 fn build_session_id(command: &WriteCommandPlan, created_at_unix_seconds: u64) -> String {
     let seed = format!(
-        "{}|{}|{}|{}",
-        command.image_source, command.target_index, command.target_path, created_at_unix_seconds
+        "{}|{}|{}|{}|{}",
+        command.image_source,
+        command.target_index,
+        command.target_path,
+        command.target_identity_code.as_deref().unwrap_or(""),
+        created_at_unix_seconds
     );
     let fingerprint = stable_fingerprint(seed.as_bytes());
 
@@ -179,20 +188,18 @@ fn build_session_id(command: &WriteCommandPlan, created_at_unix_seconds: u64) ->
     )
 }
 
-fn stable_fingerprint(bytes: &[u8]) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x00000100000001B3;
-
-    bytes.iter().fold(FNV_OFFSET, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
-    })
-}
-
 fn current_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0)
+}
+
+fn optional_string_json(value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("\"{}\"", escape_json_string(value)),
+        None => "null".to_string(),
+    }
 }
 
 fn string_array_json(values: &[String]) -> String {
@@ -250,6 +257,17 @@ mod tests {
     }
 
     #[test]
+    fn session_id_changes_with_target_identity() {
+        let first =
+            build_write_session_at(&command(WriteCommandStatus::ReadyDryRun), 1_700_000_000);
+        let mut other_drive = command(WriteCommandStatus::ReadyDryRun);
+        other_drive.target_identity_code = Some("0B21".to_string());
+        let second = build_write_session_at(&other_drive, 1_700_000_000);
+
+        assert_ne!(first.session_id, second.session_id);
+    }
+
+    #[test]
     fn blocks_session_when_confirmation_is_missing() {
         let session = build_write_session_at(
             &command(WriteCommandStatus::ConfirmationMissing),
@@ -301,12 +319,13 @@ mod tests {
             image_source: "C:\\images\\sample.iso".to_string(),
             target_index: 2,
             target_path: "\\\\.\\PhysicalDrive2".to_string(),
+            target_identity_code: Some("7F3A".to_string()),
             intent_status: if status == WriteCommandStatus::Blocked {
                 WriteIntentStatus::Blocked
             } else {
                 WriteIntentStatus::ConfirmationRequired
             },
-            expected_confirmation_phrase: Some("OSFLUX ERASE TARGET 2".to_string()),
+            expected_confirmation_phrase: Some("OSFLUX ERASE TARGET 2 7F3A".to_string()),
             supplied_confirmation_phrase_present: status != WriteCommandStatus::ConfirmationMissing,
             confirmation_matches: status == WriteCommandStatus::ReadyDryRun,
             dry_run: true,

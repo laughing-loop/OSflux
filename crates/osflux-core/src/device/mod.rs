@@ -134,6 +134,14 @@ impl DeviceAccess {
     }
 }
 
+/// USB-to-SATA adapters often report a serial number of all zeros instead of
+/// the drive's real one. Every drive in the same kind of enclosure shares that
+/// value, so it is treated as not reported.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_placeholder_serial(value: &str) -> bool {
+    value.chars().all(|character| character == '0')
+}
+
 #[cfg(windows)]
 pub fn list_physical_devices() -> Vec<PhysicalDevice> {
     windows::list_physical_devices()
@@ -156,7 +164,7 @@ pub fn list_physical_devices() -> Vec<PhysicalDevice> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceAccess, PhysicalDevice};
+    use super::{is_placeholder_serial, DeviceAccess, PhysicalDevice};
 
     #[test]
     fn labels_external_ssd_over_usb_as_external_disk() {
@@ -188,6 +196,13 @@ mod tests {
         let device = device("IDE", "Fixed hard disk media", true);
 
         assert_eq!(device.safety_label(), "system-drive");
+    }
+
+    #[test]
+    fn treats_all_zero_serial_as_placeholder() {
+        assert!(is_placeholder_serial("0000000000000000"));
+        assert!(!is_placeholder_serial("WD-WCC6Z6FLN33L"));
+        assert!(!is_placeholder_serial("TPBF2307030050200733"));
     }
 
     fn device(interface_type: &str, media_type: &str, system: bool) -> PhysicalDevice {

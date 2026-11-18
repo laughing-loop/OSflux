@@ -11,7 +11,9 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Ioctl::{GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO};
 use windows::Win32::System::IO::DeviceIoControl;
 
-use super::{BlockDevice, DeviceAccess, DeviceError, DeviceResult, PhysicalDevice};
+use super::{
+    is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceResult, PhysicalDevice,
+};
 
 const DEFAULT_SCAN_LIMIT: u32 = 32;
 
@@ -227,7 +229,11 @@ fn parse_disk_metadata_line(line: &str) -> Option<DiskMetadata> {
         size_bytes: fields[4].trim().parse::<u64>().ok(),
         pnp_device_id: optional_field(fields[5]),
         contains_system_volume: fields[6].trim().eq_ignore_ascii_case("true"),
-        serial_number: fields.get(7).copied().and_then(optional_field),
+        serial_number: fields
+            .get(7)
+            .copied()
+            .and_then(optional_field)
+            .filter(|serial| !is_placeholder_serial(serial)),
     })
 }
 

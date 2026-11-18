@@ -131,6 +131,15 @@ pub fn build_write_preflight(image_plan: &ImagePlan, target: &TargetAssessment) 
             .map(|warning| format!("Target: {warning}")),
     );
 
+    if let Some(target_size) = target.size_bytes {
+        if image_plan.size_bytes > target_size {
+            warnings.push(format!(
+                "Image needs {} bytes but the target only holds {} bytes.",
+                image_plan.size_bytes, target_size
+            ));
+        }
+    }
+
     if status == WritePreflightStatus::NeedsConfirmation {
         warnings.push("Explicit target confirmation is still required before writing.".to_string());
     }
@@ -170,6 +179,13 @@ fn classify_preflight(
         );
     }
 
+    if image_exceeds_target(image_plan, target) {
+        return (
+            WritePreflightStatus::Blocked,
+            "image is larger than the target device",
+        );
+    }
+
     if image_plan.status == ImagePlanStatus::NeedsInspection {
         return (
             WritePreflightStatus::NeedsInspection,
@@ -188,6 +204,12 @@ fn classify_preflight(
         WritePreflightStatus::Ready,
         "image and target passed read-only checks",
     )
+}
+
+fn image_exceeds_target(image_plan: &ImagePlan, target: &TargetAssessment) -> bool {
+    target
+        .size_bytes
+        .is_some_and(|target_size| image_plan.size_bytes > target_size)
 }
 
 fn string_array_json(values: &[String]) -> String {
@@ -268,6 +290,31 @@ mod tests {
 
         assert_eq!(preflight.status, WritePreflightStatus::NeedsConfirmation);
         assert!(preflight.requires_confirmation);
+    }
+
+    #[test]
+    fn blocks_when_image_is_larger_than_target() {
+        let mut image = image(ImagePlanStatus::Ready);
+        image.size_bytes = 64 * 1024 * 1024;
+
+        let preflight = build_write_preflight(&image, &target(false));
+
+        assert_eq!(preflight.status, WritePreflightStatus::Blocked);
+        assert_eq!(preflight.reason, "image is larger than the target device");
+        assert!(preflight
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("target only holds 33554432 bytes")));
+    }
+
+    #[test]
+    fn allows_image_that_exactly_fills_target() {
+        let mut image = image(ImagePlanStatus::Ready);
+        image.size_bytes = 32 * 1024 * 1024;
+
+        let preflight = build_write_preflight(&image, &target(false));
+
+        assert_eq!(preflight.status, WritePreflightStatus::NeedsConfirmation);
     }
 
     #[test]

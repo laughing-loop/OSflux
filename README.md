@@ -185,6 +185,7 @@ Every image plan has a status: ready, needs-inspection, or blocked.
 The engine builds a structured plan report so the CLI and future Studio UI can render the same planning result without duplicating logic.
 The image family command is still read-only. It scans the early image bytes for family markers and classifies images as Windows installer, Linux installer, multi-family image, raw disk image, or unknown.
 The filesystem plan command is still read-only. It combines image family evidence, ISO boot catalog validity, and directory boot assets into one filesystem-aware plan.
+The preflight blocks any image that is larger than the target drive, so an oversized image never reaches the confirmation step.
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.

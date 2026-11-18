@@ -193,6 +193,13 @@ The chunk plan command is still read-only. It calculates image size, chunk size,
 The progress preview command is still read-only. It turns the chunk plan into sampled progress events with integer percentage basis points.
 The write mode selection command is still read-only. It chooses the future execution path, such as ISO filesystem boot setup or raw block writing, only after the safety chain has passed.
 
+Every command sets an exit code so scripts can check the result without parsing the output:
+
+- `0`: the command ran and its result passed.
+- `1`: the command could not run, for example because the image could not be read.
+- `2`: an argument was unknown, missing, or invalid.
+- `3`: the command ran, but its result is blocked or needs inspection. The report is still printed.
+
 Run with demo pipeline options:
 
 ```powershell

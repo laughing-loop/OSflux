@@ -1,11 +1,19 @@
+use std::io::Write;
+
 use osflux_engine::{
-    assess_target, create_write_intent, detect_image_family, list_devices, plan_image_report,
-    plan_iso_filesystem, plan_write_chunks, prepare_write_command, prepare_write_session,
-    preview_write_progress, run_write_preflight, select_write_mode, ChunkPlan, Engine,
-    EngineConfig, ImageFamilyReport, IsoFilesystemPlan, PlanReport, ProgressPreview,
-    TargetAssessment, WriteCommandPlan, WriteIntent, WriteModeSelection, WritePreflight,
-    WriteSession, DEFAULT_CHUNK_SIZE_BYTES,
+    assess_target, build_image_plan_report, create_write_intent, detect_image_family, list_devices,
+    plan_image, plan_iso_filesystem, plan_write_chunks, prepare_write_command,
+    prepare_write_session, preview_write_progress, run_write_preflight, select_write_mode,
+    ChunkPlan, ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport, ImageFamilyStatus,
+    ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport, ProgressPreview,
+    ProgressPreviewStatus, TargetAssessment, TargetAssessmentStatus, WriteCommandPlan,
+    WriteCommandStatus, WriteIntent, WriteIntentStatus, WriteModeSelection,
+    WriteModeSelectionStatus, WritePreflight, WritePreflightStatus, WriteSession,
+    WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
 };
+
+/// Exit code for a command that ran but whose result is blocked or needs inspection.
+const EXIT_NOT_READY: i32 = 3;
 
 fn main() {
     match parse_command(std::env::args().skip(1)) {
@@ -257,13 +265,13 @@ where
             plan_image_path = Some(path.to_string());
             index += 1;
         } else if let Some(value) = arg.strip_prefix("--blocks=") {
-            if let Ok(parsed) = value.parse::<usize>() {
-                config.block_count = parsed;
-            }
+            config.block_count = parse_usize_option(value, "block count");
         } else if let Some(value) = arg.strip_prefix("--block-size=") {
-            if let Ok(parsed) = value.parse::<usize>() {
-                config.block_size = parsed;
-            }
+            config.block_size = parse_usize_option(value, "block size");
+        } else {
+            eprintln!("unknown argument: {arg}");
+            eprintln!("run with --help to see the supported options");
+            std::process::exit(2);
         }
 
         index += 1;
@@ -427,10 +435,14 @@ where
 
 fn print_image_family(path: &str, output: OutputFormat) {
     match detect_image_family(path) {
-        Ok(report) => match output {
-            OutputFormat::Text => print_image_family_report(report),
-            OutputFormat::Json => print!("{}", report.to_json_pretty()),
-        },
+        Ok(report) => {
+            let ready = report.status == ImageFamilyStatus::Detected;
+            match output {
+                OutputFormat::Text => print_image_family_report(report),
+                OutputFormat::Json => print!("{}", report.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not detect this image family.");
             eprintln!("{error}");
@@ -488,10 +500,14 @@ fn print_image_family_report(report: ImageFamilyReport) {
 
 fn print_iso_filesystem_plan(path: &str, output: OutputFormat) {
     match plan_iso_filesystem(path) {
-        Ok(plan) => match output {
-            OutputFormat::Text => print_iso_filesystem_plan_report(plan),
-            OutputFormat::Json => print!("{}", plan.to_json_pretty()),
-        },
+        Ok(plan) => {
+            let ready = plan.status == IsoFilesystemPlanStatus::Planned;
+            match output {
+                OutputFormat::Text => print_iso_filesystem_plan_report(plan),
+                OutputFormat::Json => print!("{}", plan.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not build an ISO filesystem plan.");
             eprintln!("{error}");
@@ -593,10 +609,14 @@ fn print_mode_selection(
     output: OutputFormat,
 ) {
     match select_write_mode(image, target, confirmation_phrase, chunk_size) {
-        Ok(selection) => match output {
-            OutputFormat::Text => print_mode_selection_report(selection),
-            OutputFormat::Json => print!("{}", selection.to_json_pretty()),
-        },
+        Ok(selection) => {
+            let ready = selection.status == WriteModeSelectionStatus::Selected;
+            match output {
+                OutputFormat::Text => print_mode_selection_report(selection),
+                OutputFormat::Json => print!("{}", selection.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not select write mode.");
             eprintln!("{error}");
@@ -661,10 +681,14 @@ fn print_progress_preview(
     output: OutputFormat,
 ) {
     match preview_write_progress(image, target, confirmation_phrase, chunk_size) {
-        Ok(preview) => match output {
-            OutputFormat::Text => print_progress_preview_report(preview),
-            OutputFormat::Json => print!("{}", preview.to_json_pretty()),
-        },
+        Ok(preview) => {
+            let ready = preview.status == ProgressPreviewStatus::Ready;
+            match output {
+                OutputFormat::Text => print_progress_preview_report(preview),
+                OutputFormat::Json => print!("{}", preview.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not prepare progress preview.");
             eprintln!("{error}");
@@ -728,10 +752,14 @@ fn print_chunk_plan(
     output: OutputFormat,
 ) {
     match plan_write_chunks(image, target, confirmation_phrase, chunk_size) {
-        Ok(plan) => match output {
-            OutputFormat::Text => print_chunk_plan_report(plan),
-            OutputFormat::Json => print!("{}", plan.to_json_pretty()),
-        },
+        Ok(plan) => {
+            let ready = plan.status == ChunkPlanStatus::Planned;
+            match output {
+                OutputFormat::Text => print_chunk_plan_report(plan),
+                OutputFormat::Json => print!("{}", plan.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not prepare chunk plan.");
             eprintln!("{error}");
@@ -789,10 +817,14 @@ fn print_write_session(
     output: OutputFormat,
 ) {
     match prepare_write_session(image, target, confirmation_phrase) {
-        Ok(session) => match output {
-            OutputFormat::Text => print_write_session_report(session),
-            OutputFormat::Json => print!("{}", session.to_json_pretty()),
-        },
+        Ok(session) => {
+            let ready = session.status == WriteSessionStatus::Prepared;
+            match output {
+                OutputFormat::Text => print_write_session_report(session),
+                OutputFormat::Json => print!("{}", session.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not prepare write session.");
             eprintln!("{error}");
@@ -851,10 +883,14 @@ fn print_write_command(
     output: OutputFormat,
 ) {
     match prepare_write_command(image, target, confirmation_phrase) {
-        Ok(plan) => match output {
-            OutputFormat::Text => print_write_command_plan(plan),
-            OutputFormat::Json => print!("{}", plan.to_json_pretty()),
-        },
+        Ok(plan) => {
+            let ready = plan.status == WriteCommandStatus::ReadyDryRun;
+            match output {
+                OutputFormat::Text => print_write_command_plan(plan),
+                OutputFormat::Json => print!("{}", plan.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not plan write command.");
             eprintln!("{error}");
@@ -938,12 +974,33 @@ fn parse_u64_option(value: &str, name: &str) -> u64 {
     }
 }
 
+fn parse_usize_option(value: &str, name: &str) -> usize {
+    match value.parse::<usize>() {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            eprintln!("{name} must be a non-negative number");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn exit_unless_ready(ready: bool) {
+    if !ready {
+        let _ = std::io::stdout().flush();
+        std::process::exit(EXIT_NOT_READY);
+    }
+}
+
 fn print_write_intent(image: &str, target: u32, output: OutputFormat) {
     match create_write_intent(image, target) {
-        Ok(intent) => match output {
-            OutputFormat::Text => print_write_intent_report(intent),
-            OutputFormat::Json => print!("{}", intent.to_json_pretty()),
-        },
+        Ok(intent) => {
+            let ready = intent.status == WriteIntentStatus::ConfirmationRequired;
+            match output {
+                OutputFormat::Text => print_write_intent_report(intent),
+                OutputFormat::Json => print!("{}", intent.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not create write intent.");
             eprintln!("{error}");
@@ -985,10 +1042,17 @@ fn print_write_intent_report(intent: WriteIntent) {
 
 fn print_preflight(image: &str, target: u32, output: OutputFormat) {
     match run_write_preflight(image, target) {
-        Ok(preflight) => match output {
-            OutputFormat::Text => print_preflight_report(preflight),
-            OutputFormat::Json => print!("{}", preflight.to_json_pretty()),
-        },
+        Ok(preflight) => {
+            let ready = matches!(
+                preflight.status,
+                WritePreflightStatus::Ready | WritePreflightStatus::NeedsConfirmation
+            );
+            match output {
+                OutputFormat::Text => print_preflight_report(preflight),
+                OutputFormat::Json => print!("{}", preflight.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not complete write preflight.");
             eprintln!("{error}");
@@ -1034,11 +1098,15 @@ fn print_preflight_report(preflight: WritePreflight) {
 }
 
 fn print_image_plan(path: &str, output: OutputFormat) {
-    match plan_image_report(path) {
-        Ok(report) => match output {
-            OutputFormat::Text => print_report(report),
-            OutputFormat::Json => print!("{}", report.to_json_pretty()),
-        },
+    match plan_image(path) {
+        Ok(plan) => {
+            let report = build_image_plan_report(&plan);
+            match output {
+                OutputFormat::Text => print_report(report),
+                OutputFormat::Json => print!("{}", report.to_json_pretty()),
+            }
+            exit_unless_ready(plan.status == ImagePlanStatus::Ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not plan this image.");
             eprintln!("{error}");
@@ -1049,10 +1117,14 @@ fn print_image_plan(path: &str, output: OutputFormat) {
 
 fn print_target_assessment(index: u32, output: OutputFormat) {
     match assess_target(index) {
-        Ok(assessment) => match output {
-            OutputFormat::Text => print_assessment(assessment),
-            OutputFormat::Json => print!("{}", assessment.to_json_pretty()),
-        },
+        Ok(assessment) => {
+            let ready = assessment.status != TargetAssessmentStatus::Blocked;
+            match output {
+                OutputFormat::Text => print_assessment(assessment),
+                OutputFormat::Json => print!("{}", assessment.to_json_pretty()),
+            }
+            exit_unless_ready(ready);
+        }
         Err(error) => {
             eprintln!("OSflux could not assess this target.");
             eprintln!("{error}");
@@ -1289,4 +1361,10 @@ fn print_help() {
     println!("  --json            Print command output as JSON when supported.");
     println!("  --blocks=<N>        Number of blocks to enqueue in the demo pipeline.");
     println!("  --block-size=<N>    Bytes per block in the demo pipeline.");
+    println!();
+    println!("Exit codes:");
+    println!("  0  The command ran and its result passed.");
+    println!("  1  The command could not run, for example because the image could not be read.");
+    println!("  2  An argument was unknown, missing, or invalid.");
+    println!("  3  The command ran, but its result is blocked or needs inspection.");
 }

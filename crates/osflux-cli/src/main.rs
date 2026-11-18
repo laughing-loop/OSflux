@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use osflux_engine::{
     assess_target, build_image_plan_report, create_write_intent, detect_image_family,
@@ -45,10 +45,18 @@ fn main() {
             confirm,
             chunk_size,
             execute,
+            assume_yes,
             output,
         } => {
             if execute {
-                run_raw_write(&image, target, confirm.as_deref(), chunk_size, output);
+                run_raw_write(
+                    &image,
+                    target,
+                    confirm.as_deref(),
+                    chunk_size,
+                    assume_yes,
+                    output,
+                );
             } else {
                 print_write_command(&image, target, confirm.as_deref(), output);
             }
@@ -118,6 +126,7 @@ enum Command {
         confirm: Option<String>,
         chunk_size: u64,
         execute: bool,
+        assume_yes: bool,
         output: OutputFormat,
     },
     Session {
@@ -173,6 +182,7 @@ where
     let mut intent_requested = false;
     let mut write_requested = false;
     let mut execute_requested = false;
+    let mut assume_yes = false;
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
@@ -199,6 +209,8 @@ where
             write_requested = true;
         } else if arg == "--execute" {
             execute_requested = true;
+        } else if arg == "--yes" {
+            assume_yes = true;
         } else if arg == "--session" {
             session_requested = true;
         } else if arg == "--chunk-plan" {
@@ -300,6 +312,10 @@ where
         eprintln!("--execute can only be used with --write");
         std::process::exit(2);
     }
+    if assume_yes && !execute_requested {
+        eprintln!("--yes can only be used with --write --execute");
+        std::process::exit(2);
+    }
 
     if mode_selection_requested {
         let Some(image) = preflight_image else {
@@ -392,6 +408,7 @@ where
             confirm: confirmation_phrase,
             chunk_size: chunk_size_bytes,
             execute: execute_requested,
+            assume_yes,
             output,
         };
     }
@@ -911,12 +928,23 @@ fn run_raw_write(
     target: u32,
     confirmation_phrase: Option<&str>,
     chunk_size: u64,
+    assume_yes: bool,
     output: OutputFormat,
 ) {
     let Some(confirmation_phrase) = confirmation_phrase else {
         eprintln!("--write --execute needs --confirm with the phrase printed by --intent");
         std::process::exit(2);
     };
+
+    // Checked before any slow work: without a terminal there is nobody to
+    // answer the final prompt, so only an explicit --yes may stand in for it.
+    if !assume_yes && !std::io::stdin().is_terminal() {
+        eprintln!("OSflux did not write the image.");
+        eprintln!(
+            "A final confirmation is needed, but there is no terminal to ask in. Pass --yes to confirm without a prompt."
+        );
+        std::process::exit(2);
+    }
 
     let authorizations = open_authorization_store();
     let plan = match prepare_raw_write(
@@ -932,6 +960,14 @@ fn run_raw_write(
 
     if let OutputFormat::Text = output {
         print_raw_write_plan(&plan);
+    }
+
+    if !assume_yes {
+        confirm_erase_interactively(&plan);
+    }
+
+    if let OutputFormat::Text = output {
+        println!("Erasing the target and writing the image. Do not unplug the drive.");
     }
 
     let mut progress = RawWriteProgressPrinter::new(output);
@@ -974,7 +1010,35 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
     );
     println!("target size: {}", format_size(plan.target_size_bytes));
     println!("target identity code: {}", plan.target_identity_code);
-    println!("Erasing the target and writing the image. Do not unplug the drive.");
+}
+
+/// Asks on the terminal before erasing; anything but "yes" cancels and
+/// leaves the confirmation from --intent usable until it expires.
+fn confirm_erase_interactively(plan: &RawWritePlan) {
+    eprintln!();
+    eprintln!(
+        "This erases everything on {} ({}, {}).",
+        plan.target_model.as_deref().unwrap_or("the target drive"),
+        format_size(plan.target_size_bytes),
+        plan.target_path
+    );
+    eprint!("Type yes to continue: ");
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    let answered = std::io::stdin().read_line(&mut answer).is_ok();
+    if !answered || !is_erase_confirmation(&answer) {
+        eprintln!(
+            "Cancelled. Nothing was written. The confirmation stays usable until {}.",
+            format_unix_utc(plan.authorization_expires_at_unix_seconds)
+        );
+        let _ = std::io::stdout().flush();
+        std::process::exit(EXIT_NOT_READY);
+    }
+}
+
+fn is_erase_confirmation(answer: &str) -> bool {
+    answer.trim().eq_ignore_ascii_case("yes")
 }
 
 fn print_raw_write_report(report: &RawWriteReport) {
@@ -1620,6 +1684,9 @@ fn print_help() {
     println!(
         "  --execute         With --write: erase the target and write a raw disk image, then verify it."
     );
+    println!(
+        "  --yes             With --write --execute: skip the final prompt, for scripts and automation."
+    );
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
     println!("  --detect-family   Detect image family markers without writing.");
@@ -1648,5 +1715,30 @@ fn print_help() {
     println!("  0  The command ran and its result passed.");
     println!("  1  The command could not run, for example because the image could not be read.");
     println!("  2  An argument was unknown, missing, or invalid.");
-    println!("  3  The command ran, but its result is blocked or needs inspection.");
+    println!(
+        "  3  The command ran, but its result is blocked or needs inspection, or the final prompt was declined."
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_erase_confirmation;
+
+    #[test]
+    fn only_yes_confirms_an_erase() {
+        for answer in ["yes", "YES\n", "  Yes \r\n"] {
+            assert!(is_erase_confirmation(answer), "{answer:?}");
+        }
+
+        for answer in [
+            "",
+            "\n",
+            "y",
+            "no",
+            "yes please",
+            "OSFLUX ERASE TARGET 3 2E85",
+        ] {
+            assert!(!is_erase_confirmation(answer), "{answer:?}");
+        }
+    }
 }

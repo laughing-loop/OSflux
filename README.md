@@ -99,6 +99,8 @@ Write a raw disk image or a hybrid ISO to a USB stick. **This erases the stick.*
 cargo run -- --write --image "C:\path\to\image.img" --target 3 --confirm "OSFLUX ERASE TARGET 3 7F3A" --execute
 ```
 
+Before erasing, OSflux shows the drive's model, size, and path and asks you to type `yes`; anything else cancels without writing. Scripts and automation can pass `--yes` to skip the prompt. Without a terminal and without `--yes`, OSflux refuses rather than assume the answer.
+
 Prepare a locked dry-run write session:
 
 ```powershell
@@ -209,7 +211,7 @@ Every command sets an exit code so scripts can check the result without parsing 
 - `0`: the command ran and its result passed.
 - `1`: the command could not run, for example because the image could not be read.
 - `2`: an argument was unknown, missing, or invalid.
-- `3`: the command ran, but its result is blocked or needs inspection. The report is still printed.
+- `3`: the command ran, but its result is blocked or needs inspection, or the final prompt before erasing was declined. The report is still printed.
 
 Run with demo pipeline options:
 

@@ -89,6 +89,7 @@ fn execute_rejects_chunk_sizes_a_disk_cannot_take() {
         "--chunk-size",
         "1000",
         "--execute",
+        "--yes",
     ]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -112,12 +113,39 @@ fn execute_writes_nothing_when_the_target_does_not_exist() {
         "--confirm",
         "OSFLUX ERASE TARGET 250 0000",
         "--execute",
+        "--yes",
     ]);
     let _ = fs::remove_file(&path);
 
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("OSflux did not write the image."));
     assert!(stderr(&output).contains("target device index was not found: 250"));
+}
+
+#[test]
+fn execute_refuses_without_a_terminal_unless_yes_is_given() {
+    // Tests run with stdin closed, which is not a terminal.
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--confirm",
+        "OSFLUX ERASE TARGET 250 0000",
+        "--execute",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("Pass --yes"));
+}
+
+#[test]
+fn yes_only_works_with_execute() {
+    let output = osflux(&["--write", "--image", "disk.img", "--target", "250", "--yes"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--yes can only be used with --write --execute"));
 }
 
 #[test]

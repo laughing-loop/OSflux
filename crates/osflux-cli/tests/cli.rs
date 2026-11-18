@@ -54,6 +54,73 @@ fn exits_one_when_image_cannot_be_read() {
 }
 
 #[test]
+fn execute_only_works_with_write() {
+    let output = osflux(&["--execute", "--image", "disk.img", "--target", "250"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--execute can only be used with --write"));
+}
+
+#[test]
+fn execute_needs_a_confirmation_phrase() {
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--execute",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("needs --confirm"));
+}
+
+#[test]
+fn execute_rejects_chunk_sizes_a_disk_cannot_take() {
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--confirm",
+        "OSFLUX ERASE TARGET 250 0000",
+        "--chunk-size",
+        "1000",
+        "--execute",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("must be a multiple of 4096 bytes"));
+}
+
+#[test]
+fn execute_writes_nothing_when_the_target_does_not_exist() {
+    let mut bytes = vec![0u8; 1024];
+    bytes[510] = 0x55;
+    bytes[511] = 0xAA;
+    let path = temp_file("img", &bytes);
+
+    // Index 250 never exists, so the safety chain stops before any drive is opened.
+    let output = osflux(&[
+        "--write",
+        "--image",
+        path.to_str().unwrap(),
+        "--target",
+        "250",
+        "--confirm",
+        "OSFLUX ERASE TARGET 250 0000",
+        "--execute",
+    ]);
+    let _ = fs::remove_file(&path);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("OSflux did not write the image."));
+    assert!(stderr(&output).contains("target device index was not found: 250"));
+}
+
+#[test]
 fn help_lists_exit_codes() {
     let output = osflux(&["--help"]);
 

@@ -89,15 +89,19 @@ pub fn create_write_intent(
     Ok(build_write_intent(&preflight))
 }
 
+/// The phrase an operator types to confirm erasing a target drive.
+pub fn confirmation_phrase(target_index: u32, identity_code: &str) -> String {
+    format!("OSFLUX ERASE TARGET {target_index} {identity_code}")
+}
+
 pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
     let status = classify_intent_status(preflight.status);
     // The identity code ties the phrase to this drive, so a phrase confirmed
     // for one drive stops matching if a different drive takes the same index.
     let confirmation_phrase = match (status, preflight.target_identity_code.as_deref()) {
-        (WriteIntentStatus::ConfirmationRequired, Some(identity_code)) => Some(format!(
-            "OSFLUX ERASE TARGET {} {identity_code}",
-            preflight.target_index
-        )),
+        (WriteIntentStatus::ConfirmationRequired, Some(identity_code)) => {
+            Some(confirmation_phrase(preflight.target_index, identity_code))
+        }
         _ => None,
     };
 

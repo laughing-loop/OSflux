@@ -15,6 +15,12 @@ impl BlockDevice for LinuxBlockDevice {
         })
     }
 
+    fn read_at(&self, _offset: u64, _buffer: &mut [u8]) -> DeviceResult<usize> {
+        Err(DeviceError::Unsupported {
+            operation: "linux block device read_at",
+        })
+    }
+
     fn flush(&self) -> DeviceResult<()> {
         Err(DeviceError::Unsupported {
             operation: "linux block device flush",

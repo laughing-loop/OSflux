@@ -30,6 +30,8 @@ pub trait BlockDevice {
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> DeviceResult<usize>;
 
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> DeviceResult<usize>;
+
     fn flush(&self) -> DeviceResult<()>;
 
     fn size(&self) -> DeviceResult<u64>;

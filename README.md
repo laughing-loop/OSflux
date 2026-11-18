@@ -101,6 +101,10 @@ cargo run -- --write --image "C:\path\to\image.img" --target 3 --confirm "OSFLUX
 
 Before erasing, OSflux shows the drive's model, size, and path and asks you to type `yes`; anything else cancels without writing. Scripts and automation can pass `--yes` to skip the prompt. Without a terminal and without `--yes`, OSflux refuses rather than assume the answer.
 
+When the write finishes, OSflux prints the SHA-256 of the image it wrote, so you can compare it with the checksum the image's publisher lists.
+
+Every confirmation and write attempt is appended to an audit log, `audit.log` in the OSflux state folder, as one JSON object per line (JSON Lines). Each entry records the time, the Windows user and computer name, the image path, size, and SHA-256, the target drive's path, model, and identity code, and the event: `authorized`, `write-refused`, `write-cancelled`, `write-started`, `write-succeeded`, or `write-failed`. If the `write-started` entry cannot be saved, OSflux does not touch the drive.
+
 Prepare a locked dry-run write session:
 
 ```powershell
@@ -197,7 +201,7 @@ Target assessment only accepts drives that report removable media, such as USB s
 The preflight blocks any image that is larger than the target drive, so an oversized image never reaches the confirmation step.
 The write intent command never touches a drive. It creates the confirmation phrase that `--write --execute` requires, and records a one-time confirmation for that drive and that image.
 The phrase ends with the target drive's identity code, built from its model, serial number, and Windows device ID. `7F3A` in these examples is only a placeholder: run `--intent` to get the real phrase for your drive. If a different drive takes the same index, the code changes and the old phrase stops matching.
-The recorded confirmation works for one write, within 10 minutes, with the same image file. Running `--write --execute` a second time, starting more than 10 minutes later, or after replacing or editing the image, is refused until `--intent` is run again. Confirmations are kept in `%LOCALAPPDATA%\OSflux\authorizations` on Windows (`$XDG_STATE_HOME/osflux` or `~/.local/state/osflux` elsewhere), or under the folder named by the `OSFLUX_STATE_DIR` environment variable when it is set.
+The recorded confirmation works for one write, within 10 minutes, with the same image file. Running `--write --execute` a second time, starting more than 10 minutes later, or after replacing or editing the image, is refused until `--intent` is run again. Confirmations are kept in `%LOCALAPPDATA%\OSflux\authorizations` on Windows, next to the audit log (`$XDG_STATE_HOME/osflux` or `~/.local/state/osflux` elsewhere), or under the folder named by the `OSFLUX_STATE_DIR` environment variable when it is set.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
 Adding `--execute` to `--write` is the only way OSflux writes to a drive. It only writes raw disk images and hybrid ISOs, only to a removable target, and only with the exact phrase from `--intent` while its confirmation is still valid. It re-runs the safety chain and re-checks the drive, uses up the confirmation, then opens the drive, which locks and dismounts the drive's volumes. It refuses to continue if the opened drive's size does not match the confirmed one, writes the image in 4 MiB chunks, reads every byte back to verify it, and then releases the drive.
 A hybrid ISO also carries a partition table in its first sector, which is how most Linux installers (Ubuntu, Fedora, Debian, Arch, Mint) are built. OSflux copies those byte for byte, the same way it writes a `.img`, and `--plan-image` reports them with `hybrid: yes` and the `hybrid-iso-raw-write` strategy. ISOs that need their files extracted, such as Windows installers, are still refused.

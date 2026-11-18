@@ -5,8 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use osflux_core::device::{BlockDevice, DeviceError, NativeBlockDevice};
+use sha2::{Digest, Sha256};
 
+use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
 use crate::clock::now_unix_seconds;
+use crate::json::string_json;
 use crate::target::{
     assess_target, TargetAssessment, TargetAssessmentError, TargetAssessmentStatus,
 };
@@ -68,10 +71,14 @@ pub struct RawWriteReport {
     pub image_path: String,
     pub target_path: String,
     pub target_identity_code: String,
+    /// SHA-256 of the image as it was read for writing, in lowercase hex.
+    pub image_sha256: String,
     pub bytes_written: u64,
     pub bytes_verified: u64,
     pub write_millis: u64,
     pub verify_millis: u64,
+    /// Whether the outcome was added to the audit log.
+    pub audit_recorded: bool,
 }
 
 impl RawWriteReport {
@@ -80,24 +87,28 @@ impl RawWriteReport {
             concat!(
                 "{{\n",
                 "  \"status\": \"written\",\n",
-                "  \"sessionId\": \"{}\",\n",
-                "  \"imageSource\": \"{}\",\n",
-                "  \"targetPath\": \"{}\",\n",
-                "  \"targetIdentityCode\": \"{}\",\n",
+                "  \"sessionId\": {},\n",
+                "  \"imageSource\": {},\n",
+                "  \"imageSha256\": {},\n",
+                "  \"targetPath\": {},\n",
+                "  \"targetIdentityCode\": {},\n",
                 "  \"bytesWritten\": {},\n",
                 "  \"bytesVerified\": {},\n",
                 "  \"writeMillis\": {},\n",
-                "  \"verifyMillis\": {}\n",
+                "  \"verifyMillis\": {},\n",
+                "  \"auditRecorded\": {}\n",
                 "}}\n"
             ),
-            escape_json_string(&self.session_id),
-            escape_json_string(&self.image_path),
-            escape_json_string(&self.target_path),
-            escape_json_string(&self.target_identity_code),
+            string_json(&self.session_id),
+            string_json(&self.image_path),
+            string_json(&self.image_sha256),
+            string_json(&self.target_path),
+            string_json(&self.target_identity_code),
             self.bytes_written,
             self.bytes_verified,
             self.write_millis,
             self.verify_millis,
+            self.audit_recorded,
         )
     }
 }
@@ -126,6 +137,11 @@ pub enum RawWriteError {
         problem: AuthorizationProblem,
     },
     AuthorizationStore(AuthorizationStoreError),
+    /// The start of the write could not be recorded, so the drive was left alone.
+    Audit {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Plan(WriteModeSelectionError),
     Target(TargetAssessmentError),
     ImageChanged {
@@ -163,6 +179,11 @@ impl fmt::Display for RawWriteError {
                 problem,
             } => formatter.write_str(&problem.describe(*target_index)),
             Self::AuthorizationStore(error) => write!(formatter, "{error}"),
+            Self::Audit { path, source } => write!(
+                formatter,
+                "could not add the write to the audit log {}: {source}; the drive was not touched",
+                path.display()
+            ),
             Self::Plan(error) => write!(formatter, "write planning failed: {error}"),
             Self::Target(error) => write!(formatter, "target check failed: {error}"),
             Self::ImageChanged {
@@ -323,10 +344,46 @@ pub fn build_raw_write_plan(
     })
 }
 
-/// Uses up the confirmation, opens the planned target, which locks and
-/// dismounts its volumes, then writes and verifies the image. The drive is
-/// closed before this returns.
+/// Records the start in the audit log, uses up the confirmation, opens the
+/// planned target, which locks and dismounts its volumes, then writes and
+/// verifies the image and records the outcome. The drive is closed before
+/// this returns.
 pub fn write_image_to_target(
+    plan: &RawWritePlan,
+    authorizations: &AuthorizationStore,
+    audit: &AuditLog,
+    on_progress: impl FnMut(RawWriteProgress),
+) -> Result<RawWriteReport, RawWriteError> {
+    // No write without a record of it: when the start cannot be logged, the
+    // confirmation and the drive are both left alone.
+    audit
+        .record(&AuditEvent::for_plan(AuditEventKind::WriteStarted, plan))
+        .map_err(|source| RawWriteError::Audit {
+            path: audit.path().to_path_buf(),
+            source,
+        })?;
+
+    let outcome = consume_and_write(plan, authorizations, on_progress);
+
+    // The write has already happened or failed by now, so a problem logging
+    // its outcome is reported on the result instead of replacing it.
+    let outcome_event = match &outcome {
+        Ok(report) => {
+            AuditEvent::for_plan(AuditEventKind::WriteSucceeded, plan).with_report(report)
+        }
+        Err(error) => {
+            AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(error.to_string())
+        }
+    };
+    let audit_recorded = audit.record(&outcome_event).is_ok();
+
+    outcome.map(|report| RawWriteReport {
+        audit_recorded,
+        ..report
+    })
+}
+
+fn consume_and_write(
     plan: &RawWritePlan,
     authorizations: &AuthorizationStore,
     on_progress: impl FnMut(RawWriteProgress),
@@ -377,6 +434,9 @@ pub fn execute_raw_write<D: BlockDevice>(
     let mut image_buffer = vec![0u8; chunk_size];
 
     let write_started = Instant::now();
+    // Hashed while writing so the report names exactly what went onto the
+    // drive, without a second pass over the image.
+    let mut image_hash = Sha256::new();
     let mut offset = 0u64;
     report(&mut on_progress, RawWritePhase::Writing, 0, image_size);
     while offset < image_size {
@@ -384,6 +444,7 @@ pub fn execute_raw_write<D: BlockDevice>(
         image
             .read_exact(&mut image_buffer[..length])
             .map_err(image_error)?;
+        image_hash.update(&image_buffer[..length]);
         let padded = padded_length(length, offset, device_size);
         image_buffer[length..padded].fill(0);
 
@@ -396,6 +457,11 @@ pub fn execute_raw_write<D: BlockDevice>(
     }
     device.flush().map_err(RawWriteError::Device)?;
     let write_millis = write_started.elapsed().as_millis() as u64;
+    let image_sha256 = image_hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
 
     let verify_started = Instant::now();
     let mut device_buffer = vec![0u8; chunk_size];
@@ -435,10 +501,12 @@ pub fn execute_raw_write<D: BlockDevice>(
         image_path: plan.image_path.display().to_string(),
         target_path: plan.target_path.clone(),
         target_identity_code: plan.target_identity_code.clone(),
+        image_sha256,
         bytes_written: image_size,
         bytes_verified: image_size,
         write_millis,
         verify_millis,
+        audit_recorded: false,
     })
 }
 
@@ -485,36 +553,13 @@ fn report(
     });
 }
 
-fn escape_json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0C}' => escaped.push_str("\\f"),
-            character if character.is_control() => {
-                use std::fmt::Write as _;
-                write!(escaped, "\\u{:04x}", character as u32)
-                    .expect("writing JSON escape should not fail");
-            }
-            character => escaped.push(character),
-        }
-    }
-
-    escaped
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         build_raw_write_plan, execute_raw_write, write_image_to_target, RawWriteError,
         RawWritePhase, RawWritePlan, RawWriteProgress, RAW_WRITE_ALIGNMENT_BYTES,
     };
+    use crate::audit::AuditLog;
     use crate::clock::now_unix_seconds;
     use crate::image_plan::{ImagePlanStatus, ImageWriteStrategy};
     use crate::target::{TargetAssessment, TargetAssessmentStatus};
@@ -631,6 +676,24 @@ mod tests {
     }
 
     #[test]
+    fn reports_the_sha256_of_the_image_it_wrote() {
+        let path = temp_image(b"abc");
+        let drive = MemoryDrive::new(MIB);
+
+        let report = execute_raw_write(&plan(&path, 3, MIB), &drive, |_| {}).unwrap();
+        let _ = fs::remove_file(&path);
+
+        // The published SHA-256 test vector for "abc".
+        assert_eq!(
+            report.image_sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(report.to_json_pretty().contains(
+            "\"imageSha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""
+        ));
+    }
+
+    #[test]
     fn pads_final_chunk_with_zeros_up_to_the_alignment_only() {
         let image = image_bytes(5000);
         let path = temp_image(&image);
@@ -729,9 +792,13 @@ mod tests {
             })
             .unwrap();
 
-        let first = write_image_to_target(&write_plan, &store, |_| {}).unwrap_err();
-        let second = write_image_to_target(&write_plan, &store, |_| {}).unwrap_err();
+        let audit = AuditLog::new(path.with_extension("audit.log"));
+
+        let first = write_image_to_target(&write_plan, &store, &audit, |_| {}).unwrap_err();
+        let second = write_image_to_target(&write_plan, &store, &audit, |_| {}).unwrap_err();
+        let log = fs::read_to_string(audit.path()).unwrap();
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(audit.path());
         let _ = fs::remove_dir_all(store.directory());
 
         assert!(matches!(first, RawWriteError::Open(_)), "{first}");
@@ -739,6 +806,59 @@ mod tests {
             matches!(second, RawWriteError::AuthorizationStore(_)),
             "{second}"
         );
+        let events: Vec<_> = log
+            .lines()
+            .map(|line| {
+                line.split("\"event\":")
+                    .nth(1)
+                    .unwrap()
+                    .split(',')
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [
+                "\"write-started\"",
+                "\"write-failed\"",
+                "\"write-started\"",
+                "\"write-failed\""
+            ]
+        );
+    }
+
+    #[test]
+    fn leaves_the_confirmation_alone_when_the_audit_log_cannot_be_written() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let store = AuthorizationStore::new(path.with_extension("authorizations"));
+        let mut write_plan = plan(&path, image.len() as u64, MIB);
+        write_plan.target_index = 250;
+        write_plan.target_path = r"\\.\PhysicalDrive250".to_string();
+        let authorization = WriteAuthorization {
+            target_index: 250,
+            target_path: write_plan.target_path.clone(),
+            target_identity_code: "7F3A".to_string(),
+            confirmation_phrase: "OSFLUX ERASE TARGET 250 7F3A".to_string(),
+            image: ImageIdentity::read(&path).unwrap(),
+            issued_at_unix_seconds: now_unix_seconds(),
+            expires_at_unix_seconds: now_unix_seconds() + 600,
+        };
+        store.save(&authorization).unwrap();
+        // A folder where the log file should be makes the log unwritable.
+        let audit_path = path.with_extension("audit-dir");
+        fs::create_dir_all(&audit_path).unwrap();
+
+        let error = write_image_to_target(&write_plan, &store, &AuditLog::new(&audit_path), |_| {})
+            .unwrap_err();
+        let still_authorized = store.load(250).unwrap();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&audit_path);
+        let _ = fs::remove_dir_all(store.directory());
+
+        assert!(matches!(error, RawWriteError::Audit { .. }), "{error}");
+        assert_eq!(still_authorized, Some(authorization));
     }
 
     #[test]

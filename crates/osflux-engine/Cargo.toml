@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 osflux-core = { path = "../osflux-core" }
+sha2.workspace = true

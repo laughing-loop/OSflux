@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod chunk_plan;
 pub mod clock;
 mod fingerprint;
@@ -6,6 +7,7 @@ pub mod image_plan;
 pub mod image_report;
 pub mod iso;
 pub mod iso_filesystem_plan;
+mod json;
 pub mod preflight;
 pub mod progress;
 pub mod raw_write;
@@ -19,11 +21,12 @@ pub mod write_session;
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
+pub use audit::{AuditEvent, AuditEventKind, AuditLog};
 pub use chunk_plan::{
     build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
     DEFAULT_CHUNK_SIZE_BYTES,
 };
-pub use clock::{format_unix_utc, now_unix_seconds};
+pub use clock::{format_unix_rfc3339, format_unix_utc, now_unix_seconds};
 pub use image_family::{
     build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
     ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,

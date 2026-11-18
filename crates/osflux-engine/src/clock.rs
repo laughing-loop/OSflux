@@ -9,15 +9,29 @@ pub fn now_unix_seconds() -> u64 {
 
 /// Formats Unix seconds as a UTC timestamp such as `2026-11-18 17:45:12 UTC`.
 pub fn format_unix_utc(unix_seconds: u64) -> String {
-    let days = unix_seconds / 86_400;
-    let seconds_of_day = unix_seconds % 86_400;
-    let (year, month, day) = civil_from_days(days as i64);
+    let (date, time) = utc_date_and_time(unix_seconds);
+    format!("{date} {time} UTC")
+}
 
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC",
-        seconds_of_day / 3600,
-        (seconds_of_day % 3600) / 60,
-        seconds_of_day % 60
+/// Formats Unix seconds as an RFC 3339 UTC timestamp such as
+/// `2026-11-18T17:45:12Z`, for logs that other tools parse.
+pub fn format_unix_rfc3339(unix_seconds: u64) -> String {
+    let (date, time) = utc_date_and_time(unix_seconds);
+    format!("{date}T{time}Z")
+}
+
+fn utc_date_and_time(unix_seconds: u64) -> (String, String) {
+    let seconds_of_day = unix_seconds % 86_400;
+    let (year, month, day) = civil_from_days((unix_seconds / 86_400) as i64);
+
+    (
+        format!("{year:04}-{month:02}-{day:02}"),
+        format!(
+            "{:02}:{:02}:{:02}",
+            seconds_of_day / 3600,
+            (seconds_of_day % 3600) / 60,
+            seconds_of_day % 60
+        ),
     )
 }
 
@@ -44,7 +58,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::format_unix_utc;
+    use super::{format_unix_rfc3339, format_unix_utc};
 
     #[test]
     fn formats_known_timestamps_in_utc() {
@@ -52,5 +66,11 @@ mod tests {
         assert_eq!(format_unix_utc(951_782_400), "2000-02-29 00:00:00 UTC");
         assert_eq!(format_unix_utc(1_795_022_016), "2026-11-18 17:13:36 UTC");
         assert_eq!(format_unix_utc(4_102_444_799), "2099-12-31 23:59:59 UTC");
+    }
+
+    #[test]
+    fn formats_rfc3339_timestamps() {
+        assert_eq!(format_unix_rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_unix_rfc3339(1_795_022_016), "2026-11-18T17:13:36Z");
     }
 }

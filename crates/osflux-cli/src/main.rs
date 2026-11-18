@@ -5,10 +5,10 @@ use osflux_engine::{
     format_unix_utc, list_devices, now_unix_seconds, plan_image, plan_iso_filesystem,
     plan_write_chunks, prepare_raw_write, prepare_write_command, prepare_write_session,
     preview_write_progress, record_write_authorization, run_write_preflight, select_write_mode,
-    write_image_to_target, AuthorizationStore, ChunkPlan, ChunkPlanStatus, Engine, EngineConfig,
-    ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
-    IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
-    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
+    write_image_to_target, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, ChunkPlan,
+    ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus,
+    IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
     TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
     WriteModeSelection, WriteModeSelectionStatus, WritePreflight, WritePreflightStatus,
     WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
@@ -947,6 +947,7 @@ fn run_raw_write(
     }
 
     let authorizations = open_authorization_store();
+    let audit = open_audit_log();
     let plan = match prepare_raw_write(
         image,
         target,
@@ -955,7 +956,14 @@ fn run_raw_write(
         &authorizations,
     ) {
         Ok(plan) => plan,
-        Err(error) => exit_with_raw_write_error(error),
+        Err(error) => {
+            record_audit_event(
+                &audit,
+                AuditEvent::new(AuditEventKind::WriteRefused, image, target)
+                    .with_detail(error.to_string()),
+            );
+            exit_with_raw_write_error(error)
+        }
     };
 
     if let OutputFormat::Text = output {
@@ -963,7 +971,7 @@ fn run_raw_write(
     }
 
     if !assume_yes {
-        confirm_erase_interactively(&plan);
+        confirm_erase_interactively(&plan, &audit);
     }
 
     if let OutputFormat::Text = output {
@@ -971,15 +979,50 @@ fn run_raw_write(
     }
 
     let mut progress = RawWriteProgressPrinter::new(output);
-    let result = write_image_to_target(&plan, &authorizations, |event| progress.update(event));
+    let result = write_image_to_target(&plan, &authorizations, &audit, |event| {
+        progress.update(event)
+    });
     progress.finish();
 
     match result {
-        Ok(report) => match output {
-            OutputFormat::Text => print_raw_write_report(&report),
-            OutputFormat::Json => print!("{}", report.to_json_pretty()),
-        },
+        Ok(report) => {
+            match output {
+                OutputFormat::Text => print_raw_write_report(&report, &audit),
+                OutputFormat::Json => print!("{}", report.to_json_pretty()),
+            }
+            if !report.audit_recorded {
+                eprintln!(
+                    "warning: the write succeeded, but its outcome could not be added to the audit log {}",
+                    audit.path().display()
+                );
+            }
+        }
         Err(error) => exit_with_raw_write_error(error),
+    }
+}
+
+fn open_audit_log() -> AuditLog {
+    match AuditLog::default_location() {
+        Some(log) => log,
+        None => {
+            eprintln!("OSflux could not find where to keep its audit log.");
+            eprintln!(
+                "Set the OSFLUX_STATE_DIR environment variable to a folder OSflux can write to."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Adds an event that does not gate anything, warning instead of failing
+/// when the log cannot be written.
+fn record_audit_event(audit: &AuditLog, event: AuditEvent) {
+    if let Err(error) = audit.record(&event) {
+        eprintln!(
+            "warning: could not add a {} event to the audit log {}: {error}",
+            event.kind.as_str(),
+            audit.path().display()
+        );
     }
 }
 
@@ -1014,7 +1057,7 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
 
 /// Asks on the terminal before erasing; anything but "yes" cancels and
 /// leaves the confirmation from --intent usable until it expires.
-fn confirm_erase_interactively(plan: &RawWritePlan) {
+fn confirm_erase_interactively(plan: &RawWritePlan, audit: &AuditLog) {
     eprintln!();
     eprintln!(
         "This erases everything on {} ({}, {}).",
@@ -1028,6 +1071,10 @@ fn confirm_erase_interactively(plan: &RawWritePlan) {
     let mut answer = String::new();
     let answered = std::io::stdin().read_line(&mut answer).is_ok();
     if !answered || !is_erase_confirmation(&answer) {
+        record_audit_event(
+            audit,
+            AuditEvent::for_plan(AuditEventKind::WriteCancelled, plan),
+        );
         eprintln!(
             "Cancelled. Nothing was written. The confirmation stays usable until {}.",
             format_unix_utc(plan.authorization_expires_at_unix_seconds)
@@ -1041,8 +1088,9 @@ fn is_erase_confirmation(answer: &str) -> bool {
     answer.trim().eq_ignore_ascii_case("yes")
 }
 
-fn print_raw_write_report(report: &RawWriteReport) {
+fn print_raw_write_report(report: &RawWriteReport, audit: &AuditLog) {
     println!("status: written");
+    println!("image sha256: {}", report.image_sha256);
     println!(
         "wrote {} in {}",
         format_size(report.bytes_written),
@@ -1053,6 +1101,7 @@ fn print_raw_write_report(report: &RawWriteReport) {
         format_size(report.bytes_verified),
         format_rate(report.bytes_verified, report.verify_millis)
     );
+    println!("audit log: {}", audit.path().display());
     println!("The drive can be removed.");
 }
 
@@ -1273,6 +1322,12 @@ fn print_write_intent(image: &str, target: u32, output: OutputFormat) {
                     eprintln!("OSflux could not record the confirmation.");
                     eprintln!("{error}");
                     std::process::exit(1);
+                }
+                if let Some(audit) = AuditLog::default_location() {
+                    record_audit_event(
+                        &audit,
+                        AuditEvent::for_intent(AuditEventKind::Authorized, &intent),
+                    );
                 }
             }
 

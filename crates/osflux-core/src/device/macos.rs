@@ -15,6 +15,12 @@ impl BlockDevice for MacOsBlockDevice {
         })
     }
 
+    fn read_at(&self, _offset: u64, _buffer: &mut [u8]) -> DeviceResult<usize> {
+        Err(DeviceError::Unsupported {
+            operation: "macOS block device read_at",
+        })
+    }
+
     fn flush(&self) -> DeviceResult<()> {
         Err(DeviceError::Unsupported {
             operation: "macOS block device flush",

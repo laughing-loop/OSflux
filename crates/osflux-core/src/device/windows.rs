@@ -19,7 +19,7 @@ use windows::Win32::System::IO::DeviceIoControl;
 use super::{
     is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceResult, PhysicalDevice,
 };
-use crate::windows_io::{control_overlapped, query_overlapped, write_overlapped};
+use crate::windows_io::{control_overlapped, query_overlapped, read_overlapped, write_overlapped};
 
 const DEFAULT_SCAN_LIMIT: u32 = 32;
 const VOLUME_LOCK_ATTEMPTS: u32 = 20;
@@ -104,6 +104,23 @@ impl BlockDevice for WindowsBlockDevice {
         }
 
         Ok(written)
+    }
+
+    fn read_at(&self, offset: u64, buffer: &mut [u8]) -> DeviceResult<usize> {
+        let read =
+            read_overlapped(self.handle, buffer, offset).map_err(|error| DeviceError::Io {
+                operation: "read_at",
+                message: error.to_string(),
+            })?;
+
+        if read != buffer.len() {
+            return Err(DeviceError::Io {
+                operation: "read_at",
+                message: format!("read {read} of {} bytes at offset {offset}", buffer.len()),
+            });
+        }
+
+        Ok(read)
     }
 
     fn flush(&self) -> DeviceResult<()> {

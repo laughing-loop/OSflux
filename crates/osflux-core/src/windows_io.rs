@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use windows::core::{Error, Result, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_DATA, ERROR_IO_PENDING, HANDLE};
-use windows::Win32::Storage::FileSystem::WriteFile;
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Threading::CreateEventW;
 use windows::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 
@@ -17,6 +17,16 @@ pub fn write_overlapped(handle: HANDLE, buffer: &[u8], offset: u64) -> Result<us
     operation
         .wait(handle, started)
         .map(|written| written as usize)
+}
+
+/// Reads into `buffer` from `offset` on a handle opened with
+/// `FILE_FLAG_OVERLAPPED` and waits for the read to finish, for the same
+/// reason as [`write_overlapped`].
+pub fn read_overlapped(handle: HANDLE, buffer: &mut [u8], offset: u64) -> Result<usize> {
+    let mut operation = OverlappedOperation::new(offset)?;
+    let started = unsafe { ReadFile(handle, Some(buffer), None, Some(operation.as_mut_ptr())) };
+
+    operation.wait(handle, started).map(|read| read as usize)
 }
 
 /// Sends a control code that fills in a `T` on a handle opened with
@@ -118,7 +128,7 @@ impl Drop for OverlappedOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::write_overlapped;
+    use super::{read_overlapped, write_overlapped};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::FileSystem::{
@@ -160,6 +170,8 @@ mod tests {
 
         let first_written = write_overlapped(handle, &first, 0);
         let second_written = write_overlapped(handle, &second, second_offset);
+        let mut read_back = vec![0u8; second.len()];
+        let second_read = read_overlapped(handle, &mut read_back, second_offset);
         unsafe {
             let _ = CloseHandle(handle);
         }
@@ -169,6 +181,8 @@ mod tests {
 
         assert_eq!(first_written.unwrap(), first.len());
         assert_eq!(second_written.unwrap(), second.len());
+        assert_eq!(second_read.unwrap(), second.len());
+        assert_eq!(read_back, second);
         assert_eq!(contents.len() as u64, second_offset + second.len() as u64);
         assert!(contents[..first.len()].iter().all(|byte| *byte == 0xAB));
         assert!(contents[second_offset as usize..]

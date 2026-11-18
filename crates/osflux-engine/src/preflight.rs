@@ -362,6 +362,7 @@ mod tests {
             kind: ImageKind::Iso,
             detection_method: DetectionMethod::Signature,
             signatures: Vec::new(),
+            hybrid: false,
             boot_metadata: None,
             write_mode: WriteMode::FileSystem,
             write_strategy: match status {

@@ -256,7 +256,9 @@ fn selected_mode_for(image_plan: &ImagePlan) -> Option<SelectedWriteMode> {
         ImageWriteStrategy::IsoFileSystemBootSetup => {
             Some(SelectedWriteMode::IsoFilesystemBootSetup)
         }
-        ImageWriteStrategy::RawBlockWrite => Some(SelectedWriteMode::RawBlockWrite),
+        ImageWriteStrategy::RawBlockWrite | ImageWriteStrategy::HybridIsoRawWrite => {
+            Some(SelectedWriteMode::RawBlockWrite)
+        }
         ImageWriteStrategy::IsoNeedsDeeperInspection | ImageWriteStrategy::Unknown => None,
     }
 }
@@ -287,6 +289,11 @@ fn mode_selection_reason(
     let reason = match selected_mode {
         Some(SelectedWriteMode::IsoFilesystemBootSetup) => {
             "selected filesystem boot setup mode for validated ISO metadata"
+        }
+        Some(SelectedWriteMode::RawBlockWrite)
+            if image_plan.write_strategy == ImageWriteStrategy::HybridIsoRawWrite =>
+        {
+            "selected raw block write mode for hybrid ISO"
         }
         Some(SelectedWriteMode::RawBlockWrite) => {
             "selected raw block write mode for raw disk image"
@@ -414,6 +421,28 @@ mod tests {
     }
 
     #[test]
+    fn selects_raw_block_write_for_hybrid_iso() {
+        let selection = build_write_mode_selection(
+            &image(
+                ImageKind::Iso,
+                ImagePlanStatus::Ready,
+                ImageWriteStrategy::HybridIsoRawWrite,
+            ),
+            &chunk_plan(ChunkPlanStatus::Planned),
+        );
+
+        assert_eq!(selection.status, WriteModeSelectionStatus::Selected);
+        assert_eq!(
+            selection.selected_mode,
+            Some(SelectedWriteMode::RawBlockWrite)
+        );
+        assert_eq!(
+            selection.reason,
+            "selected raw block write mode for hybrid ISO"
+        );
+    }
+
+    #[test]
     fn serializes_mode_selection_as_json() {
         let selection = build_write_mode_selection(
             &image(
@@ -444,6 +473,7 @@ mod tests {
             kind,
             detection_method: DetectionMethod::Signature,
             signatures: Vec::new(),
+            hybrid: false,
             boot_metadata: None,
             write_mode: match kind {
                 ImageKind::Iso => WriteMode::FileSystem,

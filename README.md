@@ -93,7 +93,7 @@ Print the write command plan as JSON:
 cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
 ```
 
-Write a raw disk image to a USB stick. **This erases the stick.** Run it from an Administrator PowerShell, after `--intent` has printed the phrase for that stick:
+Write a raw disk image or a hybrid ISO to a USB stick. **This erases the stick.** Run it from an Administrator PowerShell, after `--intent` has printed the phrase for that stick. The same command works for a `.iso` that OSflux reports as hybrid:
 
 ```powershell
 cargo run -- --write --image "C:\path\to\image.img" --target 3 --confirm "OSFLUX ERASE TARGET 3 7F3A" --execute
@@ -196,7 +196,8 @@ The preflight blocks any image that is larger than the target drive, so an overs
 The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
 The phrase ends with the target drive's identity code, built from its model, serial number, and Windows device ID. `7F3A` in these examples is only a placeholder: run `--intent` to get the real phrase for your drive. If a different drive takes the same index, the code changes and the old phrase stops matching.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
-Adding `--execute` to `--write` is the only way OSflux writes to a drive. It only writes raw disk images (ISO writing is not supported yet), only to a removable target, and only with the exact phrase from `--intent`. It re-runs the safety chain and re-checks the drive, then opens it, which locks and dismounts the drive's volumes. It refuses to continue if the opened drive's size does not match the confirmed one, writes the image in 4 MiB chunks, reads every byte back to verify it, and then releases the drive.
+Adding `--execute` to `--write` is the only way OSflux writes to a drive. It only writes raw disk images and hybrid ISOs, only to a removable target, and only with the exact phrase from `--intent`. It re-runs the safety chain and re-checks the drive, then opens it, which locks and dismounts the drive's volumes. It refuses to continue if the opened drive's size does not match the confirmed one, writes the image in 4 MiB chunks, reads every byte back to verify it, and then releases the drive.
+A hybrid ISO also carries a partition table in its first sector, which is how most Linux installers (Ubuntu, Fedora, Debian, Arch, Mint) are built. OSflux copies those byte for byte, the same way it writes a `.img`, and `--plan-image` reports them with `hybrid: yes` and the `hybrid-iso-raw-write` strategy. ISOs that need their files extracted, such as Windows installers, are still refused.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.
 The chunk plan command is still read-only. It calculates image size, chunk size, chunk count, final chunk size, and planned bytes for future progress reporting.
 The progress preview command is still read-only. It turns the chunk plan into sampled progress events with integer percentage basis points.

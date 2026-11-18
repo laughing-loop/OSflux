@@ -242,7 +242,7 @@ pub fn build_raw_write_plan(
 
     if selection.selected_mode != Some(SelectedWriteMode::RawBlockWrite) {
         return Err(RawWriteError::Blocked {
-            reason: "only raw disk images can be written so far; ISO writing is not supported yet"
+            reason: "only raw disk images and hybrid ISOs can be written so far; this ISO needs its files extracted, which is not supported yet"
                 .to_string(),
         });
     }

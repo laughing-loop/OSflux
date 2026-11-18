@@ -11,6 +11,9 @@ const GPT_HEADER_OFFSET: u64 = 512;
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
 const MBR_SIGNATURE_OFFSET: u64 = 510;
 const MBR_SIGNATURE: &[u8; 2] = &[0x55, 0xAA];
+const MBR_PARTITION_TABLE_OFFSET: usize = 446;
+const MBR_PARTITION_ENTRY_SIZE: usize = 16;
+const MBR_PARTITION_ENTRIES: usize = 4;
 const VOLUME_DESCRIPTOR_IDENTIFIER_OFFSET: u64 = 1;
 const VOLUME_DESCRIPTOR_IDENTIFIER_SIZE: usize = 5;
 const VOLUME_DESCRIPTOR_SCAN_SECTORS: u64 = 32;
@@ -25,6 +28,9 @@ pub struct ImagePlan {
     pub kind: ImageKind,
     pub detection_method: DetectionMethod,
     pub signatures: Vec<ImageSignature>,
+    /// An ISO whose first sector also holds a partition table, so it can be
+    /// copied to a drive byte for byte and boot from there.
+    pub hybrid: bool,
     pub boot_metadata: Option<IsoBootMetadata>,
     pub write_mode: WriteMode,
     pub write_strategy: ImageWriteStrategy,
@@ -131,6 +137,7 @@ pub enum ImageWriteStrategy {
     IsoFileSystemBootSetup,
     IsoNeedsDeeperInspection,
     RawBlockWrite,
+    HybridIsoRawWrite,
     Unknown,
 }
 
@@ -140,6 +147,7 @@ impl ImageWriteStrategy {
             Self::IsoFileSystemBootSetup => "iso-filesystem-boot-setup",
             Self::IsoNeedsDeeperInspection => "iso-needs-deeper-inspection",
             Self::RawBlockWrite => "raw-block-write",
+            Self::HybridIsoRawWrite => "hybrid-iso-raw-write",
             Self::Unknown => "unknown",
         }
     }
@@ -212,7 +220,14 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
     })?;
     let extension_kind = classify_by_extension(&source);
     let (kind, detection_method) = classify_image(extension_kind, &signatures);
-    let write_mode = write_mode_for(kind);
+    let hybrid = kind == ImageKind::Iso
+        && has_hybrid_partition_table(&source, &signatures).map_err(|error| {
+            ImagePlanError::Inspect {
+                path: source.clone(),
+                message: error.to_string(),
+            }
+        })?;
+    let write_mode = write_mode_for(kind, hybrid);
     let mut boot_metadata = None;
     let mut notes = Vec::new();
     let mut warnings = Vec::new();
@@ -285,7 +300,11 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
                     warnings.push(format!("Could not inspect ISO boot metadata: {error}"));
                 }
             }
-            notes.push("Initial mode is filesystem planning because ISO content often needs extraction and boot setup.".to_string());
+            if hybrid {
+                notes.push("ISO is hybrid: its first sector also holds a partition table, so it can be written to a drive byte for byte.".to_string());
+            } else {
+                notes.push("Initial mode is filesystem planning because ISO content often needs extraction and boot setup.".to_string());
+            }
         }
         ImageKind::RawDiskImage => {
             notes.push("Raw disk image detected; initial mode is direct block writing after target safety checks.".to_string());
@@ -295,7 +314,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         }
     }
 
-    let write_strategy = write_strategy_for(kind, boot_metadata.as_ref());
+    let write_strategy = write_strategy_for(kind, hybrid, boot_metadata.as_ref());
     add_strategy_notes(write_strategy, &mut notes, &mut warnings);
 
     if detection_method == DetectionMethod::Extension {
@@ -326,6 +345,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         kind,
         detection_method,
         signatures,
+        hybrid,
         boot_metadata,
         write_mode,
         write_strategy,
@@ -392,6 +412,30 @@ fn has_mbr_signature(file: &mut File) -> std::io::Result<bool> {
         .map(|buffer: Option<[u8; 2]>| buffer.is_some_and(|buffer| &buffer == MBR_SIGNATURE))
 }
 
+/// A hybrid ISO carries a partition table in its first sector as well as its
+/// ISO 9660 filesystem, which is what lets it boot when copied to a USB drive
+/// byte for byte. The MBR boot signature alone is not enough: there must also
+/// be a GPT header or at least one MBR partition entry with a size.
+fn has_hybrid_partition_table(path: &Path, signatures: &[ImageSignature]) -> std::io::Result<bool> {
+    if !signatures.contains(&ImageSignature::Mbr) {
+        return Ok(false);
+    }
+
+    if signatures.contains(&ImageSignature::Gpt) {
+        return Ok(true);
+    }
+
+    let mut file = File::open(path)?;
+    let Some(sector) = read_exact_at_optional::<512>(&mut file, 0)? else {
+        return Ok(false);
+    };
+    let table_end = MBR_PARTITION_TABLE_OFFSET + MBR_PARTITION_ENTRIES * MBR_PARTITION_ENTRY_SIZE;
+
+    Ok(sector[MBR_PARTITION_TABLE_OFFSET..table_end]
+        .chunks_exact(MBR_PARTITION_ENTRY_SIZE)
+        .any(|entry| u32::from_le_bytes(entry[12..16].try_into().unwrap()) != 0))
+}
+
 fn read_exact_at_optional<const N: usize>(
     file: &mut File,
     offset: u64,
@@ -444,8 +488,9 @@ fn classify_by_extension(path: &Path) -> ImageKind {
     }
 }
 
-fn write_mode_for(kind: ImageKind) -> WriteMode {
+fn write_mode_for(kind: ImageKind, hybrid: bool) -> WriteMode {
     match kind {
+        ImageKind::Iso if hybrid => WriteMode::Raw,
         ImageKind::Iso => WriteMode::FileSystem,
         ImageKind::RawDiskImage => WriteMode::Raw,
         ImageKind::Unknown => WriteMode::Unknown,
@@ -454,9 +499,13 @@ fn write_mode_for(kind: ImageKind) -> WriteMode {
 
 fn write_strategy_for(
     kind: ImageKind,
+    hybrid: bool,
     boot_metadata: Option<&IsoBootMetadata>,
 ) -> ImageWriteStrategy {
     match kind {
+        // A hybrid ISO boots from its own partition table once copied, so it
+        // does not depend on the El Torito metadata that extraction would use.
+        ImageKind::Iso if hybrid => ImageWriteStrategy::HybridIsoRawWrite,
         ImageKind::Iso => match boot_metadata {
             Some(metadata) if iso_metadata_ready_for_boot_setup(metadata) => {
                 ImageWriteStrategy::IsoFileSystemBootSetup
@@ -499,6 +548,12 @@ fn add_strategy_notes(
         ImageWriteStrategy::RawBlockWrite => {
             notes.push(
                 "Write strategy selected: direct block write after device safety confirmation."
+                    .to_string(),
+            );
+        }
+        ImageWriteStrategy::HybridIsoRawWrite => {
+            notes.push(
+                "Write strategy selected: copy the hybrid ISO to the drive byte for byte after device safety confirmation."
                     .to_string(),
             );
         }
@@ -681,6 +736,45 @@ mod tests {
     }
 
     #[test]
+    fn copies_hybrid_iso_with_mbr_partition_byte_for_byte() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        // Arch and Fedora style: the first MBR entry has partition type 0 and
+        // the boot flag, but a real start and size.
+        let mut entry = [0u8; 16];
+        entry[0] = 0x80;
+        entry[8..12].copy_from_slice(&64u32.to_le_bytes());
+        entry[12..16].copy_from_slice(&1_590_720u32.to_le_bytes());
+        write_at(&path, 446, &entry);
+        write_at(&path, 510, &[0x55, 0xAA]);
+        write_at(&path, 0x8001, b"CD001");
+
+        let plan = plan_image(&path).unwrap();
+        let _ = fs::remove_file(path);
+
+        assert_eq!(plan.kind, ImageKind::Iso);
+        assert!(plan.hybrid);
+        assert_eq!(plan.write_mode, WriteMode::Raw);
+        assert_eq!(plan.write_strategy, ImageWriteStrategy::HybridIsoRawWrite);
+        assert_eq!(plan.status, ImagePlanStatus::Ready);
+    }
+
+    #[test]
+    fn copies_hybrid_iso_with_gpt_byte_for_byte() {
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        // Ubuntu style: a protective MBR followed by a GPT header.
+        write_at(&path, 510, &[0x55, 0xAA]);
+        write_at(&path, 512, b"EFI PART");
+        write_at(&path, 0x8001, b"CD001");
+
+        let plan = plan_image(&path).unwrap();
+        let _ = fs::remove_file(path);
+
+        assert!(plan.hybrid);
+        assert_eq!(plan.write_strategy, ImageWriteStrategy::HybridIsoRawWrite);
+        assert_eq!(plan.status, ImagePlanStatus::Ready);
+    }
+
+    #[test]
     fn prefers_iso_signature_over_raw_signature() {
         let path = std::env::temp_dir().join(unique_name("img"));
         write_at(&path, 510, &[0x55, 0xAA]);
@@ -694,6 +788,8 @@ mod tests {
             plan.signatures,
             vec![ImageSignature::Iso9660, ImageSignature::Mbr]
         );
+        // A boot signature with an empty partition table is not a hybrid ISO.
+        assert!(!plan.hybrid);
         assert_eq!(plan.write_mode, WriteMode::FileSystem);
         assert_eq!(
             plan.write_strategy,

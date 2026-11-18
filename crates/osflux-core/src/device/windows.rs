@@ -1,25 +1,40 @@
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+use std::time::Duration;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FlushFileBuffers, FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES,
-    FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    OPEN_EXISTING,
+    CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, FlushFileBuffers,
+    FILE_ATTRIBUTE_NORMAL, FILE_DEVICE_DISK, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OVERLAPPED,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
 };
-use windows::Win32::System::Ioctl::{GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO};
+use windows::Win32::System::Ioctl::{
+    FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME, GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO,
+    IOCTL_DISK_UPDATE_PROPERTIES, IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
+};
 use windows::Win32::System::IO::DeviceIoControl;
 
 use super::{
     is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceResult, PhysicalDevice,
 };
-use crate::windows_io::{query_overlapped, write_overlapped};
+use crate::windows_io::{control_overlapped, query_overlapped, write_overlapped};
 
 const DEFAULT_SCAN_LIMIT: u32 = 32;
+const VOLUME_LOCK_ATTEMPTS: u32 = 20;
+const VOLUME_LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
+const MAX_VOLUME_NAME_CHARS: usize = 260;
+const MAX_VOLUME_EXTENTS: usize = 32;
+const DISK_EXTENTS_HEADER_SIZE: usize = 8;
+const DISK_EXTENT_SIZE: usize = 24;
 
 pub struct WindowsBlockDevice {
     handle: HANDLE,
+    // Windows refuses raw writes to sectors of a mounted volume, so every
+    // volume on the disk stays locked and dismounted while it is open.
+    // Closing these handles releases the locks.
+    locked_volumes: Vec<LockedVolume>,
 }
 
 impl WindowsBlockDevice {
@@ -43,8 +58,32 @@ impl BlockDevice for WindowsBlockDevice {
             path: path.to_string(),
             message: error.to_string(),
         })?;
+        // Built before the remaining steps so the handle is closed if one fails.
+        let mut device = Self {
+            handle,
+            locked_volumes: Vec::new(),
+        };
 
-        Ok(Self { handle })
+        let device_number: STORAGE_DEVICE_NUMBER =
+            query_overlapped(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER).map_err(|error| {
+                DeviceError::Open {
+                    path: path.to_string(),
+                    message: format!("could not read the disk number: {error}"),
+                }
+            })?;
+
+        // Only whole physical disks are opened for writing. A single volume or
+        // a file on a disk can answer the same query with a partition number.
+        if !is_whole_disk(&device_number) {
+            return Err(DeviceError::Open {
+                path: path.to_string(),
+                message: "not a whole physical disk".to_string(),
+            });
+        }
+
+        device.locked_volumes = lock_disk_volumes(device_number.DeviceNumber)?;
+
+        Ok(device)
     }
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> DeviceResult<usize> {
@@ -92,8 +131,190 @@ impl BlockDevice for WindowsBlockDevice {
 
 impl Drop for WindowsBlockDevice {
     fn drop(&mut self) {
+        // Best effort: have Windows re-read the partition table so the new
+        // partitions appear once the volume locks are released.
+        let _ = control_overlapped(self.handle, IOCTL_DISK_UPDATE_PROPERTIES);
+        close_handle(self.handle);
+        // `locked_volumes` drops after this, so the locks outlive the disk handle.
+    }
+}
+
+struct LockedVolume {
+    handle: HANDLE,
+}
+
+impl Drop for LockedVolume {
+    fn drop(&mut self) {
         close_handle(self.handle);
     }
+}
+
+struct VolumeSearch(HANDLE);
+
+impl Drop for VolumeSearch {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = FindVolumeClose(self.0);
+        }
+    }
+}
+
+fn is_whole_disk(device_number: &STORAGE_DEVICE_NUMBER) -> bool {
+    device_number.DeviceType == FILE_DEVICE_DISK.0 && device_number.PartitionNumber == 0
+}
+
+fn lock_disk_volumes(disk_number: u32) -> DeviceResult<Vec<LockedVolume>> {
+    // On failure the volumes locked so far drop here and are released.
+    volumes_on_disk(disk_number)?
+        .iter()
+        .map(|volume| lock_and_dismount_volume(volume))
+        .collect()
+}
+
+fn volumes_on_disk(disk_number: u32) -> DeviceResult<Vec<String>> {
+    let mut name = [0u16; MAX_VOLUME_NAME_CHARS];
+    let search = unsafe { FindFirstVolumeW(&mut name) }.map_err(|error| DeviceError::Io {
+        operation: "list volumes",
+        message: error.to_string(),
+    })?;
+    let search = VolumeSearch(search);
+    let mut volumes = Vec::new();
+
+    loop {
+        let volume = wide_to_string(&name);
+        if volume_disk_numbers(&volume).contains(&disk_number) {
+            volumes.push(volume);
+        }
+
+        if let Err(error) = unsafe { FindNextVolumeW(search.0, &mut name) } {
+            if error.code() == ERROR_NO_MORE_FILES.to_hresult() {
+                return Ok(volumes);
+            }
+
+            return Err(DeviceError::Io {
+                operation: "list volumes",
+                message: error.to_string(),
+            });
+        }
+    }
+}
+
+/// Disk numbers a volume sits on. Volumes that cannot be opened or queried,
+/// such as an empty card reader, are skipped: if one did sit on the target,
+/// Windows would refuse writes to its sectors, so skipping it fails safe.
+fn volume_disk_numbers(volume_name: &str) -> Vec<u32> {
+    let device_path = volume_name.trim_end_matches('\\');
+    let Ok(handle) = open_handle(device_path, 0, FILE_ATTRIBUTE_NORMAL) else {
+        return Vec::new();
+    };
+
+    let mut buffer = vec![0u8; DISK_EXTENTS_HEADER_SIZE + MAX_VOLUME_EXTENTS * DISK_EXTENT_SIZE];
+    let mut bytes_returned = 0u32;
+    let result = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+            None,
+            0,
+            Some(buffer.as_mut_ptr().cast()),
+            buffer.len() as u32,
+            Some(&mut bytes_returned),
+            None,
+        )
+    };
+    close_handle(handle);
+
+    if result.is_err() {
+        return Vec::new();
+    }
+
+    let returned = (bytes_returned as usize).min(buffer.len());
+    parse_disk_extent_numbers(&buffer[..returned])
+}
+
+/// Reads the disk numbers out of a `VOLUME_DISK_EXTENTS` result: a `u32`
+/// count padded to 8 bytes, then 24-byte `DISK_EXTENT` records that each
+/// start with a `u32` disk number.
+fn parse_disk_extent_numbers(bytes: &[u8]) -> Vec<u32> {
+    let Some(count) = bytes.get(0..4) else {
+        return Vec::new();
+    };
+    let count = u32::from_le_bytes(count.try_into().unwrap()) as usize;
+
+    (0..count.min(MAX_VOLUME_EXTENTS))
+        .filter_map(|index| {
+            let start = DISK_EXTENTS_HEADER_SIZE + index * DISK_EXTENT_SIZE;
+            bytes
+                .get(start..start + 4)
+                .map(|number| u32::from_le_bytes(number.try_into().unwrap()))
+        })
+        .collect()
+}
+
+fn lock_and_dismount_volume(volume_name: &str) -> DeviceResult<LockedVolume> {
+    let device_path = volume_name.trim_end_matches('\\');
+    let handle = open_handle(
+        device_path,
+        FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+        FILE_ATTRIBUTE_NORMAL,
+    )
+    .map_err(|error| volume_lock_error(device_path, format!("could not open it: {error}")))?;
+    let volume = LockedVolume { handle };
+
+    // Explorer, antivirus scanners and indexers often hold a volume open for a
+    // moment after it is plugged in, so a busy volume is retried briefly.
+    let mut attempts = 1;
+    while let Err(error) = volume_control(handle, FSCTL_LOCK_VOLUME) {
+        if attempts >= VOLUME_LOCK_ATTEMPTS {
+            return Err(volume_lock_error(
+                device_path,
+                format!(
+                    "it is in use; close any programs or windows using the drive and try again ({error})"
+                ),
+            ));
+        }
+
+        attempts += 1;
+        std::thread::sleep(VOLUME_LOCK_RETRY_DELAY);
+    }
+
+    volume_control(handle, FSCTL_DISMOUNT_VOLUME).map_err(|error| {
+        volume_lock_error(device_path, format!("could not dismount it: {error}"))
+    })?;
+
+    Ok(volume)
+}
+
+fn volume_control(handle: HANDLE, control_code: u32) -> windows::core::Result<()> {
+    // Without an OVERLAPPED structure Windows requires a bytes-returned pointer.
+    let mut bytes_returned = 0u32;
+    unsafe {
+        DeviceIoControl(
+            handle,
+            control_code,
+            None,
+            0,
+            None,
+            0,
+            Some(&mut bytes_returned),
+            None,
+        )
+    }
+}
+
+fn volume_lock_error(device_path: &str, message: String) -> DeviceError {
+    DeviceError::Io {
+        operation: "lock volume",
+        message: format!("{device_path}: {message}"),
+    }
+}
+
+fn wide_to_string(buffer: &[u16]) -> String {
+    let length = buffer
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..length])
 }
 
 pub fn list_physical_devices() -> Vec<PhysicalDevice> {
@@ -354,3 +575,119 @@ Get-CimInstance Win32_DiskDrive | Sort-Object Index | ForEach-Object {
     ))
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        close_handle, is_whole_disk, open_handle, parse_disk_extent_numbers, volume_disk_numbers,
+        volumes_on_disk, wide_to_string, BlockDevice, WindowsBlockDevice, DISK_EXTENTS_HEADER_SIZE,
+        DISK_EXTENT_SIZE, MAX_VOLUME_NAME_CHARS,
+    };
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        GetVolumeNameForVolumeMountPointW, FILE_ATTRIBUTE_NORMAL, FILE_DEVICE_CD_ROM,
+        FILE_DEVICE_DISK,
+    };
+    use windows::Win32::System::Ioctl::{IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER};
+    use windows::Win32::System::IO::DeviceIoControl;
+
+    #[test]
+    fn accepts_only_whole_disks() {
+        let disk = |device_type: u32, partition_number: u32| STORAGE_DEVICE_NUMBER {
+            DeviceType: device_type,
+            DeviceNumber: 2,
+            PartitionNumber: partition_number,
+        };
+
+        assert!(is_whole_disk(&disk(FILE_DEVICE_DISK.0, 0)));
+        assert!(!is_whole_disk(&disk(FILE_DEVICE_DISK.0, 1)));
+        assert!(!is_whole_disk(&disk(FILE_DEVICE_CD_ROM.0, 0)));
+    }
+
+    #[test]
+    fn physical_drive_zero_reports_itself_as_a_whole_disk() {
+        let handle = open_handle(r"\\.\PhysicalDrive0", 0, FILE_ATTRIBUTE_NORMAL).unwrap();
+        let mut device_number = STORAGE_DEVICE_NUMBER::default();
+        let mut bytes_returned = 0u32;
+        let result = unsafe {
+            DeviceIoControl(
+                handle,
+                IOCTL_STORAGE_GET_DEVICE_NUMBER,
+                None,
+                0,
+                Some((&mut device_number as *mut STORAGE_DEVICE_NUMBER).cast()),
+                std::mem::size_of::<STORAGE_DEVICE_NUMBER>() as u32,
+                Some(&mut bytes_returned),
+                None,
+            )
+        };
+        close_handle(handle);
+
+        result.unwrap();
+        assert!(is_whole_disk(&device_number));
+        assert_eq!(device_number.DeviceNumber, 0);
+    }
+
+    #[test]
+    fn parses_disk_numbers_from_volume_extents() {
+        let mut bytes = vec![0u8; DISK_EXTENTS_HEADER_SIZE + 2 * DISK_EXTENT_SIZE];
+        bytes[0..4].copy_from_slice(&2u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&5u32.to_le_bytes());
+
+        assert_eq!(parse_disk_extent_numbers(&bytes), vec![3, 5]);
+    }
+
+    #[test]
+    fn ignores_extents_missing_from_a_short_buffer() {
+        let mut bytes = vec![0u8; DISK_EXTENTS_HEADER_SIZE + DISK_EXTENT_SIZE];
+        bytes[0..4].copy_from_slice(&4u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+
+        assert_eq!(parse_disk_extent_numbers(&bytes), vec![1]);
+        assert!(parse_disk_extent_numbers(&[]).is_empty());
+    }
+
+    #[test]
+    fn finds_the_system_volume_on_its_disk() {
+        let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        let system_disks = volume_disk_numbers(&format!(r"\\.\{system_drive}"));
+        assert!(!system_disks.is_empty(), "system volume reported no disks");
+
+        let mount_point: Vec<u16> = format!("{system_drive}\\")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut name = [0u16; MAX_VOLUME_NAME_CHARS];
+        unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(mount_point.as_ptr()), &mut name) }
+            .unwrap();
+        let system_volume = wide_to_string(&name);
+
+        let volumes = volumes_on_disk(system_disks[0]).unwrap();
+
+        assert!(
+            volumes.contains(&system_volume),
+            "{system_volume} not among {volumes:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_to_open_something_that_is_not_a_disk() {
+        let path =
+            std::env::temp_dir().join(format!("osflux-not-a-disk-{}.bin", std::process::id()));
+        std::fs::write(&path, b"not a disk").unwrap();
+
+        let result = WindowsBlockDevice::open(&path.to_string_lossy());
+        let _ = std::fs::remove_file(&path);
+
+        let error = result
+            .err()
+            .expect("a regular file must not open as a disk")
+            .to_string();
+        assert!(
+            error.contains("not a whole physical disk")
+                || error.contains("could not read the disk number"),
+            "{error}"
+        );
+    }
+}

@@ -986,7 +986,9 @@ fn format_rate(bytes: u64, millis: u64) -> String {
 fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     let exit_code = match error {
         RawWriteError::InvalidChunkSize { .. } => 2,
-        RawWriteError::Blocked { .. } | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
+        RawWriteError::Blocked { .. }
+        | RawWriteError::ConfirmationMismatch { .. }
+        | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
         _ => 1,
     };
 

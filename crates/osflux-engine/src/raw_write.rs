@@ -105,6 +105,10 @@ pub enum RawWriteError {
     InvalidChunkSize {
         chunk_size_bytes: u64,
     },
+    /// The supplied phrase is not the one `--intent` prints for this drive.
+    ConfirmationMismatch {
+        target_index: u32,
+    },
     /// The target no longer matches the drive that was confirmed; nothing was written.
     TargetChanged {
         reason: String,
@@ -133,6 +137,10 @@ impl fmt::Display for RawWriteError {
             Self::InvalidChunkSize { chunk_size_bytes } => write!(
                 formatter,
                 "chunk size {chunk_size_bytes} must be a multiple of {RAW_WRITE_ALIGNMENT_BYTES} bytes and at most {MAX_RAW_WRITE_CHUNK_BYTES} bytes"
+            ),
+            Self::ConfirmationMismatch { target_index } => write!(
+                formatter,
+                "the confirmation phrase does not match drive {target_index}; copy the exact phrase that --intent prints for it"
             ),
             Self::TargetChanged { reason } => {
                 write!(formatter, "target changed before writing: {reason}")
@@ -199,25 +207,15 @@ pub fn build_raw_write_plan(
 ) -> Result<RawWritePlan, RawWriteError> {
     validate_chunk_size(chunk_size_bytes)?;
 
-    if selection.status != WriteModeSelectionStatus::Selected {
-        return Err(RawWriteError::Blocked {
-            reason: selection.reason.clone(),
-        });
-    }
-
-    if selection.selected_mode != Some(SelectedWriteMode::RawBlockWrite) {
-        return Err(RawWriteError::Blocked {
-            reason: "only raw disk images can be written so far; ISO writing is not supported yet"
-                .to_string(),
-        });
-    }
-
     if target.index != selection.target_index || target.path != selection.target_path {
         return Err(RawWriteError::TargetChanged {
             reason: "the re-assessed target is not the planned target".to_string(),
         });
     }
 
+    // The target and the phrase are checked before the rest of the chain, so
+    // a blocked drive or a mistyped phrase is reported as itself rather than
+    // as a downstream planning step that it blocked.
     if target.status == TargetAssessmentStatus::Blocked {
         return Err(RawWriteError::Blocked {
             reason: target.reason.clone(),
@@ -231,11 +229,21 @@ pub fn build_raw_write_plan(
     };
 
     if confirmation_phrase(target.index, &identity_code) != supplied_confirmation_phrase {
-        return Err(RawWriteError::TargetChanged {
-            reason: format!(
-                "the drive at index {} no longer matches the confirmation phrase; run --intent again",
-                target.index
-            ),
+        return Err(RawWriteError::ConfirmationMismatch {
+            target_index: target.index,
+        });
+    }
+
+    if selection.status != WriteModeSelectionStatus::Selected {
+        return Err(RawWriteError::Blocked {
+            reason: selection.reason.clone(),
+        });
+    }
+
+    if selection.selected_mode != Some(SelectedWriteMode::RawBlockWrite) {
+        return Err(RawWriteError::Blocked {
+            reason: "only raw disk images can be written so far; ISO writing is not supported yet"
+                .to_string(),
         });
     }
 
@@ -682,7 +690,55 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, RawWriteError::TargetChanged { .. }));
+        assert!(matches!(
+            error,
+            RawWriteError::ConfirmationMismatch { target_index: 2 }
+        ));
+    }
+
+    #[test]
+    fn reports_a_mistyped_phrase_instead_of_the_step_it_blocked() {
+        // A wrong phrase also blocks mode selection, but the phrase is what
+        // the operator needs to hear about.
+        let mut blocked = selection(Some(SelectedWriteMode::RawBlockWrite));
+        blocked.status = WriteModeSelectionStatus::Blocked;
+        blocked.reason = "write mode selection blocked: chunk plan blocked because write confirmation did not match".to_string();
+
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &blocked,
+            &target(Some("2E85")),
+            "OSFLUX ERASE TARGET 2 XXXX",
+            4 * MIB,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RawWriteError::ConfirmationMismatch { target_index: 2 }
+        ));
+        assert!(!error.to_string().contains("2E85"));
+    }
+
+    #[test]
+    fn reports_a_blocked_target_before_the_phrase() {
+        let mut external_disk = target(Some("34B5"));
+        external_disk.status = TargetAssessmentStatus::Blocked;
+        external_disk.reason = "target is an external hard disk or SSD".to_string();
+
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &external_disk,
+            "OSFLUX ERASE TARGET 2 XXXX",
+            4 * MIB,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RawWriteError::Blocked { reason } if reason == "target is an external hard disk or SSD"
+        ));
     }
 
     #[test]

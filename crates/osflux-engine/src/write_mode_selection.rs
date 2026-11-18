@@ -205,7 +205,7 @@ pub fn build_write_mode_selection(
 
     WriteModeSelection {
         status,
-        reason: mode_selection_reason(image_plan, chunk_plan, selected_mode).to_string(),
+        reason: mode_selection_reason(image_plan, chunk_plan, selected_mode),
         selected_mode: if status == WriteModeSelectionStatus::Selected {
             selected_mode
         } else {
@@ -265,24 +265,26 @@ fn mode_selection_reason(
     image_plan: &ImagePlan,
     chunk_plan: &ChunkPlan,
     selected_mode: Option<SelectedWriteMode>,
-) -> &'static str {
+) -> String {
     if image_plan.status == ImagePlanStatus::Blocked {
-        return "write mode selection blocked by image plan";
+        return "write mode selection blocked by image plan".to_string();
     }
 
+    // Pass on why the chunk plan was blocked, such as a mismatched
+    // confirmation phrase, rather than only that it was.
     if chunk_plan.planned_bytes == 0 {
-        return "write mode selection blocked by chunk plan";
+        return format!("write mode selection blocked: {}", chunk_plan.reason);
     }
 
     if chunk_plan.write_access_attempted || !chunk_plan.dry_run {
-        return "write mode selection blocked because chunk plan is not read-only";
+        return "write mode selection blocked because chunk plan is not read-only".to_string();
     }
 
     if image_plan.status == ImagePlanStatus::NeedsInspection {
-        return "write mode selection needs deeper image inspection";
+        return "write mode selection needs deeper image inspection".to_string();
     }
 
-    match selected_mode {
+    let reason = match selected_mode {
         Some(SelectedWriteMode::IsoFilesystemBootSetup) => {
             "selected filesystem boot setup mode for validated ISO metadata"
         }
@@ -290,7 +292,8 @@ fn mode_selection_reason(
             "selected raw block write mode for raw disk image"
         }
         None => "write mode selection blocked because no mode is available",
-    }
+    };
+    reason.to_string()
 }
 
 fn optional_mode_json(value: Option<SelectedWriteMode>) -> String {
@@ -407,6 +410,7 @@ mod tests {
 
         assert_eq!(selection.status, WriteModeSelectionStatus::Blocked);
         assert_eq!(selection.selected_mode, None);
+        assert_eq!(selection.reason, "write mode selection blocked: blocked");
     }
 
     #[test]

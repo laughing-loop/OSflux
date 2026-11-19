@@ -61,6 +61,11 @@ drive="$work/drive.img"
 mtools_drive() { echo "$drive@@$start_bytes"; }
 export MTOOLS_SKIP_CHECK=1
 
+# An MBR with no partitions, as diskpart's clean leaves a removable drive.
+new_drive "$drive"
+printf 'label: dos\n' | sfdisk -q "$drive"
+to_sparse "$drive" mbr-empty
+
 # One empty FAT32 partition, as Windows formats a new stick.
 new_drive "$drive"
 mbr_one_partition "$drive" c

@@ -1,7 +1,9 @@
 //! What a drive holds right now, read without changing anything on it.
 //!
-//! A drive is `blank` when its first and last MiB are uniformly empty, and
-//! `empty-filesystem` when it holds exactly one FAT32 or exFAT partition whose
+//! A drive is `blank` when its first and last MiB are uniformly empty, or
+//! when the only thing in them is an empty MBR, as `diskpart clean` leaves on
+//! a removable drive. It is `empty-filesystem` when it holds exactly one FAT32
+//! or exFAT partition whose
 //! root folder has nothing in it but the volume label and a
 //! `System Volume Information` folder. Only those two states let a write be
 //! confirmed with the drive's short identity code instead of the full phrase.
@@ -30,7 +32,8 @@ const SYSTEM_VOLUME_INFORMATION: &str = "System Volume Information";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveContentsState {
-    /// The first and last MiB are uniformly empty.
+    /// The first and last MiB are uniformly empty, apart from at most an
+    /// MBR with no partitions in it.
     Blank,
     /// Exactly one FAT32 or exFAT partition with an empty root folder.
     EmptyFilesystem,
@@ -327,6 +330,16 @@ fn inspect(disk: &Disk) -> Result<DriveContents, Problem> {
                 Vec::new(),
             ));
         }
+        (false, true) if is_empty_mbr(&start) => {
+            return Ok(DriveContents {
+                state: DriveContentsState::Blank,
+                reason:
+                    "the drive holds only an empty partition table, as diskpart's clean leaves it"
+                        .to_string(),
+                partition_scheme: Some(PartitionScheme::Mbr),
+                partitions: Vec::new(),
+            });
+        }
         _ => {}
     }
 
@@ -405,6 +418,18 @@ fn describe_entries(first: &str, count: usize) -> String {
         2 => format!("\"{first}\" and 1 more entry"),
         _ => format!("\"{first}\" and {} more entries", count - 1),
     }
+}
+
+/// True when the first MiB holds an MBR with no partitions and nothing else.
+/// Windows writes one when it wipes a removable drive. The boot code and disk
+/// signature in the MBR are not data, so such a drive counts as blank. A GPT,
+/// even an empty one, does not: its tables reach past the first sector.
+fn is_empty_mbr(start: &[u8]) -> bool {
+    let sector0 = &start[..512];
+    sector0[510..512] == [0x55, 0xAA]
+        && boot_sector_kind(sector0).is_none()
+        && sector0[446..510].iter().all(|&byte| byte == 0)
+        && is_uniform(&start[512..])
 }
 
 /// True for all zero bytes, or all 0xFF as some erased flash reads.
@@ -1369,6 +1394,81 @@ mod tests {
             inspect_drive_contents(&drive).state,
             DriveContentsState::HasData
         );
+    }
+
+    #[test]
+    fn an_empty_mbr_as_diskpart_clean_leaves_it_is_blank() {
+        let contents = inspect_drive_contents(&fixture!("mbr-empty"));
+
+        assert_eq!(contents.state, DriveContentsState::Blank);
+        assert_eq!(contents.partition_scheme, Some(PartitionScheme::Mbr));
+        assert!(contents.partitions.is_empty());
+        assert!(
+            contents.reason.contains("empty partition table"),
+            "{}",
+            contents.reason
+        );
+    }
+
+    #[test]
+    fn an_empty_mbr_with_windows_boot_code_is_blank() {
+        let drive = fixture!("mbr-empty");
+        // Windows fills the first 440 bytes with its boot code.
+        drive.write(0, &[0x33, 0xC0, 0x8E, 0xD0, 0xBC, 0x00, 0x7C]);
+
+        assert_eq!(
+            inspect_drive_contents(&drive).state,
+            DriveContentsState::Blank
+        );
+    }
+
+    #[test]
+    fn an_empty_mbr_with_data_after_it_is_not_blank() {
+        let drive = fixture!("mbr-empty");
+        drive.write(64 * 1024, b"old data");
+
+        let contents = inspect_drive_contents(&drive);
+
+        assert_eq!(contents.state, DriveContentsState::HasData);
+        assert_eq!(
+            contents.reason,
+            "the drive has a partition table but no partitions"
+        );
+    }
+
+    #[test]
+    fn an_empty_mbr_with_data_at_the_end_is_not_blank() {
+        let drive = fixture!("mbr-empty");
+        drive.write(GIB - 512, b"EFI PART");
+
+        assert_eq!(
+            inspect_drive_contents(&drive).state,
+            DriveContentsState::HasData
+        );
+    }
+
+    #[test]
+    fn an_mbr_entry_with_leftover_values_is_not_an_empty_mbr() {
+        let drive = fixture!("mbr-empty");
+        // Type 0 marks the slot unused, but its start and size are still set.
+        drive.write(446 + 8, &2048u32.to_le_bytes());
+        drive.write(446 + 12, &4096u32.to_le_bytes());
+
+        assert_eq!(
+            inspect_drive_contents(&drive).state,
+            DriveContentsState::HasData
+        );
+    }
+
+    #[test]
+    fn a_protective_mbr_without_a_gpt_is_not_blank() {
+        let drive = fixture!("mbr-empty");
+        drive.write(446 + 4, &[0xEE]);
+
+        let contents = inspect_drive_contents(&drive);
+
+        assert_eq!(contents.state, DriveContentsState::HasData);
+        assert_eq!(contents.reason, "the GPT partition table is damaged");
     }
 
     #[test]

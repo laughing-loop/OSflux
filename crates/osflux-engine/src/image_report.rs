@@ -96,6 +96,7 @@ pub fn build_image_plan_report(plan: &ImagePlan) -> PlanReport {
             .field("status", plan.status.as_str())
             .field("status reason", plan.status_reason.clone())
             .field("kind", plan.kind.as_str())
+            .field("hybrid", if plan.hybrid { "yes" } else { "no" })
             .field("detection", plan.detection_method.as_str())
             .field("write mode", plan.write_mode.as_str())
             .field("write strategy", plan.write_strategy.as_str()),
@@ -434,6 +435,7 @@ mod tests {
             kind: ImageKind::RawDiskImage,
             detection_method: DetectionMethod::Signature,
             signatures: vec![ImageSignature::Gpt],
+            hybrid: false,
             boot_metadata: None,
             write_mode: WriteMode::Raw,
             write_strategy: ImageWriteStrategy::RawBlockWrite,
@@ -444,7 +446,8 @@ mod tests {
         let report = build_image_plan_report(&plan);
 
         assert_eq!(report.title, "OSflux image plan");
-        assert_eq!(section(&report.sections, "summary").fields.len(), 9);
+        assert_eq!(section(&report.sections, "summary").fields.len(), 10);
+        assert_eq!(field(section(&report.sections, "summary"), "hybrid"), "no");
         assert_eq!(
             field(section(&report.sections, "summary"), "status"),
             "ready"

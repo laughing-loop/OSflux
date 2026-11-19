@@ -1,16 +1,17 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use osflux_engine::{
-    assess_target, build_image_plan_report, create_write_intent, detect_image_family, list_devices,
-    plan_image, plan_iso_filesystem, plan_write_chunks, prepare_raw_write, prepare_write_command,
-    prepare_write_session, preview_write_progress, run_write_preflight, select_write_mode,
-    write_image_to_target, ChunkPlan, ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport,
-    ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport,
-    ProgressPreview, ProgressPreviewStatus, RawWriteError, RawWritePhase, RawWritePlan,
-    RawWriteProgress, RawWriteReport, TargetAssessment, TargetAssessmentStatus, WriteCommandPlan,
-    WriteCommandStatus, WriteIntent, WriteIntentStatus, WriteModeSelection,
-    WriteModeSelectionStatus, WritePreflight, WritePreflightStatus, WriteSession,
-    WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
+    assess_target, build_image_plan_report, create_write_intent, detect_image_family,
+    format_unix_utc, list_devices, now_unix_seconds, plan_image, plan_iso_filesystem,
+    plan_write_chunks, prepare_raw_write, prepare_write_command, prepare_write_session,
+    preview_write_progress, record_write_authorization, run_write_preflight, select_write_mode,
+    write_image_to_target, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, ChunkPlan,
+    ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus,
+    IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
+    TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
+    WriteModeSelection, WriteModeSelectionStatus, WritePreflight, WritePreflightStatus,
+    WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 /// Exit code for a command that ran but whose result is blocked or needs inspection.
@@ -44,10 +45,18 @@ fn main() {
             confirm,
             chunk_size,
             execute,
+            assume_yes,
             output,
         } => {
             if execute {
-                run_raw_write(&image, target, confirm.as_deref(), chunk_size, output);
+                run_raw_write(
+                    &image,
+                    target,
+                    confirm.as_deref(),
+                    chunk_size,
+                    assume_yes,
+                    output,
+                );
             } else {
                 print_write_command(&image, target, confirm.as_deref(), output);
             }
@@ -117,6 +126,7 @@ enum Command {
         confirm: Option<String>,
         chunk_size: u64,
         execute: bool,
+        assume_yes: bool,
         output: OutputFormat,
     },
     Session {
@@ -172,6 +182,7 @@ where
     let mut intent_requested = false;
     let mut write_requested = false;
     let mut execute_requested = false;
+    let mut assume_yes = false;
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
@@ -198,6 +209,8 @@ where
             write_requested = true;
         } else if arg == "--execute" {
             execute_requested = true;
+        } else if arg == "--yes" {
+            assume_yes = true;
         } else if arg == "--session" {
             session_requested = true;
         } else if arg == "--chunk-plan" {
@@ -299,6 +312,10 @@ where
         eprintln!("--execute can only be used with --write");
         std::process::exit(2);
     }
+    if assume_yes && !execute_requested {
+        eprintln!("--yes can only be used with --write --execute");
+        std::process::exit(2);
+    }
 
     if mode_selection_requested {
         let Some(image) = preflight_image else {
@@ -391,6 +408,7 @@ where
             confirm: confirmation_phrase,
             chunk_size: chunk_size_bytes,
             execute: execute_requested,
+            assume_yes,
             output,
         };
     }
@@ -910,6 +928,7 @@ fn run_raw_write(
     target: u32,
     confirmation_phrase: Option<&str>,
     chunk_size: u64,
+    assume_yes: bool,
     output: OutputFormat,
 ) {
     let Some(confirmation_phrase) = confirmation_phrase else {
@@ -917,25 +936,104 @@ fn run_raw_write(
         std::process::exit(2);
     };
 
-    let plan = match prepare_raw_write(image, target, confirmation_phrase, chunk_size) {
+    // Checked before any slow work: without a terminal there is nobody to
+    // answer the final prompt, so only an explicit --yes may stand in for it.
+    if !assume_yes && !std::io::stdin().is_terminal() {
+        eprintln!("OSflux did not write the image.");
+        eprintln!(
+            "A final confirmation is needed, but there is no terminal to ask in. Pass --yes to confirm without a prompt."
+        );
+        std::process::exit(2);
+    }
+
+    let authorizations = open_authorization_store();
+    let audit = open_audit_log();
+    let plan = match prepare_raw_write(
+        image,
+        target,
+        confirmation_phrase,
+        chunk_size,
+        &authorizations,
+    ) {
         Ok(plan) => plan,
-        Err(error) => exit_with_raw_write_error(error),
+        Err(error) => {
+            record_audit_event(
+                &audit,
+                AuditEvent::new(AuditEventKind::WriteRefused, image, target)
+                    .with_detail(error.to_string()),
+            );
+            exit_with_raw_write_error(error)
+        }
     };
 
     if let OutputFormat::Text = output {
         print_raw_write_plan(&plan);
     }
 
+    if !assume_yes {
+        confirm_erase_interactively(&plan, &audit);
+    }
+
+    if let OutputFormat::Text = output {
+        println!("Erasing the target and writing the image. Do not unplug the drive.");
+    }
+
     let mut progress = RawWriteProgressPrinter::new(output);
-    let result = write_image_to_target(&plan, |event| progress.update(event));
+    let result = write_image_to_target(&plan, &authorizations, &audit, |event| {
+        progress.update(event)
+    });
     progress.finish();
 
     match result {
-        Ok(report) => match output {
-            OutputFormat::Text => print_raw_write_report(&report),
-            OutputFormat::Json => print!("{}", report.to_json_pretty()),
-        },
+        Ok(report) => {
+            match output {
+                OutputFormat::Text => print_raw_write_report(&report, &audit),
+                OutputFormat::Json => print!("{}", report.to_json_pretty()),
+            }
+            if !report.audit_recorded {
+                eprintln!(
+                    "warning: the write succeeded, but its outcome could not be added to the audit log {}",
+                    audit.path().display()
+                );
+            }
+        }
         Err(error) => exit_with_raw_write_error(error),
+    }
+}
+
+fn open_audit_log() -> AuditLog {
+    match AuditLog::default_location() {
+        Some(log) => log,
+        None => {
+            eprintln!("OSflux could not find where to keep its audit log.");
+            eprintln!(
+                "Set the OSFLUX_STATE_DIR environment variable to a folder OSflux can write to."
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Adds an event that does not gate anything, warning instead of failing
+/// when the log cannot be written.
+fn record_audit_event(audit: &AuditLog, event: AuditEvent) {
+    if let Err(error) = audit.record(&event) {
+        eprintln!(
+            "warning: could not add a {} event to the audit log {}: {error}",
+            event.kind.as_str(),
+            audit.path().display()
+        );
+    }
+}
+
+fn open_authorization_store() -> AuthorizationStore {
+    match AuthorizationStore::default_location() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("OSflux could not find where to keep write confirmations.");
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -955,11 +1053,44 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
     );
     println!("target size: {}", format_size(plan.target_size_bytes));
     println!("target identity code: {}", plan.target_identity_code);
-    println!("Erasing the target and writing the image. Do not unplug the drive.");
 }
 
-fn print_raw_write_report(report: &RawWriteReport) {
+/// Asks on the terminal before erasing; anything but "yes" cancels and
+/// leaves the confirmation from --intent usable until it expires.
+fn confirm_erase_interactively(plan: &RawWritePlan, audit: &AuditLog) {
+    eprintln!();
+    eprintln!(
+        "This erases everything on {} ({}, {}).",
+        plan.target_model.as_deref().unwrap_or("the target drive"),
+        format_size(plan.target_size_bytes),
+        plan.target_path
+    );
+    eprint!("Type yes to continue: ");
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    let answered = std::io::stdin().read_line(&mut answer).is_ok();
+    if !answered || !is_erase_confirmation(&answer) {
+        record_audit_event(
+            audit,
+            AuditEvent::for_plan(AuditEventKind::WriteCancelled, plan),
+        );
+        eprintln!(
+            "Cancelled. Nothing was written. The confirmation stays usable until {}.",
+            format_unix_utc(plan.authorization_expires_at_unix_seconds)
+        );
+        let _ = std::io::stdout().flush();
+        std::process::exit(EXIT_NOT_READY);
+    }
+}
+
+fn is_erase_confirmation(answer: &str) -> bool {
+    answer.trim().eq_ignore_ascii_case("yes")
+}
+
+fn print_raw_write_report(report: &RawWriteReport, audit: &AuditLog) {
     println!("status: written");
+    println!("image sha256: {}", report.image_sha256);
     println!(
         "wrote {} in {}",
         format_size(report.bytes_written),
@@ -970,6 +1101,7 @@ fn print_raw_write_report(report: &RawWriteReport) {
         format_size(report.bytes_verified),
         format_rate(report.bytes_verified, report.verify_millis)
     );
+    println!("audit log: {}", audit.path().display());
     println!("The drive can be removed.");
 }
 
@@ -987,7 +1119,10 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     let exit_code = match error {
         RawWriteError::InvalidChunkSize { .. } => 2,
         RawWriteError::Blocked { .. }
+        | RawWriteError::TargetBlocked { .. }
         | RawWriteError::ConfirmationMismatch { .. }
+        | RawWriteError::NeedsAdministrator { .. }
+        | RawWriteError::Authorization { .. }
         | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
         _ => 1,
     };
@@ -997,6 +1132,12 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     match error {
         RawWriteError::Open(_) => eprintln!(
             "Run PowerShell as Administrator, and close any programs or windows using the drive."
+        ),
+        RawWriteError::TargetBlocked { .. } => eprintln!(
+            "Drive numbers can change when drives are unplugged or plugged in. Run --list-devices to see which drive has which number, then run --intent for the right one."
+        ),
+        RawWriteError::NeedsAdministrator { .. } => eprintln!(
+            "Open PowerShell as Administrator (right-click PowerShell, then Run as administrator) and run the same command again within the 10 minutes the confirmation lasts."
         ),
         RawWriteError::Device(_) | RawWriteError::VerifyMismatch { .. } => eprintln!(
             "The drive may now hold a partial or damaged image. Write it again, or try another drive."
@@ -1176,8 +1317,28 @@ fn exit_unless_ready(ready: bool) {
 
 fn print_write_intent(image: &str, target: u32, output: OutputFormat) {
     match create_write_intent(image, target) {
-        Ok(intent) => {
+        Ok(mut intent) => {
             let ready = intent.status == WriteIntentStatus::ConfirmationRequired;
+            if ready {
+                let authorizations = open_authorization_store();
+                if let Err(error) = record_write_authorization(
+                    &mut intent,
+                    image,
+                    &authorizations,
+                    now_unix_seconds(),
+                ) {
+                    eprintln!("OSflux could not record the confirmation.");
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+                if let Some(audit) = AuditLog::default_location() {
+                    record_audit_event(
+                        &audit,
+                        AuditEvent::for_intent(AuditEventKind::Authorized, &intent),
+                    );
+                }
+            }
+
             match output {
                 OutputFormat::Text => print_write_intent_report(intent),
                 OutputFormat::Json => print!("{}", intent.to_json_pretty()),
@@ -1221,6 +1382,13 @@ fn print_write_intent_report(intent: WriteIntent) {
         println!("confirmation phrase: {confirmation_phrase}");
     } else {
         println!("confirmation phrase: unavailable");
+    }
+
+    if let Some(expires_at) = intent.authorization_expires_at_unix_seconds {
+        println!(
+            "confirmation valid: for one write, until {}",
+            format_unix_utc(expires_at)
+        );
     }
 
     if !intent.notes.is_empty() {
@@ -1579,6 +1747,9 @@ fn print_help() {
     println!(
         "  --execute         With --write: erase the target and write a raw disk image, then verify it."
     );
+    println!(
+        "  --yes             With --write --execute: skip the final prompt, for scripts and automation."
+    );
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");
     println!("  --detect-family   Detect image family markers without writing.");
@@ -1607,5 +1778,30 @@ fn print_help() {
     println!("  0  The command ran and its result passed.");
     println!("  1  The command could not run, for example because the image could not be read.");
     println!("  2  An argument was unknown, missing, or invalid.");
-    println!("  3  The command ran, but its result is blocked or needs inspection.");
+    println!(
+        "  3  The command ran, but its result is blocked or needs inspection, or the final prompt was declined."
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_erase_confirmation;
+
+    #[test]
+    fn only_yes_confirms_an_erase() {
+        for answer in ["yes", "YES\n", "  Yes \r\n"] {
+            assert!(is_erase_confirmation(answer), "{answer:?}");
+        }
+
+        for answer in [
+            "",
+            "\n",
+            "y",
+            "no",
+            "yes please",
+            "OSFLUX ERASE TARGET 3 2E85",
+        ] {
+            assert!(!is_erase_confirmation(answer), "{answer:?}");
+        }
+    }
 }

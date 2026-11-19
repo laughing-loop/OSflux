@@ -93,11 +93,17 @@ Print the write command plan as JSON:
 cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
 ```
 
-Write a raw disk image to a USB stick. **This erases the stick.** Run it from an Administrator PowerShell, after `--intent` has printed the phrase for that stick:
+Write a raw disk image or a hybrid ISO to a USB stick. **This erases the stick.** Run it from an Administrator PowerShell, after `--intent` has printed the phrase for that stick. The same command works for a `.iso` that OSflux reports as hybrid:
 
 ```powershell
 cargo run -- --write --image "C:\path\to\image.img" --target 3 --confirm "OSFLUX ERASE TARGET 3 7F3A" --execute
 ```
+
+Without Administrator rights OSflux stops before the prompt, leaves the confirmation unused, and exits with code 3. Before erasing, OSflux shows the drive's model, size, and path and asks you to type `yes`; anything else cancels without writing. Scripts and automation can pass `--yes` to skip the prompt. Without a terminal and without `--yes`, OSflux refuses rather than assume the answer.
+
+When the write finishes, OSflux prints the SHA-256 of the image it wrote, so you can compare it with the checksum the image's publisher lists.
+
+Every confirmation and write attempt is appended to an audit log, `audit.log` in the OSflux state folder, as one JSON object per line (JSON Lines). Each entry records the time, the Windows user and computer name, the image path, size, and SHA-256, the target drive's path, model, and identity code, and the event: `authorized`, `write-refused`, `write-cancelled`, `write-started`, `write-succeeded`, or `write-failed`. If the `write-started` entry cannot be saved, OSflux does not touch the drive.
 
 Prepare a locked dry-run write session:
 
@@ -193,10 +199,12 @@ The image family command is still read-only. It scans the early image bytes for 
 The filesystem plan command is still read-only. It combines image family evidence, ISO boot catalog validity, and directory boot assets into one filesystem-aware plan.
 Target assessment only accepts drives that report removable media, such as USB sticks and SD cards. External hard disks and SSDs are always blocked, even when they connect over USB, because they usually hold data. Some high-end USB sticks report themselves as fixed disks and are blocked for the same reason.
 The preflight blocks any image that is larger than the target drive, so an oversized image never reaches the confirmation step.
-The write intent command is still read-only. It creates the confirmation phrase that a future destructive write command must require before opening a target drive for write access.
+The write intent command never touches a drive. It creates the confirmation phrase that `--write --execute` requires, and records a one-time confirmation for that drive and that image.
 The phrase ends with the target drive's identity code, built from its model, serial number, and Windows device ID. `7F3A` in these examples is only a placeholder: run `--intent` to get the real phrase for your drive. If a different drive takes the same index, the code changes and the old phrase stops matching.
+The recorded confirmation works for one write, within 10 minutes, with the same image file. Running `--write --execute` a second time, starting more than 10 minutes later, or after replacing or editing the image, is refused until `--intent` is run again. Confirmations are kept in `%LOCALAPPDATA%\OSflux\authorizations` on Windows, next to the audit log (`$XDG_STATE_HOME/osflux` or `~/.local/state/osflux` elsewhere), or under the folder named by the `OSFLUX_STATE_DIR` environment variable when it is set.
 The write command skeleton is also read-only. It checks the exact confirmation phrase and reports whether a future write session would be allowed to proceed, while keeping `writeAccessAttempted` set to `false`.
-Adding `--execute` to `--write` is the only way OSflux writes to a drive. It only writes raw disk images (ISO writing is not supported yet), only to a removable target, and only with the exact phrase from `--intent`. It re-runs the safety chain and re-checks the drive, then opens it, which locks and dismounts the drive's volumes. It refuses to continue if the opened drive's size does not match the confirmed one, writes the image in 4 MiB chunks, reads every byte back to verify it, and then releases the drive.
+Adding `--execute` to `--write` is the only way OSflux writes to a drive. It only writes raw disk images and hybrid ISOs, only to a removable target, and only with the exact phrase from `--intent` while its confirmation is still valid. It re-runs the safety chain and re-checks the drive, uses up the confirmation, then opens the drive, which locks and dismounts the drive's volumes. It refuses to continue if the opened drive's size does not match the confirmed one, writes the image in 4 MiB chunks, reads every byte back to verify it, and then releases the drive.
+A hybrid ISO also carries a partition table in its first sector, which is how most Linux installers (Ubuntu, Fedora, Debian, Arch, Mint) are built. OSflux copies those byte for byte, the same way it writes a `.img`, and `--plan-image` reports them with `hybrid: yes` and the `hybrid-iso-raw-write` strategy. ISOs that need their files extracted, such as Windows installers, are still refused.
 The write session command is still read-only. It locks the confirmed image and target details into a session record, assigns a session ID, and keeps write access disabled.
 The chunk plan command is still read-only. It calculates image size, chunk size, chunk count, final chunk size, and planned bytes for future progress reporting.
 The progress preview command is still read-only. It turns the chunk plan into sampled progress events with integer percentage basis points.
@@ -207,7 +215,7 @@ Every command sets an exit code so scripts can check the result without parsing 
 - `0`: the command ran and its result passed.
 - `1`: the command could not run, for example because the image could not be read.
 - `2`: an argument was unknown, missing, or invalid.
-- `3`: the command ran, but its result is blocked or needs inspection. The report is still printed.
+- `3`: the command ran, but its result is blocked or needs inspection, the write needs Administrator rights, or the final prompt before erasing was declined. The report is still printed.
 
 Run with demo pipeline options:
 

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::clock::now_unix_seconds;
 use crate::fingerprint::stable_fingerprint;
 use crate::preflight::WritePreflightError;
 use crate::write_command::{prepare_write_command, WriteCommandPlan, WriteCommandStatus};
@@ -98,7 +98,7 @@ pub fn prepare_write_session(
 }
 
 pub fn build_write_session(command: &WriteCommandPlan) -> WriteSession {
-    build_write_session_at(command, current_unix_seconds())
+    build_write_session_at(command, now_unix_seconds())
 }
 
 pub fn build_write_session_at(
@@ -186,13 +186,6 @@ fn build_session_id(command: &WriteCommandPlan, created_at_unix_seconds: u64) ->
         "OSFLUX-SESSION-{}-{}-{fingerprint:016X}",
         created_at_unix_seconds, command.target_index
     )
-}
-
-fn current_unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 fn optional_string_json(value: Option<&str>) -> String {

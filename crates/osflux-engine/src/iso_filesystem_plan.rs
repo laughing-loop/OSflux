@@ -580,6 +580,7 @@ mod tests {
             kind: ImageKind::Iso,
             detection_method: DetectionMethod::Signature,
             signatures: vec![ImageSignature::Iso9660],
+            hybrid: false,
             boot_metadata: Some(IsoBootMetadata {
                 el_torito: Some(valid_el_torito()),
                 directory: Some(IsoDirectoryMetadata {

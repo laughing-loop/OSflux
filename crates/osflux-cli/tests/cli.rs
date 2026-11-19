@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 #[test]
@@ -89,6 +89,7 @@ fn execute_rejects_chunk_sizes_a_disk_cannot_take() {
         "--chunk-size",
         "1000",
         "--execute",
+        "--yes",
     ]);
 
     assert_eq!(output.status.code(), Some(2));
@@ -102,22 +103,59 @@ fn execute_writes_nothing_when_the_target_does_not_exist() {
     bytes[511] = 0xAA;
     let path = temp_file("img", &bytes);
 
+    let state_dir = temp_dir();
+
     // Index 250 never exists, so the safety chain stops before any drive is opened.
+    let output = osflux_in(
+        &[
+            "--write",
+            "--image",
+            path.to_str().unwrap(),
+            "--target",
+            "250",
+            "--confirm",
+            "OSFLUX ERASE TARGET 250 0000",
+            "--execute",
+            "--yes",
+        ],
+        &state_dir,
+    );
+    let audit_log = fs::read_to_string(state_dir.join("audit.log")).unwrap_or_default();
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_dir_all(&state_dir);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("OSflux did not write the image."));
+    assert!(stderr(&output).contains("target device index was not found: 250"));
+    assert_eq!(audit_log.lines().count(), 1);
+    assert!(audit_log.contains(r#""event":"write-refused""#));
+    assert!(audit_log.contains(r#""targetIndex":250,"#));
+}
+
+#[test]
+fn execute_refuses_without_a_terminal_unless_yes_is_given() {
+    // Tests run with stdin closed, which is not a terminal.
     let output = osflux(&[
         "--write",
         "--image",
-        path.to_str().unwrap(),
+        "disk.img",
         "--target",
         "250",
         "--confirm",
         "OSFLUX ERASE TARGET 250 0000",
         "--execute",
     ]);
-    let _ = fs::remove_file(&path);
 
-    assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("OSflux did not write the image."));
-    assert!(stderr(&output).contains("target device index was not found: 250"));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("Pass --yes"));
+}
+
+#[test]
+fn yes_only_works_with_execute() {
+    let output = osflux(&["--write", "--image", "disk.img", "--target", "250", "--yes"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--yes can only be used with --write --execute"));
 }
 
 #[test]
@@ -128,11 +166,25 @@ fn help_lists_exit_codes() {
     assert!(stdout(&output).contains("Exit codes:"));
 }
 
+/// Runs the CLI with its own empty state folder, so tests never read or
+/// write the real confirmations and audit log of the machine running them.
 fn osflux(args: &[&str]) -> Output {
+    let state_dir = temp_dir();
+    let output = osflux_in(args, &state_dir);
+    let _ = fs::remove_dir_all(&state_dir);
+    output
+}
+
+fn osflux_in(args: &[&str], state_dir: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_osflux-cli"))
         .args(args)
+        .env("OSFLUX_STATE_DIR", state_dir)
         .output()
         .expect("osflux-cli should start")
+}
+
+fn temp_dir() -> PathBuf {
+    std::env::temp_dir().join(unique_name("state"))
 }
 
 fn stdout(output: &Output) -> String {

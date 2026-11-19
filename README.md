@@ -218,6 +218,12 @@ Every command sets an exit code so scripts can check the result without parsing 
 - `2`: an argument was unknown, missing, or invalid.
 - `3`: the command ran, but its result is blocked or needs inspection, the confirmation was refused, the write needs Administrator rights, or the final prompt before erasing was declined. The report is still printed.
 
+A hardware test for the drive contents check and the short confirmation runs on a real USB stick from an Administrator PowerShell. **It erases the stick it selects**, after checking that the stick is the only USB disk matching its name and asking you to type `yes`:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-drive-contents.ps1
+```
+
 Run with demo pipeline options:
 
 ```powershell

@@ -131,7 +131,7 @@ pub fn assess_target_device(device: &PhysicalDevice) -> TargetAssessment {
 
     if device.access == DeviceAccess::MetadataOnly {
         warnings.push(
-            "Only metadata access is available; run as Administrator before any write workflow."
+            "Not running as Administrator, so only the drive's details can be read and its size may be approximate; writing to it needs an Administrator PowerShell."
                 .to_string(),
         );
     }

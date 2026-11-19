@@ -1120,6 +1120,7 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
         RawWriteError::InvalidChunkSize { .. } => 2,
         RawWriteError::Blocked { .. }
         | RawWriteError::ConfirmationMismatch { .. }
+        | RawWriteError::NeedsAdministrator { .. }
         | RawWriteError::Authorization { .. }
         | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
         _ => 1,
@@ -1130,6 +1131,9 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     match error {
         RawWriteError::Open(_) => eprintln!(
             "Run PowerShell as Administrator, and close any programs or windows using the drive."
+        ),
+        RawWriteError::NeedsAdministrator { .. } => eprintln!(
+            "Open PowerShell as Administrator (right-click PowerShell, then Run as administrator) and run the same command again within the 10 minutes the confirmation lasts."
         ),
         RawWriteError::Device(_) | RawWriteError::VerifyMismatch { .. } => eprintln!(
             "The drive may now hold a partial or damaged image. Write it again, or try another drive."

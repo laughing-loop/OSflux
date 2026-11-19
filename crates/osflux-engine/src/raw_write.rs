@@ -4,7 +4,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use osflux_core::device::{BlockDevice, DeviceError, NativeBlockDevice};
+use osflux_core::device::{BlockDevice, DeviceAccess, DeviceError, NativeBlockDevice};
 use sha2::{Digest, Sha256};
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
@@ -127,6 +127,11 @@ pub enum RawWriteError {
     ConfirmationMismatch {
         target_index: u32,
     },
+    /// OSflux can only read the drive's details, not open it, so it stops
+    /// before the final prompt and leaves the confirmation unused.
+    NeedsAdministrator {
+        target_index: u32,
+    },
     /// The target no longer matches the drive that was confirmed; nothing was written.
     TargetChanged {
         reason: String,
@@ -170,6 +175,10 @@ impl fmt::Display for RawWriteError {
             Self::ConfirmationMismatch { target_index } => write!(
                 formatter,
                 "the confirmation phrase does not match drive {target_index}; copy the exact phrase that --intent prints for it"
+            ),
+            Self::NeedsAdministrator { target_index } => write!(
+                formatter,
+                "writing to drive {target_index} needs Administrator rights, which this window does not have; the confirmation from --intent was not used up"
             ),
             Self::TargetChanged { reason } => {
                 write!(formatter, "target changed before writing: {reason}")
@@ -290,6 +299,15 @@ pub fn build_raw_write_plan(
     if target.status == TargetAssessmentStatus::Blocked {
         return Err(RawWriteError::Blocked {
             reason: target.reason.clone(),
+        });
+    }
+
+    // Without Administrator rights the drive cannot be opened. Stopping here
+    // keeps the user from answering the final prompt and using up the
+    // confirmation for a write that was always going to be refused.
+    if target.access == DeviceAccess::MetadataOnly {
+        return Err(RawWriteError::NeedsAdministrator {
+            target_index: target.index,
         });
     }
 
@@ -952,6 +970,27 @@ mod tests {
             error,
             RawWriteError::Blocked { reason } if reason == "target is an external hard disk or SSD"
         ));
+    }
+
+    #[test]
+    fn refuses_before_the_prompt_without_administrator_rights() {
+        let mut metadata_only = target(Some("7F3A"));
+        metadata_only.access = DeviceAccess::MetadataOnly;
+
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &metadata_only,
+            "OSFLUX ERASE TARGET 2 7F3A",
+            4 * MIB,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RawWriteError::NeedsAdministrator { target_index: 2 }
+        ));
+        assert!(error.to_string().contains("not used up"));
     }
 
     #[test]

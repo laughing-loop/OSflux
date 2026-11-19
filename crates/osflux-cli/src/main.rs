@@ -1119,6 +1119,7 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     let exit_code = match error {
         RawWriteError::InvalidChunkSize { .. } => 2,
         RawWriteError::Blocked { .. }
+        | RawWriteError::TargetBlocked { .. }
         | RawWriteError::ConfirmationMismatch { .. }
         | RawWriteError::NeedsAdministrator { .. }
         | RawWriteError::Authorization { .. }
@@ -1131,6 +1132,9 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     match error {
         RawWriteError::Open(_) => eprintln!(
             "Run PowerShell as Administrator, and close any programs or windows using the drive."
+        ),
+        RawWriteError::TargetBlocked { .. } => eprintln!(
+            "Drive numbers can change when drives are unplugged or plugged in. Run --list-devices to see which drive has which number, then run --intent for the right one."
         ),
         RawWriteError::NeedsAdministrator { .. } => eprintln!(
             "Open PowerShell as Administrator (right-click PowerShell, then Run as administrator) and run the same command again within the 10 minutes the confirmation lasts."

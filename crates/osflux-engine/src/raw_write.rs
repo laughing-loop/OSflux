@@ -119,6 +119,14 @@ pub enum RawWriteError {
     Blocked {
         reason: String,
     },
+    /// The drive at the target index is not one OSflux writes to, such as an
+    /// external hard disk. Named, because drive numbers move when drives are
+    /// unplugged and plugged back in.
+    TargetBlocked {
+        target_index: u32,
+        target_model: Option<String>,
+        reason: String,
+    },
     /// The chunk size cannot be used for writing to a disk.
     InvalidChunkSize {
         chunk_size_bytes: u64,
@@ -168,6 +176,15 @@ impl fmt::Display for RawWriteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Blocked { reason } => write!(formatter, "write blocked: {reason}"),
+            Self::TargetBlocked {
+                target_index,
+                target_model,
+                reason,
+            } => write!(
+                formatter,
+                "write blocked: drive {target_index} is {}, and {reason}",
+                target_model.as_deref().unwrap_or("a drive of unknown model")
+            ),
             Self::InvalidChunkSize { chunk_size_bytes } => write!(
                 formatter,
                 "chunk size {chunk_size_bytes} must be a multiple of {RAW_WRITE_ALIGNMENT_BYTES} bytes and at most {MAX_RAW_WRITE_CHUNK_BYTES} bytes"
@@ -297,7 +314,9 @@ pub fn build_raw_write_plan(
     // a blocked drive or a mistyped phrase is reported as itself rather than
     // as a downstream planning step that it blocked.
     if target.status == TargetAssessmentStatus::Blocked {
-        return Err(RawWriteError::Blocked {
+        return Err(RawWriteError::TargetBlocked {
+            target_index: target.index,
+            target_model: target.model.clone(),
             reason: target.reason.clone(),
         });
     }
@@ -954,6 +973,7 @@ mod tests {
     #[test]
     fn reports_a_blocked_target_before_the_phrase() {
         let mut external_disk = target(Some("34B5"));
+        external_disk.model = Some("SAMSUNG SSD PM830 USB Device".to_string());
         external_disk.status = TargetAssessmentStatus::Blocked;
         external_disk.reason = "target is an external hard disk or SSD".to_string();
 
@@ -966,9 +986,16 @@ mod tests {
         )
         .unwrap_err();
 
+        assert_eq!(
+            error.to_string(),
+            "write blocked: drive 2 is SAMSUNG SSD PM830 USB Device, and target is an external hard disk or SSD"
+        );
         assert!(matches!(
             error,
-            RawWriteError::Blocked { reason } if reason == "target is an external hard disk or SSD"
+            RawWriteError::TargetBlocked {
+                target_index: 2,
+                ..
+            }
         ));
     }
 

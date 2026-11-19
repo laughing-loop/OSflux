@@ -462,7 +462,9 @@ fn read_partition_table(
         return Ok((PartitionScheme::Gpt, entries));
     }
     if gpt_signature == b"EFI PART" {
-        return not_eligible("the drive has both an MBR and a GPT partition table");
+        return not_eligible(
+            "the drive has an MBR partition table and also GPT data, usually left over from an earlier image; wipe it with diskpart's clean to start fresh",
+        );
     }
 
     let mut entries = Vec::with_capacity(mbr_entries.len());
@@ -1572,6 +1574,19 @@ mod tests {
             contents.reason,
             "the partition holds no FAT32 or exFAT filesystem"
         );
+    }
+
+    #[test]
+    fn leftover_gpt_data_next_to_an_mbr_needs_the_full_phrase() {
+        // What a Linux hybrid ISO leaves behind when a new partition is
+        // created without wiping the drive first.
+        let drive = fixture!("mbr-fat32-empty");
+        drive.write(512, b"EFI PART");
+
+        let contents = inspect_drive_contents(&drive);
+
+        assert_eq!(contents.state, DriveContentsState::HasData);
+        assert!(contents.reason.contains("left over"), "{}", contents.reason);
     }
 
     #[test]

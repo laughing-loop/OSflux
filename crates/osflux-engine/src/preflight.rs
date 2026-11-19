@@ -400,6 +400,7 @@ mod tests {
             contains_system_volume: blocked,
             likely_removable: !blocked,
             requires_confirmation: !blocked,
+            contents: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

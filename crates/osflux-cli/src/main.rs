@@ -2,13 +2,14 @@ use std::io::{IsTerminal, Write};
 
 use osflux_engine::{
     assess_target, build_image_plan_report, create_write_intent, detect_image_family,
-    format_unix_utc, list_devices, now_unix_seconds, plan_image, plan_iso_filesystem,
-    plan_write_chunks, prepare_raw_write, prepare_write_command, prepare_write_session,
-    preview_write_progress, record_write_authorization, run_write_preflight, select_write_mode,
-    write_image_to_target, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, ChunkPlan,
-    ChunkPlanStatus, Engine, EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus,
-    IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus,
-    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
+    format_unix_utc, inspect_device_contents, list_devices, now_unix_seconds, plan_image,
+    plan_iso_filesystem, plan_write_chunks, prepare_raw_write, prepare_write_command,
+    prepare_write_session, preview_write_progress, record_write_authorization, run_write_preflight,
+    select_write_mode, write_image_to_target, AuditEvent, AuditEventKind, AuditLog,
+    AuthorizationStore, ChunkPlan, ChunkPlanStatus, ConfirmationForm, DriveContents, Engine,
+    EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
+    IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
+    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
     TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
     WriteModeSelection, WriteModeSelectionStatus, WritePreflight, WritePreflightStatus,
     WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
@@ -932,7 +933,9 @@ fn run_raw_write(
     output: OutputFormat,
 ) {
     let Some(confirmation_phrase) = confirmation_phrase else {
-        eprintln!("--write --execute needs --confirm with the phrase printed by --intent");
+        eprintln!(
+            "--write --execute needs --confirm with the phrase printed by --intent, or the drive's identity code if --intent offered it"
+        );
         std::process::exit(2);
     };
 
@@ -1053,6 +1056,12 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
     );
     println!("target size: {}", format_size(plan.target_size_bytes));
     println!("target identity code: {}", plan.target_identity_code);
+    match plan.confirmation_form {
+        ConfirmationForm::FullPhrase => println!("confirmed with: the full phrase"),
+        ConfirmationForm::IdentityCode => println!(
+            "confirmed with: the identity code, because the drive is empty (checked again once the drive is locked)"
+        ),
+    }
 }
 
 /// Asks on the terminal before erasing; anything but "yes" cancels and
@@ -1121,6 +1130,7 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
         RawWriteError::Blocked { .. }
         | RawWriteError::TargetBlocked { .. }
         | RawWriteError::ConfirmationMismatch { .. }
+        | RawWriteError::ShortConfirmationRefused { .. }
         | RawWriteError::NeedsAdministrator { .. }
         | RawWriteError::Authorization { .. }
         | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,
@@ -1332,10 +1342,13 @@ fn print_write_intent(image: &str, target: u32, output: OutputFormat) {
                     std::process::exit(1);
                 }
                 if let Some(audit) = AuditLog::default_location() {
-                    record_audit_event(
-                        &audit,
-                        AuditEvent::for_intent(AuditEventKind::Authorized, &intent),
-                    );
+                    let mut event = AuditEvent::for_intent(AuditEventKind::Authorized, &intent);
+                    if intent.short_confirmation.is_some() {
+                        event = event.with_detail(
+                            "the drive was empty, so its identity code may confirm the write",
+                        );
+                    }
+                    record_audit_event(&audit, event);
                 }
             }
 
@@ -1382,6 +1395,12 @@ fn print_write_intent_report(intent: WriteIntent) {
         println!("confirmation phrase: {confirmation_phrase}");
     } else {
         println!("confirmation phrase: unavailable");
+    }
+
+    if let Some(code) = &intent.short_confirmation {
+        println!(
+            "short confirmation: {code} (the drive is empty, so its identity code also works)"
+        );
     }
 
     if let Some(expires_at) = intent.authorization_expires_at_unix_seconds {
@@ -1579,6 +1598,10 @@ fn print_assessment(assessment: TargetAssessment) {
         println!("media: {media_type}");
     }
 
+    if let Some(contents) = &assessment.contents {
+        print_contents("", contents);
+    }
+
     if !assessment.notes.is_empty() {
         println!("notes:");
         for note in assessment.notes {
@@ -1663,9 +1686,43 @@ fn print_devices() {
             println!("    note: removable media; possible write target");
         }
 
+        // Only possible write targets are looked inside. Reading is
+        // harmless, but internal and blocked drives have no reason to be read.
+        if device.safety_label() == "candidate" {
+            print_contents("    ", &inspect_device_contents(&device));
+        }
+
         if let Some(note) = device.note {
             println!("    {note}");
         }
+    }
+}
+
+fn print_contents(indent: &str, contents: &DriveContents) {
+    println!(
+        "{indent}contents: {} ({})",
+        contents.state.as_str(),
+        contents.reason
+    );
+    for partition in &contents.partitions {
+        let filesystem = partition
+            .filesystem
+            .map(|kind| kind.as_str())
+            .unwrap_or("no recognised filesystem");
+        let label = partition
+            .label
+            .as_deref()
+            .map(|label| format!(" \"{label}\""))
+            .unwrap_or_default();
+        let used = partition
+            .used_bytes
+            .map(|used| format!(", {} used", format_size(used)))
+            .unwrap_or_default();
+        println!(
+            "{indent}partition {}: {filesystem}{label}, {}{used}",
+            partition.number,
+            format_size(partition.size_bytes)
+        );
     }
 }
 
@@ -1677,6 +1734,8 @@ fn format_size(bytes: u64) -> String {
         format!("{:.2} GiB", bytes as f64 / GIB)
     } else if bytes >= 1024 * 1024 {
         format!("{:.2} MiB", bytes as f64 / MIB)
+    } else if bytes >= 1024 {
+        format!("{:.2} KiB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} bytes")
     }
@@ -1763,7 +1822,7 @@ fn print_help() {
         "  --target          Physical drive index for --select-mode, --progress-preview, --chunk-plan, --session, --write, --intent, or --preflight."
     );
     println!(
-        "  --confirm         Exact confirmation phrase for --select-mode, --progress-preview, --chunk-plan, --session, or --write."
+        "  --confirm         Exact confirmation phrase for --select-mode, --progress-preview, --chunk-plan, --session, or --write. For an empty drive, the identity code that --intent offers also works."
     );
     println!(
         "  --chunk-size      Chunk size in bytes for --select-mode, --progress-preview, --chunk-plan, or --write --execute."
@@ -1779,7 +1838,7 @@ fn print_help() {
     println!("  1  The command could not run, for example because the image could not be read.");
     println!("  2  An argument was unknown, missing, or invalid.");
     println!(
-        "  3  The command ran, but its result is blocked or needs inspection, or the final prompt was declined."
+        "  3  The command ran, but its result is blocked or needs inspection, the confirmation was refused, or the final prompt was declined."
     );
 }
 

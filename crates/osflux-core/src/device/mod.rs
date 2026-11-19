@@ -20,6 +20,10 @@ pub use macos::MacOsBlockDevice as NativeBlockDevice;
 pub use windows::WindowsBlockDevice as Device;
 #[cfg(windows)]
 pub use windows::WindowsBlockDevice as NativeBlockDevice;
+#[cfg(windows)]
+pub use windows::WindowsReadOnlyDevice as ReadOnlyDevice;
+#[cfg(not(windows))]
+pub use UnsupportedReadOnlyDevice as ReadOnlyDevice;
 
 pub type DeviceResult<T> = Result<T, DeviceError>;
 
@@ -35,6 +39,87 @@ pub trait BlockDevice {
     fn flush(&self) -> DeviceResult<()>;
 
     fn size(&self) -> DeviceResult<u64>;
+
+    /// The smallest unit the drive reads and writes. Partition tables count
+    /// in these units.
+    fn logical_sector_size(&self) -> DeviceResult<u32> {
+        Ok(512)
+    }
+}
+
+/// Reading a drive without changing anything on it. Both a drive opened for
+/// writing and one opened only for reading can be read this way, so the same
+/// checks run before a write is confirmed and again once the drive is locked.
+pub trait DeviceRead {
+    /// Fills `buffer` from `offset`, or fails. Offsets and lengths should be
+    /// whole sectors.
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> DeviceResult<()>;
+
+    fn size_bytes(&self) -> DeviceResult<u64>;
+
+    fn sector_size_bytes(&self) -> DeviceResult<u32>;
+}
+
+impl<T: BlockDevice> DeviceRead for T {
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> DeviceResult<()> {
+        let read = self.read_at(offset, buffer)?;
+        if read != buffer.len() {
+            return Err(DeviceError::Io {
+                operation: "read_at",
+                message: format!("read {read} of {} bytes at offset {offset}", buffer.len()),
+            });
+        }
+        Ok(())
+    }
+
+    fn size_bytes(&self) -> DeviceResult<u64> {
+        self.size()
+    }
+
+    fn sector_size_bytes(&self) -> DeviceResult<u32> {
+        self.logical_sector_size()
+    }
+}
+
+/// Opens a whole drive for reading only. Nothing is locked or dismounted, so
+/// the drive's volumes stay usable while OSflux looks at it.
+pub fn open_read_only(path: &str) -> DeviceResult<ReadOnlyDevice> {
+    ReadOnlyDevice::open(path)
+}
+
+/// Stands in for a read-only drive on platforms where OSflux cannot open
+/// drives yet.
+#[cfg(not(windows))]
+pub struct UnsupportedReadOnlyDevice;
+
+#[cfg(not(windows))]
+impl UnsupportedReadOnlyDevice {
+    pub fn open(_path: &str) -> DeviceResult<Self> {
+        Err(DeviceError::Unsupported {
+            operation: "reading a drive",
+        })
+    }
+}
+
+#[cfg(not(windows))]
+impl DeviceRead for UnsupportedReadOnlyDevice {
+    fn read_exact_at(&self, _offset: u64, _buffer: &mut [u8]) -> DeviceResult<()> {
+        Err(DeviceError::Unsupported {
+            operation: "reading a drive",
+        })
+    }
+
+    fn size_bytes(&self) -> DeviceResult<u64> {
+        Err(DeviceError::Unsupported {
+            operation: "reading a drive",
+        })
+    }
+
+    fn sector_size_bytes(&self) -> DeviceResult<u32> {
+        Err(DeviceError::Unsupported {
+            operation: "reading a drive",
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

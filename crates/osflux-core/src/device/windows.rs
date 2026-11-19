@@ -11,13 +11,15 @@ use windows::Win32::Storage::FileSystem::{
     IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
 };
 use windows::Win32::System::Ioctl::{
-    FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME, GET_LENGTH_INFORMATION, IOCTL_DISK_GET_LENGTH_INFO,
-    IOCTL_DISK_UPDATE_PROPERTIES, IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
+    DISK_GEOMETRY, FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME, GET_LENGTH_INFORMATION,
+    IOCTL_DISK_GET_DRIVE_GEOMETRY, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_DISK_UPDATE_PROPERTIES,
+    IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 
 use super::{
-    is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceResult, PhysicalDevice,
+    is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceRead, DeviceResult,
+    PhysicalDevice,
 };
 use crate::windows_io::{control_overlapped, query_overlapped, read_overlapped, write_overlapped};
 
@@ -144,6 +146,10 @@ impl BlockDevice for WindowsBlockDevice {
             message: "device length unavailable".to_string(),
         })
     }
+
+    fn logical_sector_size(&self) -> DeviceResult<u32> {
+        query_sector_size(self.handle)
+    }
 }
 
 impl Drop for WindowsBlockDevice {
@@ -153,6 +159,99 @@ impl Drop for WindowsBlockDevice {
         let _ = control_overlapped(self.handle, IOCTL_DISK_UPDATE_PROPERTIES);
         close_handle(self.handle);
         // `locked_volumes` drops after this, so the locks outlive the disk handle.
+    }
+}
+
+/// A whole drive opened for reading only. Unlike [`WindowsBlockDevice`] it
+/// leaves the drive's volumes mounted and usable.
+pub struct WindowsReadOnlyDevice {
+    handle: HANDLE,
+    size_bytes: u64,
+    sector_size_bytes: u32,
+}
+
+impl WindowsReadOnlyDevice {
+    pub fn open(path: &str) -> DeviceResult<Self> {
+        let open_error = |message: String| DeviceError::Open {
+            path: path.to_string(),
+            message,
+        };
+        let handle = open_handle(
+            path,
+            FILE_GENERIC_READ.0,
+            FILE_FLAG_OVERLAPPED | FILE_ATTRIBUTE_NORMAL,
+        )
+        .map_err(|error| open_error(error.to_string()))?;
+        // Built first so the handle is closed if a later step fails.
+        let mut device = Self {
+            handle,
+            size_bytes: 0,
+            sector_size_bytes: 512,
+        };
+
+        let device_number: STORAGE_DEVICE_NUMBER =
+            query_overlapped(handle, IOCTL_STORAGE_GET_DEVICE_NUMBER)
+                .map_err(|error| open_error(format!("could not read the disk number: {error}")))?;
+        if !is_whole_disk(&device_number) {
+            return Err(open_error("not a whole physical disk".to_string()));
+        }
+
+        let length: GET_LENGTH_INFORMATION =
+            query_overlapped(handle, IOCTL_DISK_GET_LENGTH_INFO)
+                .map_err(|error| open_error(format!("could not read the drive size: {error}")))?;
+        device.size_bytes = u64::try_from(length.Length)
+            .map_err(|_| open_error("the drive reported a negative size".to_string()))?;
+        device.sector_size_bytes = query_sector_size(handle)?;
+
+        Ok(device)
+    }
+}
+
+impl DeviceRead for WindowsReadOnlyDevice {
+    fn read_exact_at(&self, offset: u64, buffer: &mut [u8]) -> DeviceResult<()> {
+        let read =
+            read_overlapped(self.handle, buffer, offset).map_err(|error| DeviceError::Io {
+                operation: "read_at",
+                message: error.to_string(),
+            })?;
+        if read != buffer.len() {
+            return Err(DeviceError::Io {
+                operation: "read_at",
+                message: format!("read {read} of {} bytes at offset {offset}", buffer.len()),
+            });
+        }
+        Ok(())
+    }
+
+    fn size_bytes(&self) -> DeviceResult<u64> {
+        Ok(self.size_bytes)
+    }
+
+    fn sector_size_bytes(&self) -> DeviceResult<u32> {
+        Ok(self.sector_size_bytes)
+    }
+}
+
+impl Drop for WindowsReadOnlyDevice {
+    fn drop(&mut self) {
+        close_handle(self.handle);
+    }
+}
+
+fn query_sector_size(handle: HANDLE) -> DeviceResult<u32> {
+    let geometry: DISK_GEOMETRY =
+        query_overlapped(handle, IOCTL_DISK_GET_DRIVE_GEOMETRY).map_err(|error| {
+            DeviceError::Io {
+                operation: "read the sector size",
+                message: error.to_string(),
+            }
+        })?;
+    match geometry.BytesPerSector {
+        512 | 1024 | 2048 | 4096 => Ok(geometry.BytesPerSector),
+        other => Err(DeviceError::Io {
+            operation: "read the sector size",
+            message: format!("unexpected sector size {other}"),
+        }),
     }
 }
 

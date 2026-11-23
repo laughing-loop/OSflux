@@ -1074,6 +1074,14 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
         if let Some((path, size)) = &layout.largest_file {
             println!("largest file: {path} ({})", format_size(*size));
         }
+        for split in &layout.split_files {
+            println!(
+                "split: {} ({}) is too large for FAT32, so it is written as {}",
+                split.path,
+                format_size(split.size_bytes),
+                split.parts.join(", ")
+            );
+        }
         println!(
             "to write: {}, then the last MiB of the drive is cleared",
             format_size(layout.image_bytes)

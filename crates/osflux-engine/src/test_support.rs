@@ -127,3 +127,54 @@ impl ImageRead for SparseDrive {
         Ok(())
     }
 }
+
+/// Whether a program is on the PATH, for tests that use standard tools as
+/// an independent check and skip themselves where those are missing.
+pub(crate) fn tool_exists(tool: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(tool).is_file())
+    })
+}
+
+/// A fresh, empty folder in the system temp folder.
+pub(crate) fn temp_dir(label: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "osflux-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+/// Every file under `root`, by path relative to it, with its contents.
+pub(crate) fn read_tree(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    fn walk(
+        root: &std::path::Path,
+        folder: &std::path::Path,
+        files: &mut BTreeMap<String, Vec<u8>>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                let relative = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                files.insert(relative, std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    walk(root, root, &mut files);
+    files
+}

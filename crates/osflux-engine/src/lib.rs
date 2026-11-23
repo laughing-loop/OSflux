@@ -20,6 +20,7 @@ pub mod target;
 #[cfg(test)]
 mod test_support;
 pub mod udf;
+pub mod wim_split;
 pub mod write_authorization;
 pub mod write_command;
 pub mod write_intent;
@@ -39,7 +40,10 @@ pub use drive_contents::{
     inspect_device_contents, inspect_drive_contents, DriveContents, DriveContentsState,
     DrivePartition, FilesystemKind, PartitionScheme,
 };
-pub use file_copy::{lay_out_uefi_fat32, FileCopyError, UefiFat32Layout};
+pub use file_copy::{
+    lay_out_uefi_fat32, summarize_iso_files, FileCopyError, IsoFilesSummary, SplitFile,
+    UefiFat32Layout,
+};
 pub use image_family::{
     build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
     ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,

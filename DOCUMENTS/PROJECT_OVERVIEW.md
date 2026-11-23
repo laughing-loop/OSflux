@@ -172,6 +172,8 @@ That phrase is the safety gate a future write command must require before openin
 
 The last part, `7F3A` in this example, is the drive's identity code. OSflux builds it from the drive's model, serial number, and Windows device ID. If a different drive ends up at the same index, for example after USB sticks are swapped, the code changes and the old phrase no longer matches.
 
+OSflux can now write Windows installer ISOs. Their files live in a UDF filesystem rather than a hybrid partition table, so OSflux reads the UDF tree and copies it onto a new MBR drive with one FAT32 partition that starts in UEFI mode only. The FAT32 image is generated as it is written, from the ISO, and read back and compared like any other write. Most Windows 11 ISOs carry a `sources/install.wim` larger than the 4 GiB FAT32 limit; OSflux writes it as `install.swm`, `install2.swm` and so on, of at most 3800 MiB each, which Windows Setup reads in its place. `DISM /Split-Image` stays documented in the README as the fallback.
+
 OSflux can now validate a confirmed write command as a dry-run skeleton:
 
 ```powershell

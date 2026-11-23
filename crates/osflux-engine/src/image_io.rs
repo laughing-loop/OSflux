@@ -67,6 +67,16 @@ impl ImageRead for Vec<u8> {
     }
 }
 
+impl<T: ImageRead + ?Sized> ImageRead for &T {
+    fn image_len(&self) -> io::Result<u64> {
+        (**self).image_len()
+    }
+
+    fn read_image_at(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+        (**self).read_image_at(offset, buffer)
+    }
+}
+
 fn past_end(offset: u64) -> io::Error {
     io::Error::new(
         io::ErrorKind::UnexpectedEof,

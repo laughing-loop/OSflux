@@ -346,10 +346,8 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         .then(|| summarize_iso_files(&source))
         .flatten();
     if let Some(Ok(summary)) = &iso_files {
-        for (path, size_bytes) in &summary.too_large_for_fat32 {
-            warnings.push(format!(
-                "{path} is {size_bytes} bytes; FAT32 cannot hold a file of 4 GiB or more, so this ISO cannot be written until splitting it is available."
-            ));
+        for reason in &summary.cannot_copy {
+            warnings.push(format!("This ISO cannot be written: {reason}."));
         }
         if summary.uefi_loader.is_none() {
             warnings.push(

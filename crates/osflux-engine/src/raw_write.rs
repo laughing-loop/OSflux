@@ -509,10 +509,20 @@ pub fn write_image_to_target(
     };
     let confirmed_with = match &plan.layout {
         WriteLayout::Raw => format!("{confirmed_with}; image copied byte for byte"),
-        WriteLayout::UefiFat32(layout) => format!(
-            "{confirmed_with}; {} files copied onto a new FAT32 partition labelled {}",
-            layout.file_count, layout.label
-        ),
+        WriteLayout::UefiFat32(layout) => {
+            let mut detail = format!(
+                "{confirmed_with}; {} files copied onto a new FAT32 partition labelled {}",
+                layout.file_count, layout.label
+            );
+            for split in &layout.split_files {
+                detail.push_str(&format!(
+                    "; {} split into {} parts",
+                    split.path,
+                    split.parts.len()
+                ));
+            }
+            detail
+        }
     };
     audit
         .record(
@@ -1312,6 +1322,7 @@ mod tests {
             file_count: 3,
             file_bytes: 10,
             largest_file: Some(("setup.exe".to_string(), 8)),
+            split_files: Vec::new(),
             image_bytes: 4 * MIB,
             sector_bytes: 512,
             cluster_bytes: 4096,

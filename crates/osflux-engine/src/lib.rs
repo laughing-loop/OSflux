@@ -1,3 +1,4 @@
+pub mod answer_file;
 pub mod audit;
 pub mod chunk_plan;
 pub mod clock;
@@ -30,6 +31,9 @@ pub mod write_session;
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
+pub use answer_file::{
+    validate_account_name, Architecture, RegionSettings, SetupOptions, ANSWER_FILE_NAME,
+};
 pub use audit::{AuditEvent, AuditEventKind, AuditLog};
 pub use chunk_plan::{
     build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
@@ -65,6 +69,7 @@ pub use iso_filesystem_plan::{
     build_iso_filesystem_plan, plan_iso_filesystem, IsoFilesystemCapabilities, IsoFilesystemPlan,
     IsoFilesystemPlanError, IsoFilesystemPlanStatus, IsoFilesystemStrategy,
 };
+pub use osflux_core::region::read_region_settings;
 pub use preflight::{
     build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,
     WritePreflightStatus,

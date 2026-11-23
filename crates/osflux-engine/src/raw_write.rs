@@ -7,6 +7,7 @@ use std::time::Instant;
 use osflux_core::device::{BlockDevice, DeviceAccess, DeviceError, NativeBlockDevice};
 use sha2::{Digest, Sha256};
 
+use crate::answer_file::SetupOptions;
 use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
 use crate::clock::now_unix_seconds;
 use crate::drive_contents::inspect_drive_contents;
@@ -40,7 +41,7 @@ pub enum WriteLayout {
     Raw,
     /// The ISO's files are copied onto a new MBR drive with one FAT32
     /// partition that starts in UEFI mode, as Windows installers need.
-    UefiFat32(UefiFat32Layout),
+    UefiFat32(Box<UefiFat32Layout>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,10 +305,16 @@ pub fn prepare_raw_write(
     target_index: u32,
     supplied_confirmation_phrase: &str,
     chunk_size_bytes: u64,
+    setup_options: &SetupOptions,
     authorizations: &AuthorizationStore,
 ) -> Result<RawWritePlan, RawWriteError> {
     let image_path = image_path.as_ref();
     validate_chunk_size(chunk_size_bytes)?;
+    // Checked before anything slow, so a mistyped account name is reported
+    // straight away.
+    setup_options
+        .validate()
+        .map_err(|reason| RawWriteError::Blocked { reason })?;
     let selection = select_write_mode(
         image_path,
         target_index,
@@ -334,10 +341,12 @@ pub fn prepare_raw_write(
                 sector_bytes,
                 &session_id,
                 now_unix_seconds(),
+                setup_options,
             )
             .map_err(|error| file_copy_error(image_path, error))
         },
     )?;
+    check_setup_options_apply(&plan.layout, setup_options)?;
 
     // The phrase alone stays valid for as long as the same drive sits at the
     // same index. The recorded confirmation also ties the write to this
@@ -466,7 +475,7 @@ pub fn build_raw_write_plan(
             WriteLayout::Raw
         }
         Some(SelectedWriteMode::IsoFilesystemBootSetup) => {
-            WriteLayout::UefiFat32(lay_out_files(target_size_bytes)?)
+            WriteLayout::UefiFat32(Box::new(lay_out_files(target_size_bytes)?))
         }
         None => {
             return Err(RawWriteError::Blocked {
@@ -490,6 +499,20 @@ pub fn build_raw_write_plan(
         verification: Verification::ReadBack,
         authorization_expires_at_unix_seconds: 0,
     })
+}
+
+/// Windows Setup options go into an answer file on the copied FAT32 drive,
+/// so an image copied byte for byte cannot take them.
+fn check_setup_options_apply(
+    layout: &WriteLayout,
+    setup_options: &SetupOptions,
+) -> Result<(), RawWriteError> {
+    if matches!(layout, WriteLayout::Raw) && !setup_options.is_empty() {
+        return Err(RawWriteError::Blocked {
+            reason: "Windows Setup options only apply to Windows installer ISOs, whose files OSflux copies; this image is copied byte for byte, so OSflux cannot add an answer file to it".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// The drive's sector size, which the FAT32 layout depends on. Read through
@@ -545,6 +568,12 @@ pub fn write_image_to_target(
                     "; {} split into {} parts",
                     split.path,
                     split.parts.len()
+                ));
+            }
+            if !layout.setup_options.is_empty() {
+                detail.push_str(&format!(
+                    "; Windows Setup answer file with {}",
+                    layout.setup_options.audit_summary()
                 ));
             }
             detail
@@ -912,10 +941,11 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_write_plan, execute_raw_write, trailing_wipe, write_image_to_target,
-        RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, Verification, WriteLayout,
-        RAW_WRITE_ALIGNMENT_BYTES,
+        build_raw_write_plan, check_setup_options_apply, execute_raw_write, trailing_wipe,
+        write_image_to_target, RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress,
+        Verification, WriteLayout, RAW_WRITE_ALIGNMENT_BYTES,
     };
+    use crate::answer_file::SetupOptions;
     use crate::audit::AuditLog;
     use crate::clock::now_unix_seconds;
     use crate::file_copy::UefiFat32Layout;
@@ -1032,6 +1062,26 @@ mod tests {
             .iter()
             .any(|event| event.phase == RawWritePhase::Writing
                 && event.completed_bytes == image.len() as u64));
+    }
+
+    #[test]
+    fn windows_setup_options_only_apply_to_copied_isos() {
+        let options = SetupOptions {
+            skip_privacy_questions: true,
+            ..SetupOptions::default()
+        };
+
+        let error = check_setup_options_apply(&WriteLayout::Raw, &options).unwrap_err();
+
+        assert!(
+            matches!(&error, RawWriteError::Blocked { reason } if reason.contains("byte for byte"))
+        );
+        assert!(check_setup_options_apply(&WriteLayout::Raw, &SetupOptions::default()).is_ok());
+        assert!(check_setup_options_apply(
+            &WriteLayout::UefiFat32(Box::new(sample_layout())),
+            &options
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1416,6 +1466,8 @@ mod tests {
             file_bytes: 10,
             largest_file: Some(("setup.exe".to_string(), 8)),
             split_files: Vec::new(),
+            setup_options: SetupOptions::default(),
+            answer_file_bytes: None,
             image_bytes: 4 * MIB,
             sector_bytes: 512,
             cluster_bytes: 4096,
@@ -1443,7 +1495,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(asked_for, Some(16 * MIB));
-        assert_eq!(plan.layout, WriteLayout::UefiFat32(sample_layout()));
+        assert_eq!(
+            plan.layout,
+            WriteLayout::UefiFat32(Box::new(sample_layout()))
+        );
     }
 
     #[test]
@@ -1495,11 +1550,12 @@ mod tests {
             512,
             "OSFLUX-SESSION-TEST",
             1_795_022_016,
+            &SetupOptions::default(),
         )
         .unwrap();
         let iso_bytes = fs::read(&iso).unwrap();
         let mut copy_plan = plan(&iso, iso_bytes.len() as u64, drive_bytes);
-        copy_plan.layout = WriteLayout::UefiFat32(layout.clone());
+        copy_plan.layout = WriteLayout::UefiFat32(Box::new(layout.clone()));
         // Starts filled with 0xEE, so untouched bytes stand out.
         let drive = MemoryDrive::new(drive_bytes);
         let mut phases = Vec::new();
@@ -1554,11 +1610,19 @@ mod tests {
     #[test]
     fn refuses_a_file_copy_when_the_drive_reports_other_sectors() {
         let iso = crate::file_copy::tests::windows_like_iso();
-        let mut layout = crate::file_copy::lay_out_uefi_fat32(&iso, 64 * MIB, 512, "S", 0).unwrap();
+        let mut layout = crate::file_copy::lay_out_uefi_fat32(
+            &iso,
+            64 * MIB,
+            512,
+            "S",
+            0,
+            &SetupOptions::default(),
+        )
+        .unwrap();
         layout.sector_bytes = 4096;
         let size = fs::metadata(&iso).unwrap().len();
         let mut copy_plan = plan(&iso, size, 64 * MIB);
-        copy_plan.layout = WriteLayout::UefiFat32(layout);
+        copy_plan.layout = WriteLayout::UefiFat32(Box::new(layout));
         let drive = MemoryDrive::new(64 * MIB);
 
         let error = execute_raw_write(&copy_plan, &drive, |_| {}).unwrap_err();
@@ -1574,11 +1638,19 @@ mod tests {
     #[test]
     fn refuses_a_file_copy_that_no_longer_matches_its_plan() {
         let iso = crate::file_copy::tests::windows_like_iso();
-        let mut layout = crate::file_copy::lay_out_uefi_fat32(&iso, 64 * MIB, 512, "S", 0).unwrap();
+        let mut layout = crate::file_copy::lay_out_uefi_fat32(
+            &iso,
+            64 * MIB,
+            512,
+            "S",
+            0,
+            &SetupOptions::default(),
+        )
+        .unwrap();
         layout.image_bytes += 4096;
         let size = fs::metadata(&iso).unwrap().len();
         let mut copy_plan = plan(&iso, size, 64 * MIB);
-        copy_plan.layout = WriteLayout::UefiFat32(layout);
+        copy_plan.layout = WriteLayout::UefiFat32(Box::new(layout));
         let drive = MemoryDrive::new(64 * MIB);
 
         let error = execute_raw_write(&copy_plan, &drive, |_| {}).unwrap_err();

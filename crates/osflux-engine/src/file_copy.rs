@@ -16,6 +16,7 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+use crate::answer_file::{answer_file, Architecture, SetupOptions, ANSWER_FILE_NAME};
 use crate::fat32::{
     ContentSource, FatDirectory, FatEntry, FatError, FatFile, FatImage, FatImageOptions,
     MAX_FAT32_FILE_BYTES,
@@ -50,6 +51,11 @@ pub struct UefiFat32Layout {
     /// writing.
     pub largest_file: Option<(String, u64)>,
     pub split_files: Vec<SplitFile>,
+    /// Windows Setup options, written as `autounattend.xml` at the root of
+    /// the stick when any is on.
+    pub setup_options: SetupOptions,
+    /// The size of that answer file, when there is one.
+    pub answer_file_bytes: Option<u64>,
     /// Bytes of the drive image written, from the MBR to the end of the last
     /// file. The free space after it is not written.
     pub image_bytes: u64,
@@ -91,6 +97,13 @@ pub enum FileCopyError {
         path: String,
         reason: WimSplitError,
     },
+    /// A Windows Setup option has a value that cannot be used.
+    InvalidSetupOption(String),
+    /// The ISO already has an answer file, which the options would replace.
+    AnswerFileExists(String),
+    /// The UEFI loader does not say which processor the ISO is for, which
+    /// the answer file must name.
+    UnknownArchitecture(String),
     Fat(FatError),
     Image(io::Error),
 }
@@ -113,6 +126,15 @@ impl fmt::Display for FileCopyError {
             Self::CannotSplit { path, reason } => write!(
                 formatter,
                 "{path} is too large for FAT32 and cannot be split: {reason}"
+            ),
+            Self::InvalidSetupOption(reason) => formatter.write_str(reason),
+            Self::AnswerFileExists(path) => write!(
+                formatter,
+                "the ISO already has an answer file, {path}; OSflux will not replace it with the Windows Setup options"
+            ),
+            Self::UnknownArchitecture(loader) => write!(
+                formatter,
+                "OSflux cannot tell which processor {loader} is for, so it cannot write Windows Setup options for this ISO"
             ),
             Self::Fat(error) => write!(formatter, "{error}"),
             Self::Image(error) => write!(formatter, "could not read the ISO: {error}"),
@@ -161,6 +183,8 @@ enum FileSource {
         wim: usize,
         part: SwmPart,
     },
+    /// A file OSflux writes itself, such as the answer file.
+    Generated(Vec<u8>),
 }
 
 /// The FAT32 tree for an ISO, with where every file's bytes come from.
@@ -222,28 +246,49 @@ pub fn lay_out_uefi_fat32(
     sector_bytes: u32,
     session_id: &str,
     created_unix_seconds: u64,
+    setup_options: &SetupOptions,
 ) -> Result<UefiFat32Layout, FileCopyError> {
     let iso = File::open(image_path).map_err(FileCopyError::Image)?;
     lay_out_with_limits(
         &iso,
-        drive_bytes,
-        sector_bytes,
-        session_id,
-        created_unix_seconds,
+        LayoutRequest {
+            drive_bytes,
+            sector_bytes,
+            session_id,
+            created_unix_seconds,
+            setup_options,
+        },
         &CopyLimits::default(),
     )
 }
 
+/// What a layout is planned for.
+pub(crate) struct LayoutRequest<'a> {
+    pub(crate) drive_bytes: u64,
+    pub(crate) sector_bytes: u32,
+    pub(crate) session_id: &'a str,
+    pub(crate) created_unix_seconds: u64,
+    pub(crate) setup_options: &'a SetupOptions,
+}
+
 pub(crate) fn lay_out_with_limits(
     iso: &dyn ImageRead,
-    drive_bytes: u64,
-    sector_bytes: u32,
-    session_id: &str,
-    created_unix_seconds: u64,
+    request: LayoutRequest<'_>,
     limits: &CopyLimits,
 ) -> Result<UefiFat32Layout, FileCopyError> {
+    let LayoutRequest {
+        drive_bytes,
+        sector_bytes,
+        session_id,
+        created_unix_seconds,
+        setup_options,
+    } = request;
     let volume = read_udf(iso)?;
-    let tree = copy_tree(&volume, iso, limits)?;
+    let tree = copy_tree(&volume, iso, limits, setup_options)?;
+    let answer_file_bytes = tree.sources.iter().find_map(|source| match source {
+        FileSource::Generated(bytes) => Some(bytes.len() as u64),
+        _ => None,
+    });
     let seed = stable_fingerprint(session_id.as_bytes());
     let options = FatImageOptions {
         drive_bytes,
@@ -262,6 +307,8 @@ pub(crate) fn lay_out_with_limits(
         file_bytes: tree.sources.iter().map(FileSource::size_bytes).sum(),
         largest_file: largest_file(&volume),
         split_files: tree.split_files,
+        setup_options: setup_options.clone(),
+        answer_file_bytes,
         image_bytes: image.image_len(),
         sector_bytes,
         cluster_bytes: image.cluster_bytes(),
@@ -276,6 +323,7 @@ impl FileSource {
         match self {
             Self::Udf(file) => file.size_bytes,
             Self::SplitPart { part, .. } => part.size_bytes,
+            Self::Generated(bytes) => bytes.len() as u64,
         }
     }
 }
@@ -323,7 +371,7 @@ pub(crate) fn prepare_with_limits<R: ImageRead>(
     limits: &CopyLimits,
 ) -> Result<PreparedCopy<R>, FileCopyError> {
     let volume = read_udf(&iso)?;
-    let tree = copy_tree(&volume, &iso, limits)?;
+    let tree = copy_tree(&volume, &iso, limits, &layout.setup_options)?;
     let options = FatImageOptions {
         drive_bytes,
         sector_bytes: layout.sector_bytes,
@@ -353,6 +401,7 @@ impl ContentSource for CopyContent<'_> {
                 };
                 part.read_at(&wim, offset, buffer)
             }
+            FileSource::Generated(bytes) => bytes.as_slice().read_image_at(offset, buffer),
         }
     }
 }
@@ -416,10 +465,11 @@ fn copy_tree(
     volume: &UdfVolume,
     iso: &dyn ImageRead,
     limits: &CopyLimits,
+    setup_options: &SetupOptions,
 ) -> Result<CopyTree, FileCopyError> {
-    if uefi_loader_path(volume).is_none() {
+    let Some(loader) = uefi_loader_path(volume) else {
         return Err(FileCopyError::NoUefiLoader);
-    }
+    };
     let mut tree = CopyTree {
         root: FatDirectory {
             name: String::new(),
@@ -431,7 +481,50 @@ fn copy_tree(
         split_files: Vec::new(),
     };
     tree.root = convert_folder(&volume.root, "", iso, limits, &mut tree)?;
+    add_answer_file(&mut tree, &loader, setup_options)?;
     Ok(tree)
+}
+
+/// Puts the answer file for `options` at the root of the stick, when any
+/// option is on.
+fn add_answer_file(
+    tree: &mut CopyTree,
+    loader: &str,
+    options: &SetupOptions,
+) -> Result<(), FileCopyError> {
+    if options.is_empty() {
+        return Ok(());
+    }
+    options
+        .validate()
+        .map_err(FileCopyError::InvalidSetupOption)?;
+    if let Some(existing) = tree.root.entries.iter().find(|entry| {
+        let name = match entry {
+            FatEntry::File(file) => &file.name,
+            FatEntry::Directory(folder) => &folder.name,
+        };
+        name.eq_ignore_ascii_case(ANSWER_FILE_NAME)
+    }) {
+        let name = match existing {
+            FatEntry::File(file) => file.name.clone(),
+            FatEntry::Directory(folder) => folder.name.clone(),
+        };
+        return Err(FileCopyError::AnswerFileExists(name));
+    }
+    let architecture = Architecture::from_uefi_loader(loader)
+        .ok_or_else(|| FileCopyError::UnknownArchitecture(loader.to_string()))?;
+    let Some(xml) = answer_file(options, architecture) else {
+        return Ok(());
+    };
+    let bytes = xml.into_bytes();
+    tree.root.entries.push(FatEntry::File(FatFile {
+        name: ANSWER_FILE_NAME.to_string(),
+        hidden: false,
+        size_bytes: bytes.len() as u64,
+        content: tree.sources.len(),
+    }));
+    tree.sources.push(FileSource::Generated(bytes));
+    Ok(())
 }
 
 fn convert_folder(
@@ -506,8 +599,9 @@ fn uefi_loader_path(volume: &UdfVolume) -> Option<String> {
 pub(crate) mod tests {
     use super::{
         copy_tree, lay_out_uefi_fat32, lay_out_with_limits, prepare_copy, prepare_with_limits,
-        summarize_with_limits, CopyLimits, FileCopyError, FileSource,
+        summarize_with_limits, CopyLimits, FileCopyError, FileSource, LayoutRequest,
     };
+    use crate::answer_file::SetupOptions;
     use crate::drive_contents::{inspect_drive_contents, FilesystemKind};
     use crate::fat32::FatEntry;
     use crate::image_io::ImageRead;
@@ -537,6 +631,29 @@ pub(crate) mod tests {
         CopyLimits {
             max_file_bytes: 8 * 1024,
             part_bytes: 4 * 1024,
+        }
+    }
+
+    static NO_OPTIONS: SetupOptions = SetupOptions {
+        bypass_requirements: false,
+        local_account: None,
+        skip_privacy_questions: false,
+        disable_bitlocker_auto_encryption: false,
+        region: None,
+    };
+
+    /// A 64 MiB drive with 512-byte sectors and no Windows Setup options.
+    fn request(session_id: &str) -> LayoutRequest<'_> {
+        with_options(session_id, &NO_OPTIONS)
+    }
+
+    fn with_options<'a>(session_id: &'a str, options: &'a SetupOptions) -> LayoutRequest<'a> {
+        LayoutRequest {
+            drive_bytes: 64 * MIB,
+            sector_bytes: 512,
+            session_id,
+            created_unix_seconds: 0,
+            setup_options: options,
         }
     }
 
@@ -588,7 +705,14 @@ pub(crate) mod tests {
     fn lays_out_a_windows_like_iso() {
         let iso = windows_like_iso();
 
-        let layout = lay_out_uefi_fat32(&iso, 64 * MIB, 512, "OSFLUX-SESSION-1", 1_795_022_016);
+        let layout = lay_out_uefi_fat32(
+            &iso,
+            64 * MIB,
+            512,
+            "OSFLUX-SESSION-1",
+            1_795_022_016,
+            &SetupOptions::default(),
+        );
         let _ = fs::remove_dir_all(iso.parent().unwrap());
         let layout = layout.unwrap();
 
@@ -606,8 +730,15 @@ pub(crate) mod tests {
     #[test]
     fn builds_the_same_image_again_at_write_time() {
         let iso = windows_like_iso();
-        let layout =
-            lay_out_uefi_fat32(&iso, 64 * MIB, 512, "OSFLUX-SESSION-1", 1_795_022_016).unwrap();
+        let layout = lay_out_uefi_fat32(
+            &iso,
+            64 * MIB,
+            512,
+            "OSFLUX-SESSION-1",
+            1_795_022_016,
+            &SetupOptions::default(),
+        )
+        .unwrap();
 
         let prepared = prepare_copy(&iso, 64 * MIB, &layout);
         let _ = fs::remove_dir_all(iso.parent().unwrap());
@@ -623,10 +754,8 @@ pub(crate) mod tests {
     fn different_sessions_get_different_disk_signatures() {
         let iso = windows_like();
         let limits = CopyLimits::default();
-        let first =
-            lay_out_with_limits(&iso, 64 * MIB, 512, "OSFLUX-SESSION-1", 0, &limits).unwrap();
-        let second =
-            lay_out_with_limits(&iso, 64 * MIB, 512, "OSFLUX-SESSION-2", 0, &limits).unwrap();
+        let first = lay_out_with_limits(&iso, request("OSFLUX-SESSION-1"), &limits).unwrap();
+        let second = lay_out_with_limits(&iso, request("OSFLUX-SESSION-2"), &limits).unwrap();
 
         assert_ne!(first.disk_signature, second.disk_signature);
         assert_ne!(first.volume_id, second.volume_id);
@@ -636,7 +765,7 @@ pub(crate) mod tests {
     fn splits_install_wim_when_it_is_too_large() {
         let iso = with_wim();
 
-        let layout = lay_out_with_limits(&iso, 64 * MIB, 512, "S", 0, &small_limits()).unwrap();
+        let layout = lay_out_with_limits(&iso, request("S"), &small_limits()).unwrap();
 
         assert_eq!(layout.split_files.len(), 1);
         let split = &layout.split_files[0];
@@ -651,7 +780,7 @@ pub(crate) mod tests {
         let iso = with_wim();
         let volume = read_udf(&iso).unwrap();
 
-        let tree = copy_tree(&volume, &iso, &small_limits()).unwrap();
+        let tree = copy_tree(&volume, &iso, &small_limits(), &NO_OPTIONS).unwrap();
 
         let Some(FatEntry::Directory(sources)) =
             tree.root.entries.iter().find(
@@ -685,7 +814,7 @@ pub(crate) mod tests {
             .iter()
             .filter_map(|source| match source {
                 FileSource::SplitPart { part, .. } => Some(part.clone()),
-                FileSource::Udf(_) => None,
+                _ => None,
             })
             .collect();
         assert_eq!(parts, expected.parts);
@@ -694,7 +823,7 @@ pub(crate) mod tests {
     #[test]
     fn a_split_copy_writes_and_reads_back_as_fat32() {
         let iso = with_wim();
-        let layout = lay_out_with_limits(&iso, 64 * MIB, 512, "S", 0, &small_limits()).unwrap();
+        let layout = lay_out_with_limits(&iso, request("S"), &small_limits()).unwrap();
         let prepared = prepare_with_limits(&iso, 64 * MIB, &layout, &small_limits()).unwrap();
 
         let mut bytes = vec![0u8; layout.image_bytes as usize];
@@ -723,7 +852,7 @@ pub(crate) mod tests {
             }
         }
         let iso = with_wim();
-        let layout = lay_out_with_limits(&iso, 64 * MIB, 512, "S", 0, &small_limits()).unwrap();
+        let layout = lay_out_with_limits(&iso, request("S"), &small_limits()).unwrap();
         let prepared = prepare_with_limits(&iso, 64 * MIB, &layout, &small_limits()).unwrap();
         let directory = crate::test_support::temp_dir("split-copy");
         let mut bytes = vec![0u8; layout.image_bytes as usize];
@@ -806,7 +935,9 @@ pub(crate) mod tests {
         let volume = PathBuf::from(std::env::var("OSFLUX_LARGE_VOLUME").unwrap());
         let drive_bytes = 16 * 1024 * MIB;
 
-        let layout = lay_out_uefi_fat32(&iso, drive_bytes, 512, "LARGE", 0).unwrap();
+        let layout =
+            lay_out_uefi_fat32(&iso, drive_bytes, 512, "LARGE", 0, &SetupOptions::default())
+                .unwrap();
         eprintln!("{layout:#?}");
         let prepared = prepare_copy(&iso, drive_bytes, &layout).unwrap();
         assert_eq!(prepared.image.image_len(), layout.image_bytes);
@@ -823,6 +954,147 @@ pub(crate) mod tests {
         }
         let file = output.into_inner().unwrap();
         file.set_len(prepared.image.partition_bytes()).unwrap();
+    }
+
+    fn all_setup_options() -> SetupOptions {
+        SetupOptions {
+            bypass_requirements: true,
+            local_account: Some("Joly".to_string()),
+            skip_privacy_questions: true,
+            disable_bitlocker_auto_encryption: true,
+            region: Some(crate::answer_file::RegionSettings {
+                input_locale: "0809:00000809".to_string(),
+                system_locale: "en-GB".to_string(),
+                user_locale: "en-GB".to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn writes_the_answer_file_at_the_root_of_the_stick() {
+        let iso = windows_like();
+        let options = all_setup_options();
+        let expected =
+            crate::answer_file::answer_file(&options, crate::answer_file::Architecture::Amd64)
+                .unwrap();
+
+        let layout =
+            lay_out_with_limits(&iso, with_options("S", &options), &CopyLimits::default()).unwrap();
+
+        assert_eq!(layout.file_count, 49);
+        assert_eq!(layout.answer_file_bytes, Some(expected.len() as u64));
+        assert_eq!(layout.setup_options, options);
+        // Built again at write time from the recorded layout, to the same
+        // size and with the same file.
+        let prepared =
+            prepare_with_limits(&iso, 64 * MIB, &layout, &CopyLimits::default()).unwrap();
+        assert_eq!(prepared.image.image_len(), layout.image_bytes);
+
+        // mtools reads the stick as an independent check; where it is
+        // missing the test says so and passes.
+        if !crate::test_support::tool_exists("mtype") {
+            eprintln!("skipping the mtools check: mtype is not installed");
+            return;
+        }
+        let mut bytes = vec![0u8; layout.image_bytes as usize];
+        prepared.read_at(0, &mut bytes).unwrap();
+        let directory = crate::test_support::temp_dir("answer-file-copy");
+        let volume = directory.join("volume.img");
+        let file = fs::File::create(&volume).unwrap();
+        file.set_len(prepared.image.partition_bytes()).unwrap();
+        use std::io::Write as _;
+        (&file).write_all(&bytes[MIB as usize..]).unwrap();
+        drop(file);
+        let output = std::process::Command::new("mtype")
+            .env("MTOOLS_SKIP_CHECK", "1")
+            .arg("-i")
+            .arg(&volume)
+            .arg("::/autounattend.xml")
+            .output()
+            .unwrap();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+
+    #[test]
+    fn adds_no_answer_file_without_options() {
+        let layout =
+            lay_out_with_limits(&windows_like(), request("S"), &CopyLimits::default()).unwrap();
+
+        assert_eq!(layout.file_count, 48);
+        assert_eq!(layout.answer_file_bytes, None);
+    }
+
+    #[test]
+    fn refuses_to_replace_an_isos_own_answer_file() {
+        let iso_volume = volume(vec![loader(), file("AutoUnattend.xml", 10)]);
+
+        let error = copy_tree(
+            &iso_volume,
+            &Vec::new(),
+            &CopyLimits::default(),
+            &all_setup_options(),
+        )
+        .err()
+        .unwrap();
+
+        assert!(
+            matches!(&error, FileCopyError::AnswerFileExists(name) if name == "AutoUnattend.xml")
+        );
+        // Without options the ISO's own file is copied as it is.
+        assert!(copy_tree(
+            &iso_volume,
+            &Vec::new(),
+            &CopyLimits::default(),
+            &NO_OPTIONS
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn refuses_options_for_a_processor_it_does_not_know() {
+        let iso_volume = volume(vec![folder(
+            "efi",
+            vec![folder("boot", vec![file("bootriscv64.efi", 1)])],
+        )]);
+
+        let error = copy_tree(
+            &iso_volume,
+            &Vec::new(),
+            &CopyLimits::default(),
+            &all_setup_options(),
+        )
+        .err()
+        .unwrap();
+
+        assert!(
+            matches!(error, FileCopyError::UnknownArchitecture(_)),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn checks_the_options_before_laying_out() {
+        let mut options = all_setup_options();
+        options.local_account = Some("Administrator".to_string());
+
+        let error = lay_out_with_limits(
+            &windows_like(),
+            with_options("S", &options),
+            &CopyLimits::default(),
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, FileCopyError::InvalidSetupOption(_)),
+            "{error}"
+        );
     }
 
     #[test]
@@ -865,7 +1137,7 @@ pub(crate) mod tests {
         }
         let iso_volume = volume(vec![loader(), folder("sources", vec![esd])]);
 
-        let error = copy_tree(&iso_volume, &solid, &small_limits())
+        let error = copy_tree(&iso_volume, &solid, &small_limits(), &NO_OPTIONS)
             .err()
             .unwrap();
 
@@ -889,9 +1161,14 @@ pub(crate) mod tests {
             folder("sources", vec![file("huge.bin", 5 * 1024 * MIB)]),
         ]);
 
-        let error = copy_tree(&iso_volume, &Vec::new(), &CopyLimits::default())
-            .err()
-            .unwrap();
+        let error = copy_tree(
+            &iso_volume,
+            &Vec::new(),
+            &CopyLimits::default(),
+            &NO_OPTIONS,
+        )
+        .err()
+        .unwrap();
 
         assert!(
             matches!(&error, FileCopyError::FileTooLarge { path, .. } if path == "sources/huge.bin")
@@ -907,7 +1184,12 @@ pub(crate) mod tests {
         )]);
 
         assert!(matches!(
-            copy_tree(&iso_volume, &Vec::new(), &CopyLimits::default()),
+            copy_tree(
+                &iso_volume,
+                &Vec::new(),
+                &CopyLimits::default(),
+                &NO_OPTIONS
+            ),
             Err(FileCopyError::NoUefiLoader)
         ));
     }
@@ -920,7 +1202,13 @@ pub(crate) mod tests {
                 vec![folder("Boot", vec![file(name, 1)])],
             )]);
             assert!(
-                copy_tree(&iso_volume, &Vec::new(), &CopyLimits::default()).is_ok(),
+                copy_tree(
+                    &iso_volume,
+                    &Vec::new(),
+                    &CopyLimits::default(),
+                    &NO_OPTIONS
+                )
+                .is_ok(),
                 "{name}"
             );
         }
@@ -934,7 +1222,13 @@ pub(crate) mod tests {
         }
         let iso_volume = volume(vec![hidden, loader()]);
 
-        let tree = copy_tree(&iso_volume, &Vec::new(), &CopyLimits::default()).unwrap();
+        let tree = copy_tree(
+            &iso_volume,
+            &Vec::new(),
+            &CopyLimits::default(),
+            &NO_OPTIONS,
+        )
+        .unwrap();
 
         assert_eq!(tree.sources.len(), 2);
         assert!(
@@ -950,8 +1244,7 @@ pub(crate) mod tests {
         let plain =
             SparseDrive::from_fixture(include_str!("../tests/fixtures/isos/plain-iso9660.sparse"));
 
-        let error =
-            lay_out_with_limits(&plain, 64 * MIB, 512, "S", 0, &CopyLimits::default()).unwrap_err();
+        let error = lay_out_with_limits(&plain, request("S"), &CopyLimits::default()).unwrap_err();
 
         assert!(matches!(error, FileCopyError::NoUdf), "{error}");
     }

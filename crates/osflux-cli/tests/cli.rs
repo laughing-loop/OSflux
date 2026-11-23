@@ -174,6 +174,91 @@ fn no_verify_only_works_with_execute() {
 }
 
 #[test]
+fn windows_setup_options_only_work_with_execute() {
+    for option in [
+        "--bypass-requirements",
+        "--skip-privacy-questions",
+        "--no-auto-bitlocker",
+        "--copy-region",
+    ] {
+        let output = osflux(&["--write", "--image", "disk.img", "--target", "250", option]);
+
+        assert_eq!(output.status.code(), Some(2), "{option}");
+        assert!(
+            stderr(&output).contains("can only be used with --write --execute"),
+            "{option}"
+        );
+    }
+}
+
+#[test]
+fn refuses_a_local_account_name_windows_keeps_for_itself() {
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--confirm",
+        "OSFLUX ERASE TARGET 250 0000",
+        "--execute",
+        "--yes",
+        "--local-account",
+        "Administrator",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--local-account:"));
+    assert!(stderr(&output).contains("keeps for itself"));
+}
+
+#[test]
+fn needs_an_account_name_after_local_account() {
+    let output = osflux(&["--write", "--execute", "--local-account"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("missing account name after --local-account"));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn copy_region_needs_windows() {
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--confirm",
+        "OSFLUX ERASE TARGET 250 0000",
+        "--execute",
+        "--yes",
+        "--copy-region",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--copy-region:"));
+    assert!(stderr(&output).contains("needs Windows"));
+}
+
+#[test]
+fn help_lists_windows_setup_options() {
+    let output = osflux(&["--help"]);
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    for option in [
+        "--bypass-requirements",
+        "--local-account <NAME>",
+        "--skip-privacy-questions",
+        "--no-auto-bitlocker",
+        "--copy-region",
+        "--no-verify",
+    ] {
+        assert!(text.contains(option), "{option}");
+    }
+}
+
+#[test]
 fn help_lists_exit_codes() {
     let output = osflux(&["--help"]);
 

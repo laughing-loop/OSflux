@@ -4,15 +4,17 @@ use osflux_engine::{
     assess_target, build_image_plan_report, create_write_intent, detect_image_family,
     format_unix_utc, inspect_device_contents, list_devices, now_unix_seconds, plan_image,
     plan_iso_filesystem, plan_write_chunks, prepare_raw_write, prepare_write_command,
-    prepare_write_session, preview_write_progress, record_write_authorization, run_write_preflight,
-    select_write_mode, write_image_to_target, AuditEvent, AuditEventKind, AuditLog,
-    AuthorizationStore, ChunkPlan, ChunkPlanStatus, ConfirmationForm, DriveContents, Engine,
-    EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
-    IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
-    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
-    TargetAssessmentStatus, Verification, WriteCommandPlan, WriteCommandStatus, WriteIntent,
-    WriteIntentStatus, WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
-    WritePreflightStatus, WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
+    prepare_write_session, preview_write_progress, read_region_settings,
+    record_write_authorization, run_write_preflight, select_write_mode, validate_account_name,
+    write_image_to_target, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, ChunkPlan,
+    ChunkPlanStatus, ConfirmationForm, DriveContents, Engine, EngineConfig, ImageFamilyReport,
+    ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport,
+    ProgressPreview, ProgressPreviewStatus, RawWriteError, RawWritePhase, RawWritePlan,
+    RawWriteProgress, RawWriteReport, SetupOptions, TargetAssessment, TargetAssessmentStatus,
+    Verification, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
+    WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
+    WritePreflightStatus, WriteSession, WriteSessionStatus, ANSWER_FILE_NAME,
+    DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 /// Exit code for a command that ran but whose result is blocked or needs inspection.
@@ -48,6 +50,7 @@ fn main() {
             execute,
             assume_yes,
             verification,
+            setup,
             output,
         } => {
             if execute {
@@ -56,8 +59,11 @@ fn main() {
                     target,
                     confirm.as_deref(),
                     chunk_size,
-                    assume_yes,
-                    verification,
+                    WriteChoices {
+                        assume_yes,
+                        verification,
+                        setup,
+                    },
                     output,
                 );
             } else {
@@ -131,6 +137,7 @@ enum Command {
         execute: bool,
         assume_yes: bool,
         verification: Verification,
+        setup: SetupChoices,
         output: OutputFormat,
     },
     Session {
@@ -188,6 +195,7 @@ where
     let mut execute_requested = false;
     let mut assume_yes = false;
     let mut no_verify = false;
+    let mut setup = SetupChoices::default();
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
@@ -218,6 +226,24 @@ where
             assume_yes = true;
         } else if arg == "--no-verify" {
             no_verify = true;
+        } else if arg == "--bypass-requirements" {
+            setup.options.bypass_requirements = true;
+        } else if let Some(name) = arg.strip_prefix("--local-account=") {
+            setup.options.local_account = Some(parse_account_name(name));
+        } else if arg == "--local-account" {
+            let Some(name) = args.get(index + 1) else {
+                eprintln!("missing account name after --local-account");
+                std::process::exit(2);
+            };
+
+            setup.options.local_account = Some(parse_account_name(name));
+            index += 1;
+        } else if arg == "--skip-privacy-questions" {
+            setup.options.skip_privacy_questions = true;
+        } else if arg == "--no-auto-bitlocker" {
+            setup.options.disable_bitlocker_auto_encryption = true;
+        } else if arg == "--copy-region" {
+            setup.copy_region = true;
         } else if arg == "--session" {
             session_requested = true;
         } else if arg == "--chunk-plan" {
@@ -327,6 +353,12 @@ where
         eprintln!("--no-verify can only be used with --write --execute");
         std::process::exit(2);
     }
+    if setup.any() && !execute_requested {
+        eprintln!(
+            "Windows Setup options (--bypass-requirements, --local-account, --skip-privacy-questions, --no-auto-bitlocker, --copy-region) can only be used with --write --execute"
+        );
+        std::process::exit(2);
+    }
 
     if mode_selection_requested {
         let Some(image) = preflight_image else {
@@ -425,6 +457,7 @@ where
             } else {
                 Verification::ReadBack
             },
+            setup,
             output,
         };
     }
@@ -944,10 +977,14 @@ fn run_raw_write(
     target: u32,
     confirmation_phrase: Option<&str>,
     chunk_size: u64,
-    assume_yes: bool,
-    verification: Verification,
+    choices: WriteChoices,
     output: OutputFormat,
 ) {
+    let WriteChoices {
+        assume_yes,
+        verification,
+        setup,
+    } = choices;
     let Some(confirmation_phrase) = confirmation_phrase else {
         eprintln!(
             "--write --execute needs --confirm with the phrase printed by --intent, or the drive's identity code if --intent offered it"
@@ -965,6 +1002,18 @@ fn run_raw_write(
         std::process::exit(2);
     }
 
+    let mut setup_options = setup.options;
+    if setup.copy_region {
+        match read_region_settings() {
+            Ok(region) => setup_options.region = Some(region),
+            Err(error) => {
+                eprintln!("OSflux did not write the image.");
+                eprintln!("--copy-region: {error}");
+                std::process::exit(2);
+            }
+        }
+    }
+
     let authorizations = open_authorization_store();
     let audit = open_audit_log();
     let plan = match prepare_raw_write(
@@ -972,6 +1021,7 @@ fn run_raw_write(
         target,
         confirmation_phrase,
         chunk_size,
+        &setup_options,
         &authorizations,
     ) {
         Ok(plan) => RawWritePlan {
@@ -1021,6 +1071,35 @@ fn run_raw_write(
         }
         Err(error) => exit_with_raw_write_error(error),
     }
+}
+
+/// Windows Setup options from the command line. The region is read from
+/// this PC only when the write runs.
+#[derive(Debug, Default)]
+struct SetupChoices {
+    options: SetupOptions,
+    copy_region: bool,
+}
+
+impl SetupChoices {
+    fn any(&self) -> bool {
+        self.copy_region || !self.options.is_empty()
+    }
+}
+
+/// How a confirmed write runs, besides what it writes and where.
+struct WriteChoices {
+    assume_yes: bool,
+    verification: Verification,
+    setup: SetupChoices,
+}
+
+fn parse_account_name(name: &str) -> String {
+    if let Err(reason) = validate_account_name(name) {
+        eprintln!("--local-account: {reason}");
+        std::process::exit(2);
+    }
+    name.to_string()
 }
 
 fn open_audit_log() -> AuditLog {
@@ -1100,6 +1179,15 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
                 format_size(split.size_bytes),
                 split.parts.join(", ")
             );
+        }
+        if let Some(bytes) = layout.answer_file_bytes {
+            println!(
+                "windows setup: {ANSWER_FILE_NAME} ({}) at the root of the stick, which Windows Setup reads:",
+                format_size(bytes)
+            );
+            for line in layout.setup_options.describe() {
+                println!("  - {line}");
+            }
         }
         println!(
             "to write: {}, then the last MiB of the drive is cleared",
@@ -1874,6 +1962,23 @@ fn print_help() {
     );
     println!(
         "  --no-verify       With --write --execute: skip reading the drive back after writing. Quicker, but a faulty or fake-capacity drive is not noticed. Recorded in the audit log."
+    );
+    println!();
+    println!("Windows Setup options, with --write --execute and a Windows installer ISO. Each adds a setting to an answer file (autounattend.xml) at the root of the stick, which Windows Setup reads on any PC started from it. All are off unless given:");
+    println!(
+        "  --bypass-requirements     Skip Setup's TPM 2.0, Secure Boot and 4 GB memory checks. Microsoft does not support Windows 11 on PCs that fail them."
+    );
+    println!(
+        "  --local-account <NAME>    Create this local account instead of asking for a Microsoft account. No password is written: the account starts with a blank one, signs in once by itself to finish setup, and Windows asks for a new password at the next sign-in."
+    );
+    println!(
+        "  --skip-privacy-questions  Answer the privacy questions with the choices that send the least data to Microsoft."
+    );
+    println!(
+        "  --no-auto-bitlocker       Stop Windows from turning on BitLocker device encryption by itself. BitLocker can still be turned on later."
+    );
+    println!(
+        "  --copy-region             Use this PC's formats, system locale and keyboard instead of asking for them."
     );
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");

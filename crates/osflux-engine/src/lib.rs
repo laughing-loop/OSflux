@@ -1,10 +1,11 @@
 pub mod audit;
 pub mod chunk_plan;
 pub mod clock;
-mod crc32;
+mod crc;
 pub mod drive_contents;
 mod fingerprint;
 pub mod image_family;
+pub mod image_io;
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
@@ -14,6 +15,9 @@ pub mod preflight;
 pub mod progress;
 pub mod raw_write;
 pub mod target;
+#[cfg(test)]
+mod test_support;
+pub mod udf;
 pub mod write_authorization;
 pub mod write_command;
 pub mod write_intent;

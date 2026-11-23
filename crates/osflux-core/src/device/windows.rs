@@ -382,12 +382,10 @@ fn lock_and_dismount_volume(volume_name: &str) -> DeviceResult<LockedVolume> {
     let mut attempts = 1;
     while let Err(error) = volume_control(handle, FSCTL_LOCK_VOLUME) {
         if attempts >= VOLUME_LOCK_ATTEMPTS {
-            return Err(volume_lock_error(
-                device_path,
-                format!(
-                    "it is in use; close any programs or windows using the drive and try again ({error})"
-                ),
-            ));
+            return Err(DeviceError::InUse {
+                volume: device_path.to_string(),
+                message: error.to_string(),
+            });
         }
 
         attempts += 1;

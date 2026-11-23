@@ -7,12 +7,12 @@ use osflux_engine::{
     prepare_write_session, preview_write_progress, read_region_settings,
     record_write_authorization, run_write_preflight, select_write_mode, validate_account_name,
     write_image_to_target, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, ChunkPlan,
-    ChunkPlanStatus, ConfirmationForm, DriveContents, Engine, EngineConfig, ImageFamilyReport,
-    ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan, IsoFilesystemPlanStatus, PlanReport,
-    ProgressPreview, ProgressPreviewStatus, RawWriteError, RawWritePhase, RawWritePlan,
-    RawWriteProgress, RawWriteReport, SetupOptions, TargetAssessment, TargetAssessmentStatus,
-    Verification, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
-    WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
+    ChunkPlanStatus, ConfirmationForm, DeviceError, DriveContents, Engine, EngineConfig,
+    ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
+    IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
+    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, SetupOptions, TargetAssessment,
+    TargetAssessmentStatus, Verification, WriteCommandPlan, WriteCommandStatus, WriteIntent,
+    WriteIntentStatus, WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
     WritePreflightStatus, WriteSession, WriteSessionStatus, ANSWER_FILE_NAME,
     DEFAULT_CHUNK_SIZE_BYTES,
 };
@@ -1291,8 +1291,13 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     eprintln!("OSflux did not write the image.");
     eprintln!("{error}");
     match error {
+        RawWriteError::Open(DeviceError::InUse { .. }) => {
+            eprintln!(
+                "Nothing was written. Close any File Explorer windows, programs or terminals that show or use the drive, wait a few seconds, then run --intent again: the confirmation is used up as soon as a write starts."
+            )
+        }
         RawWriteError::Open(_) => eprintln!(
-            "Run PowerShell as Administrator, and close any programs or windows using the drive."
+            "Nothing was written. Make sure PowerShell runs as Administrator and no program or window is using the drive, then run --intent again: the confirmation is used up as soon as a write starts."
         ),
         RawWriteError::TargetBlocked { .. } => eprintln!(
             "Drive numbers can change when drives are unplugged or plugged in. Run --list-devices to see which drive has which number, then run --intent for the right one."

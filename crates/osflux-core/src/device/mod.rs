@@ -135,6 +135,12 @@ pub enum DeviceError {
     Unsupported {
         operation: &'static str,
     },
+    /// Another program kept one of the drive's volumes open, so it could
+    /// not be locked for writing.
+    InUse {
+        volume: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for DeviceError {
@@ -152,6 +158,10 @@ impl fmt::Display for DeviceError {
                     "{operation} is not implemented on this platform yet"
                 )
             }
+            Self::InUse { volume, message } => write!(
+                formatter,
+                "the drive's volume {volume} is in use by another program or window ({message})"
+            ),
         }
     }
 }

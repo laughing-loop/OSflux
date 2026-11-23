@@ -75,8 +75,8 @@ pub use progress::{
 };
 pub use raw_write::{
     build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target,
-    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, WriteLayout,
-    MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, Verification,
+    WriteLayout, MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
 pub use target::{
     assess_target, assess_target_device, with_drive_contents, TargetAssessment,

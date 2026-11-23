@@ -159,6 +159,21 @@ fn yes_only_works_with_execute() {
 }
 
 #[test]
+fn no_verify_only_works_with_execute() {
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--no-verify",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--no-verify can only be used with --write --execute"));
+}
+
+#[test]
 fn help_lists_exit_codes() {
     let output = osflux(&["--help"]);
 

@@ -59,9 +59,30 @@ pub struct RawWritePlan {
     /// longer empty.
     pub confirmation_form: ConfirmationForm,
     pub layout: WriteLayout,
+    /// Whether the written bytes are read back and compared. On unless the
+    /// operator asks to skip it.
+    pub verification: Verification,
     /// When the one-time confirmation for this write expires; zero until
     /// `prepare_raw_write` has checked it.
     pub authorization_expires_at_unix_seconds: u64,
+}
+
+/// Whether a write is read back and compared once it is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verification {
+    /// Every written byte is read back from the drive and compared.
+    ReadBack,
+    /// Nothing is read back, for a quicker write.
+    Skipped,
+}
+
+impl Verification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadBack => "read-back",
+            Self::Skipped => "skipped",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +120,9 @@ pub struct RawWriteReport {
     /// raw copy, the ISO itself when its files were copied.
     pub image_sha256: String,
     pub bytes_written: u64,
+    /// Zero when verification was skipped.
     pub bytes_verified: u64,
+    pub verification: Verification,
     pub write_millis: u64,
     pub verify_millis: u64,
     /// Whether the outcome was added to the audit log.
@@ -119,6 +142,7 @@ impl RawWriteReport {
                 "  \"targetIdentityCode\": {},\n",
                 "  \"bytesWritten\": {},\n",
                 "  \"bytesVerified\": {},\n",
+                "  \"verification\": {},\n",
                 "  \"writeMillis\": {},\n",
                 "  \"verifyMillis\": {},\n",
                 "  \"auditRecorded\": {}\n",
@@ -131,6 +155,7 @@ impl RawWriteReport {
             string_json(&self.target_identity_code),
             self.bytes_written,
             self.bytes_verified,
+            string_json(self.verification.as_str()),
             self.write_millis,
             self.verify_millis,
             self.audit_recorded,
@@ -462,6 +487,7 @@ pub fn build_raw_write_plan(
         chunk_size_bytes,
         confirmation_form,
         layout,
+        verification: Verification::ReadBack,
         authorization_expires_at_unix_seconds: 0,
     })
 }
@@ -524,6 +550,12 @@ pub fn write_image_to_target(
             detail
         }
     };
+    let confirmed_with = match plan.verification {
+        Verification::ReadBack => confirmed_with,
+        Verification::Skipped => {
+            format!("{confirmed_with}; read-back verification skipped at the operator's request")
+        }
+    };
     audit
         .record(
             &AuditEvent::for_plan(AuditEventKind::WriteStarted, plan).with_detail(confirmed_with),
@@ -539,7 +571,14 @@ pub fn write_image_to_target(
     // its outcome is reported on the result instead of replacing it.
     let outcome_event = match &outcome {
         Ok(report) => {
-            AuditEvent::for_plan(AuditEventKind::WriteSucceeded, plan).with_report(report)
+            let event =
+                AuditEvent::for_plan(AuditEventKind::WriteSucceeded, plan).with_report(report);
+            match report.verification {
+                Verification::ReadBack => event,
+                Verification::Skipped => {
+                    event.with_detail("written but not verified: read-back was skipped")
+                }
+            }
         }
         Err(error) => {
             AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(error.to_string())
@@ -567,8 +606,9 @@ fn consume_and_write(
     execute_raw_write(plan, &device, on_progress)
 }
 
-/// Writes the planned bytes to `device` chunk by chunk, flushes, then reads
-/// every byte back and compares it with the same bytes generated again.
+/// Writes the planned bytes to `device` chunk by chunk, flushes, then,
+/// unless the plan skips verification, reads every byte back and compares it
+/// with the same bytes generated again.
 pub fn execute_raw_write<D: BlockDevice>(
     plan: &RawWritePlan,
     device: &D,
@@ -617,6 +657,7 @@ pub fn execute_raw_write<D: BlockDevice>(
         device,
         device_size,
         chunk_size: plan.chunk_size_bytes as usize,
+        verification: plan.verification,
     };
     let (image_sha256, written) = match &plan.layout {
         WriteLayout::Raw => {
@@ -683,7 +724,8 @@ pub fn execute_raw_write<D: BlockDevice>(
         target_identity_code: plan.target_identity_code.clone(),
         image_sha256,
         bytes_written: written.bytes,
-        bytes_verified: written.bytes,
+        bytes_verified: written.bytes_verified,
+        verification: plan.verification,
         write_millis: written.write_millis,
         verify_millis: written.verify_millis,
         audit_recorded: false,
@@ -728,6 +770,7 @@ fn hex(bytes: &[u8]) -> String {
 
 struct Written {
     bytes: u64,
+    bytes_verified: u64,
     write_millis: u64,
     verify_millis: u64,
 }
@@ -738,6 +781,7 @@ struct WriteStream<'a, D: BlockDevice> {
     device: &'a D,
     device_size: u64,
     chunk_size: usize,
+    verification: Verification,
 }
 
 impl<D: BlockDevice> WriteStream<'_, D> {
@@ -777,6 +821,15 @@ impl<D: BlockDevice> WriteStream<'_, D> {
         self.device.flush().map_err(RawWriteError::Device)?;
         let write_millis = write_started.elapsed().as_millis() as u64;
 
+        if self.verification == Verification::Skipped {
+            return Ok(Written {
+                bytes: total,
+                bytes_verified: 0,
+                write_millis,
+                verify_millis: 0,
+            });
+        }
+
         let verify_started = Instant::now();
         let mut device_buffer = vec![0u8; self.chunk_size];
         done = 0;
@@ -806,6 +859,7 @@ impl<D: BlockDevice> WriteStream<'_, D> {
 
         Ok(Written {
             bytes: total,
+            bytes_verified: total,
             write_millis,
             verify_millis,
         })
@@ -859,7 +913,7 @@ fn report(
 mod tests {
     use super::{
         build_raw_write_plan, execute_raw_write, trailing_wipe, write_image_to_target,
-        RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, WriteLayout,
+        RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, Verification, WriteLayout,
         RAW_WRITE_ALIGNMENT_BYTES,
     };
     use crate::audit::AuditLog;
@@ -978,6 +1032,45 @@ mod tests {
             .iter()
             .any(|event| event.phase == RawWritePhase::Writing
                 && event.completed_bytes == image.len() as u64));
+    }
+
+    #[test]
+    fn skipping_verification_writes_without_reading_back() {
+        let image = image_bytes((2 * MIB + 1000) as usize);
+        let path = temp_image(&image);
+        // A drive that flips a byte as it is written: only a read-back would
+        // notice, so with verification skipped the write still succeeds.
+        let mut drive = MemoryDrive::new(8 * MIB);
+        drive.corrupt_offset = Some(MIB + 7);
+        let quick = RawWritePlan {
+            verification: Verification::Skipped,
+            ..plan(&path, image.len() as u64, 8 * MIB)
+        };
+        let mut events = Vec::new();
+
+        let report = execute_raw_write(&quick, &drive, |event| events.push(event)).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(report.verification, Verification::Skipped);
+        assert_eq!(report.bytes_written, image.len() as u64);
+        assert_eq!(report.bytes_verified, 0);
+        assert_eq!(report.verify_millis, 0);
+        assert!(events
+            .iter()
+            .all(|event| event.phase != RawWritePhase::Verifying));
+        assert!(report
+            .to_json_pretty()
+            .contains("\"verification\": \"skipped\""));
+
+        // The same drive fault is caught when the write is verified.
+        let path = temp_image(&image);
+        let error = execute_raw_write(&plan(&path, image.len() as u64, 8 * MIB), &drive, |_| {})
+            .unwrap_err();
+        let _ = fs::remove_file(&path);
+        assert!(
+            matches!(error, RawWriteError::VerifyMismatch { .. }),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1656,6 +1749,7 @@ mod tests {
             chunk_size_bytes: 4 * MIB,
             confirmation_form: ConfirmationForm::FullPhrase,
             layout: WriteLayout::Raw,
+            verification: Verification::ReadBack,
             authorization_expires_at_unix_seconds: 0,
         }
     }

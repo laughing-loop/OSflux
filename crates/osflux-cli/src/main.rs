@@ -10,8 +10,8 @@ use osflux_engine::{
     EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
     IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
     RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
-    TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
-    WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
+    TargetAssessmentStatus, Verification, WriteCommandPlan, WriteCommandStatus, WriteIntent,
+    WriteIntentStatus, WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
     WritePreflightStatus, WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
@@ -47,6 +47,7 @@ fn main() {
             chunk_size,
             execute,
             assume_yes,
+            verification,
             output,
         } => {
             if execute {
@@ -56,6 +57,7 @@ fn main() {
                     confirm.as_deref(),
                     chunk_size,
                     assume_yes,
+                    verification,
                     output,
                 );
             } else {
@@ -128,6 +130,7 @@ enum Command {
         chunk_size: u64,
         execute: bool,
         assume_yes: bool,
+        verification: Verification,
         output: OutputFormat,
     },
     Session {
@@ -184,6 +187,7 @@ where
     let mut write_requested = false;
     let mut execute_requested = false;
     let mut assume_yes = false;
+    let mut no_verify = false;
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
@@ -212,6 +216,8 @@ where
             execute_requested = true;
         } else if arg == "--yes" {
             assume_yes = true;
+        } else if arg == "--no-verify" {
+            no_verify = true;
         } else if arg == "--session" {
             session_requested = true;
         } else if arg == "--chunk-plan" {
@@ -317,6 +323,10 @@ where
         eprintln!("--yes can only be used with --write --execute");
         std::process::exit(2);
     }
+    if no_verify && !execute_requested {
+        eprintln!("--no-verify can only be used with --write --execute");
+        std::process::exit(2);
+    }
 
     if mode_selection_requested {
         let Some(image) = preflight_image else {
@@ -410,6 +420,11 @@ where
             chunk_size: chunk_size_bytes,
             execute: execute_requested,
             assume_yes,
+            verification: if no_verify {
+                Verification::Skipped
+            } else {
+                Verification::ReadBack
+            },
             output,
         };
     }
@@ -930,6 +945,7 @@ fn run_raw_write(
     confirmation_phrase: Option<&str>,
     chunk_size: u64,
     assume_yes: bool,
+    verification: Verification,
     output: OutputFormat,
 ) {
     let Some(confirmation_phrase) = confirmation_phrase else {
@@ -958,7 +974,10 @@ fn run_raw_write(
         chunk_size,
         &authorizations,
     ) {
-        Ok(plan) => plan,
+        Ok(plan) => RawWritePlan {
+            verification,
+            ..plan
+        },
         Err(error) => {
             record_audit_event(
                 &audit,
@@ -1093,6 +1112,14 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
             "confirmed with: the identity code, because the drive is empty (checked again once the drive is locked)"
         ),
     }
+    match plan.verification {
+        Verification::ReadBack => {
+            println!("verify: every written byte is read back and compared")
+        }
+        Verification::Skipped => println!(
+            "verify: skipped (--no-verify); the written bytes are not read back, so a faulty or fake-capacity drive would not be noticed"
+        ),
+    }
 }
 
 /// Asks on the terminal before erasing; anything but "yes" cancels and
@@ -1136,11 +1163,16 @@ fn print_raw_write_report(report: &RawWriteReport, audit: &AuditLog) {
         format_size(report.bytes_written),
         format_rate(report.bytes_written, report.write_millis)
     );
-    println!(
-        "verified {} in {}",
-        format_size(report.bytes_verified),
-        format_rate(report.bytes_verified, report.verify_millis)
-    );
+    match report.verification {
+        Verification::ReadBack => println!(
+            "verified {} in {}",
+            format_size(report.bytes_verified),
+            format_rate(report.bytes_verified, report.verify_millis)
+        ),
+        Verification::Skipped => {
+            println!("not verified: the written bytes were not read back (--no-verify)")
+        }
+    }
     println!("audit log: {}", audit.path().display());
     println!("The drive can be removed.");
 }
@@ -1835,10 +1867,13 @@ fn print_help() {
     println!("  --session         Prepare a locked dry-run write session.");
     println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
     println!(
-        "  --execute         With --write: erase the target and write the image, then verify it. Raw images and hybrid ISOs are copied byte for byte; UDF ISOs such as Windows installers have their files copied onto a new FAT32 partition that starts in UEFI mode."
+        "  --execute         With --write: erase the target and write the image, then read it back and compare (unless --no-verify). Raw images and hybrid ISOs are copied byte for byte; UDF ISOs such as Windows installers have their files copied onto a new FAT32 partition that starts in UEFI mode."
     );
     println!(
         "  --yes             With --write --execute: skip the final prompt, for scripts and automation."
+    );
+    println!(
+        "  --no-verify       With --write --execute: skip reading the drive back after writing. Quicker, but a faulty or fake-capacity drive is not noticed. Recorded in the audit log."
     );
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");

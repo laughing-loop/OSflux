@@ -5,3 +5,8 @@ edition.workspace = true
 
 [dependencies]
 osflux-engine = { path = "../osflux-engine" }
+
+[build-dependencies]
+# Embeds the Windows icon in osflux-cli.exe. The toml feature, which reads
+# settings from Cargo.toml, is not needed.
+winresource = { version = "0.1.34", default-features = false }

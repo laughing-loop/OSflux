@@ -51,6 +51,7 @@ fn main() {
             assume_yes,
             verification,
             setup,
+            force_dismount,
             output,
         } => {
             if execute {
@@ -63,6 +64,7 @@ fn main() {
                         assume_yes,
                         verification,
                         setup,
+                        force_dismount,
                     },
                     output,
                 );
@@ -138,6 +140,7 @@ enum Command {
         assume_yes: bool,
         verification: Verification,
         setup: SetupChoices,
+        force_dismount: bool,
         output: OutputFormat,
     },
     Session {
@@ -195,6 +198,7 @@ where
     let mut execute_requested = false;
     let mut assume_yes = false;
     let mut no_verify = false;
+    let mut force_dismount = false;
     let mut setup = SetupChoices::default();
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
@@ -226,6 +230,8 @@ where
             assume_yes = true;
         } else if arg == "--no-verify" {
             no_verify = true;
+        } else if arg == "--force-dismount" {
+            force_dismount = true;
         } else if arg == "--bypass-requirements" {
             setup.options.bypass_requirements = true;
         } else if let Some(name) = arg.strip_prefix("--local-account=") {
@@ -353,6 +359,10 @@ where
         eprintln!("--no-verify can only be used with --write --execute");
         std::process::exit(2);
     }
+    if force_dismount && !execute_requested {
+        eprintln!("--force-dismount can only be used with --write --execute");
+        std::process::exit(2);
+    }
     if setup.any() && !execute_requested {
         eprintln!(
             "Windows Setup options (--bypass-requirements, --local-account, --skip-privacy-questions, --no-auto-bitlocker, --copy-region) can only be used with --write --execute"
@@ -458,6 +468,7 @@ where
                 Verification::ReadBack
             },
             setup,
+            force_dismount,
             output,
         };
     }
@@ -984,6 +995,7 @@ fn run_raw_write(
         assume_yes,
         verification,
         setup,
+        force_dismount,
     } = choices;
     let Some(confirmation_phrase) = confirmation_phrase else {
         eprintln!(
@@ -1051,9 +1063,24 @@ fn run_raw_write(
     }
 
     let mut progress = RawWriteProgressPrinter::new(output);
-    let result = write_image_to_target(&plan, &authorizations, &audit, |event| {
-        progress.update(event)
-    });
+    let approve_forced_dismount = |error: &DeviceError| {
+        if force_dismount {
+            eprintln!("{error}.");
+            eprintln!("Forcing a dismount, as --force-dismount allows.");
+            true
+        } else if assume_yes {
+            false
+        } else {
+            ask_to_force_dismount(error)
+        }
+    };
+    let result = write_image_to_target(
+        &plan,
+        &authorizations,
+        &audit,
+        approve_forced_dismount,
+        |event| progress.update(event),
+    );
     progress.finish();
 
     match result {
@@ -1092,6 +1119,8 @@ struct WriteChoices {
     assume_yes: bool,
     verification: Verification,
     setup: SetupChoices,
+    /// Force a busy volume free without asking, for scripts using --yes.
+    force_dismount: bool,
 }
 
 fn parse_account_name(name: &str) -> String {
@@ -1239,6 +1268,25 @@ fn confirm_erase_interactively(plan: &RawWritePlan, audit: &AuditLog) {
     }
 }
 
+/// Asked when a program keeps the drive open after Windows asked it to let
+/// go, the way chkdsk and format ask before forcing a dismount.
+fn ask_to_force_dismount(error: &DeviceError) -> bool {
+    eprintln!();
+    eprintln!("{error}.");
+    eprintln!(
+        "A program is keeping the drive open and did not let go when Windows asked. OSflux can force a dismount, as chkdsk and format do: programs using the drive lose access to it, and anything unsaved on it is lost. The drive is about to be erased anyway."
+    );
+    eprint!("Type yes to force a dismount and continue: ");
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    let agreed = std::io::stdin().read_line(&mut answer).is_ok() && is_erase_confirmation(&answer);
+    if agreed {
+        eprintln!("Forcing a dismount.");
+    }
+    agreed
+}
+
 fn is_erase_confirmation(answer: &str) -> bool {
     answer.trim().eq_ignore_ascii_case("yes")
 }
@@ -1260,6 +1308,11 @@ fn print_raw_write_report(report: &RawWriteReport, audit: &AuditLog) {
         Verification::Skipped => {
             println!("not verified: the written bytes were not read back (--no-verify)")
         }
+    }
+    if report.forced_dismount {
+        println!(
+            "forced dismount: a program had the drive open; its dismount was forced with your approval"
+        );
     }
     println!("audit log: {}", audit.path().display());
     println!("The drive can be removed.");
@@ -1294,6 +1347,9 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
         RawWriteError::Open(DeviceError::InUse { .. }) => {
             eprintln!(
                 "Nothing was written. Close any File Explorer windows, programs or terminals that show or use the drive, wait a few seconds, then run --intent again: the confirmation is used up as soon as a write starts."
+            );
+            eprintln!(
+                "If a program will not let go, OSflux can force a dismount: answer yes when it asks, or add --force-dismount when using --yes."
             )
         }
         RawWriteError::Open(_) => eprintln!(
@@ -1967,6 +2023,9 @@ fn print_help() {
     );
     println!(
         "  --no-verify       With --write --execute: skip reading the drive back after writing. Quicker, but a faulty or fake-capacity drive is not noticed. Recorded in the audit log."
+    );
+    println!(
+        "  --force-dismount  With --write --execute: when a program keeps the drive open after Windows asks it to let go, force a dismount without asking, as chkdsk and format do. Without it, OSflux asks first, or with --yes stops. Recorded in the audit log."
     );
     println!();
     println!("Windows Setup options, with --write --execute and a Windows installer ISO. Each adds a setting to an answer file (autounattend.xml) at the root of the stick, which Windows Setup reads on any PC started from it. All are off unless given:");

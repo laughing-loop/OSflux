@@ -18,14 +18,15 @@ use windows::Win32::System::Ioctl::{
 use windows::Win32::System::IO::DeviceIoControl;
 
 use super::{
-    is_placeholder_serial, BlockDevice, DeviceAccess, DeviceError, DeviceRead, DeviceResult,
-    PhysicalDevice,
+    is_placeholder_serial, BlockDevice, BusyVolumes, DeviceAccess, DeviceError, DeviceRead,
+    DeviceResult, PhysicalDevice,
 };
 use crate::windows_io::{control_overlapped, query_overlapped, read_overlapped, write_overlapped};
 
 const DEFAULT_SCAN_LIMIT: u32 = 32;
 const VOLUME_LOCK_ATTEMPTS: u32 = 20;
 const VOLUME_LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
+const FORCED_DISMOUNT_ROUNDS: u32 = 5;
 const MAX_VOLUME_NAME_CHARS: usize = 260;
 const MAX_VOLUME_EXTENTS: usize = 32;
 const DISK_EXTENTS_HEADER_SIZE: usize = 8;
@@ -51,6 +52,10 @@ impl WindowsBlockDevice {
 
 impl BlockDevice for WindowsBlockDevice {
     fn open(path: &str) -> DeviceResult<Self> {
+        Self::open_with(path, BusyVolumes::Refuse)
+    }
+
+    fn open_with(path: &str, busy_volumes: BusyVolumes) -> DeviceResult<Self> {
         let handle = open_handle(
             path,
             FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
@@ -83,7 +88,7 @@ impl BlockDevice for WindowsBlockDevice {
             });
         }
 
-        device.locked_volumes = lock_disk_volumes(device_number.DeviceNumber)?;
+        device.locked_volumes = lock_disk_volumes(device_number.DeviceNumber, busy_volumes)?;
 
         Ok(device)
     }
@@ -279,11 +284,14 @@ fn is_whole_disk(device_number: &STORAGE_DEVICE_NUMBER) -> bool {
     device_number.DeviceType == FILE_DEVICE_DISK.0 && device_number.PartitionNumber == 0
 }
 
-fn lock_disk_volumes(disk_number: u32) -> DeviceResult<Vec<LockedVolume>> {
+fn lock_disk_volumes(
+    disk_number: u32,
+    busy_volumes: BusyVolumes,
+) -> DeviceResult<Vec<LockedVolume>> {
     // On failure the volumes locked so far drop here and are released.
     volumes_on_disk(disk_number)?
         .iter()
-        .map(|volume| lock_and_dismount_volume(volume))
+        .map(|volume| lock_and_dismount_volume(volume, busy_volumes))
         .collect()
 }
 
@@ -367,7 +375,10 @@ fn parse_disk_extent_numbers(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-fn lock_and_dismount_volume(volume_name: &str) -> DeviceResult<LockedVolume> {
+fn lock_and_dismount_volume(
+    volume_name: &str,
+    busy_volumes: BusyVolumes,
+) -> DeviceResult<LockedVolume> {
     let device_path = volume_name.trim_end_matches('\\');
     let handle = open_handle(
         device_path,
@@ -377,19 +388,19 @@ fn lock_and_dismount_volume(volume_name: &str) -> DeviceResult<LockedVolume> {
     .map_err(|error| volume_lock_error(device_path, format!("could not open it: {error}")))?;
     let volume = LockedVolume { handle };
 
-    // Explorer, antivirus scanners and indexers often hold a volume open for a
-    // moment after it is plugged in, so a busy volume is retried briefly.
-    let mut attempts = 1;
-    while let Err(error) = volume_control(handle, FSCTL_LOCK_VOLUME) {
-        if attempts >= VOLUME_LOCK_ATTEMPTS {
-            return Err(DeviceError::InUse {
-                volume: device_path.to_string(),
-                message: error.to_string(),
-            });
+    // Asking for the lock makes Windows tell the programs holding the volume
+    // to let go. Explorer, antivirus scanners and indexers do, though often
+    // only after a moment, so a busy volume is retried briefly.
+    if let Err(error) = lock_with_retries(handle) {
+        match busy_volumes {
+            BusyVolumes::Refuse => {
+                return Err(DeviceError::InUse {
+                    volume: device_path.to_string(),
+                    message: error.to_string(),
+                })
+            }
+            BusyVolumes::ForceDismount => force_dismount_and_lock(handle, device_path)?,
         }
-
-        attempts += 1;
-        std::thread::sleep(VOLUME_LOCK_RETRY_DELAY);
     }
 
     volume_control(handle, FSCTL_DISMOUNT_VOLUME).map_err(|error| {
@@ -397,6 +408,48 @@ fn lock_and_dismount_volume(volume_name: &str) -> DeviceResult<LockedVolume> {
     })?;
 
     Ok(volume)
+}
+
+fn lock_with_retries(handle: HANDLE) -> windows::core::Result<()> {
+    let mut attempts = 1;
+    loop {
+        match volume_control(handle, FSCTL_LOCK_VOLUME) {
+            Ok(()) => return Ok(()),
+            Err(error) if attempts >= VOLUME_LOCK_ATTEMPTS => return Err(error),
+            Err(_) => {
+                attempts += 1;
+                std::thread::sleep(VOLUME_LOCK_RETRY_DELAY);
+            }
+        }
+    }
+}
+
+/// For a program that keeps the volume open after Windows asked it to let
+/// go. Dismounting without the lock is documented to make every other
+/// handle to the volume invalid, as chkdsk and format do after asking; this
+/// handle stays usable and takes the lock straight away, before anything
+/// can open the volume again. A program that reopens it at once can win
+/// that race, so it is tried a few times.
+fn force_dismount_and_lock(handle: HANDLE, device_path: &str) -> DeviceResult<()> {
+    let mut last_error = None;
+    for _ in 0..FORCED_DISMOUNT_ROUNDS {
+        volume_control(handle, FSCTL_DISMOUNT_VOLUME).map_err(|error| {
+            volume_lock_error(device_path, format!("could not force a dismount: {error}"))
+        })?;
+        match volume_control(handle, FSCTL_LOCK_VOLUME) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(DeviceError::InUse {
+        volume: device_path.to_string(),
+        message: format!(
+            "still in use after {FORCED_DISMOUNT_ROUNDS} forced dismounts: {}",
+            last_error
+                .map(|error| error.to_string())
+                .unwrap_or_default()
+        ),
+    })
 }
 
 fn volume_control(handle: HANDLE, control_code: u32) -> windows::core::Result<()> {

@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use osflux_core::device::{BlockDevice, DeviceAccess, DeviceError, NativeBlockDevice};
+use osflux_core::device::{BlockDevice, BusyVolumes, DeviceAccess, DeviceError, NativeBlockDevice};
 use sha2::{Digest, Sha256};
 
 use crate::answer_file::SetupOptions;
@@ -124,6 +124,9 @@ pub struct RawWriteReport {
     /// Zero when verification was skipped.
     pub bytes_verified: u64,
     pub verification: Verification,
+    /// Whether a volume on the drive stayed in use and its dismount was
+    /// forced with the operator's approval.
+    pub forced_dismount: bool,
     pub write_millis: u64,
     pub verify_millis: u64,
     /// Whether the outcome was added to the audit log.
@@ -144,6 +147,7 @@ impl RawWriteReport {
                 "  \"bytesWritten\": {},\n",
                 "  \"bytesVerified\": {},\n",
                 "  \"verification\": {},\n",
+                "  \"forcedDismount\": {},\n",
                 "  \"writeMillis\": {},\n",
                 "  \"verifyMillis\": {},\n",
                 "  \"auditRecorded\": {}\n",
@@ -157,6 +161,7 @@ impl RawWriteReport {
             self.bytes_written,
             self.bytes_verified,
             string_json(self.verification.as_str()),
+            self.forced_dismount,
             self.write_millis,
             self.verify_millis,
             self.audit_recorded,
@@ -546,6 +551,7 @@ pub fn write_image_to_target(
     plan: &RawWritePlan,
     authorizations: &AuthorizationStore,
     audit: &AuditLog,
+    mut approve_forced_dismount: impl FnMut(&DeviceError) -> bool,
     on_progress: impl FnMut(RawWriteProgress),
 ) -> Result<RawWriteReport, RawWriteError> {
     // No write without a record of it: when the start cannot be logged, the
@@ -594,23 +600,37 @@ pub fn write_image_to_target(
             source,
         })?;
 
-    let outcome = consume_and_write(plan, authorizations, on_progress);
+    let mut forced_dismount = false;
+    let outcome = consume_and_write(
+        plan,
+        authorizations,
+        &mut approve_forced_dismount,
+        &mut forced_dismount,
+        on_progress,
+    );
 
     // The write has already happened or failed by now, so a problem logging
     // its outcome is reported on the result instead of replacing it.
+    let mut notes = Vec::new();
+    if forced_dismount {
+        notes.push(FORCED_DISMOUNT_NOTE.to_string());
+    }
     let outcome_event = match &outcome {
         Ok(report) => {
+            if report.verification == Verification::Skipped {
+                notes.push("written but not verified: read-back was skipped".to_string());
+            }
             let event =
                 AuditEvent::for_plan(AuditEventKind::WriteSucceeded, plan).with_report(report);
-            match report.verification {
-                Verification::ReadBack => event,
-                Verification::Skipped => {
-                    event.with_detail("written but not verified: read-back was skipped")
-                }
+            if notes.is_empty() {
+                event
+            } else {
+                event.with_detail(notes.join("; "))
             }
         }
         Err(error) => {
-            AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(error.to_string())
+            notes.insert(0, error.to_string());
+            AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(notes.join("; "))
         }
     };
     let audit_recorded = audit.record(&outcome_event).is_ok();
@@ -621,9 +641,14 @@ pub fn write_image_to_target(
     })
 }
 
+const FORCED_DISMOUNT_NOTE: &str =
+    "a volume on the drive stayed in use, and its dismount was forced with the operator's approval";
+
 fn consume_and_write(
     plan: &RawWritePlan,
     authorizations: &AuthorizationStore,
+    approve_forced_dismount: &mut dyn FnMut(&DeviceError) -> bool,
+    forced_dismount: &mut bool,
     on_progress: impl FnMut(RawWriteProgress),
 ) -> Result<RawWriteReport, RawWriteError> {
     // Used up before the drive is touched, so one confirmation can never
@@ -631,8 +656,35 @@ fn consume_and_write(
     authorizations
         .consume(plan.target_index)
         .map_err(RawWriteError::AuthorizationStore)?;
-    let device = NativeBlockDevice::open(&plan.target_path).map_err(RawWriteError::Open)?;
-    execute_raw_write(plan, &device, on_progress)
+    let (device, forced) =
+        open_target::<NativeBlockDevice>(&plan.target_path, approve_forced_dismount)?;
+    *forced_dismount = forced;
+    execute_raw_write(plan, &device, on_progress).map(|report| RawWriteReport {
+        forced_dismount: forced,
+        ..report
+    })
+}
+
+/// Opens the target drive, asking Windows' usual way for its volumes. When
+/// one stays in use, `approve_forced_dismount` is asked, and only on
+/// approval is the drive opened again forcing a dismount. Returns the drive
+/// and whether a dismount was forced.
+fn open_target<D: BlockDevice>(
+    path: &str,
+    approve_forced_dismount: &mut dyn FnMut(&DeviceError) -> bool,
+) -> Result<(D, bool), RawWriteError> {
+    match D::open_with(path, BusyVolumes::Refuse) {
+        Ok(device) => Ok((device, false)),
+        Err(error @ DeviceError::InUse { .. }) => {
+            if !approve_forced_dismount(&error) {
+                return Err(RawWriteError::Open(error));
+            }
+            D::open_with(path, BusyVolumes::ForceDismount)
+                .map(|device| (device, true))
+                .map_err(RawWriteError::Open)
+        }
+        Err(error) => Err(RawWriteError::Open(error)),
+    }
 }
 
 /// Writes the planned bytes to `device` chunk by chunk, flushes, then,
@@ -755,6 +807,7 @@ pub fn execute_raw_write<D: BlockDevice>(
         bytes_written: written.bytes,
         bytes_verified: written.bytes_verified,
         verification: plan.verification,
+        forced_dismount: false,
         write_millis: written.write_millis,
         verify_millis: written.verify_millis,
         audit_recorded: false,
@@ -941,9 +994,9 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_write_plan, check_setup_options_apply, execute_raw_write, trailing_wipe,
-        write_image_to_target, RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress,
-        Verification, WriteLayout, RAW_WRITE_ALIGNMENT_BYTES,
+        build_raw_write_plan, check_setup_options_apply, execute_raw_write, open_target,
+        trailing_wipe, write_image_to_target, RawWriteError, RawWritePhase, RawWritePlan,
+        RawWriteProgress, Verification, WriteLayout, RAW_WRITE_ALIGNMENT_BYTES,
     };
     use crate::answer_file::SetupOptions;
     use crate::audit::AuditLog;
@@ -956,7 +1009,7 @@ mod tests {
     use crate::write_mode_selection::{
         SelectedWriteMode, WriteModeSelection, WriteModeSelectionStatus,
     };
-    use osflux_core::device::{BlockDevice, DeviceAccess, DeviceError, DeviceResult};
+    use osflux_core::device::{BlockDevice, BusyVolumes, DeviceAccess, DeviceError, DeviceResult};
     use std::cell::RefCell;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1062,6 +1115,101 @@ mod tests {
             .iter()
             .any(|event| event.phase == RawWritePhase::Writing
                 && event.completed_bytes == image.len() as u64));
+    }
+
+    /// A drive whose path says how opening it goes.
+    struct OpenProbe;
+
+    impl BlockDevice for OpenProbe {
+        fn open(_path: &str) -> DeviceResult<Self> {
+            unreachable!("the write opens drives with open_with")
+        }
+
+        fn open_with(path: &str, busy_volumes: BusyVolumes) -> DeviceResult<Self> {
+            let in_use = || DeviceError::InUse {
+                volume: r"\\?\Volume{probe}".to_string(),
+                message: "Access is denied.".to_string(),
+            };
+            match (path, busy_volumes) {
+                ("free", _) | ("busy", BusyVolumes::ForceDismount) => Ok(Self),
+                ("busy", BusyVolumes::Refuse) | ("stubborn", _) => Err(in_use()),
+                _ => Err(DeviceError::Open {
+                    path: path.to_string(),
+                    message: "Access is denied.".to_string(),
+                }),
+            }
+        }
+
+        fn write_at(&self, _offset: u64, _buffer: &[u8]) -> DeviceResult<usize> {
+            unreachable!()
+        }
+
+        fn read_at(&self, _offset: u64, _buffer: &mut [u8]) -> DeviceResult<usize> {
+            unreachable!()
+        }
+
+        fn flush(&self) -> DeviceResult<()> {
+            unreachable!()
+        }
+
+        fn size(&self) -> DeviceResult<u64> {
+            unreachable!()
+        }
+    }
+
+    fn open_probe(path: &str, approve: bool) -> (Result<bool, RawWriteError>, usize) {
+        let mut asked = 0;
+        let outcome = open_target::<OpenProbe>(path, &mut |error| {
+            assert!(matches!(error, DeviceError::InUse { .. }));
+            asked += 1;
+            approve
+        })
+        .map(|(_, forced)| forced);
+        (outcome, asked)
+    }
+
+    #[test]
+    fn opens_a_free_drive_without_asking() {
+        let (outcome, asked) = open_probe("free", false);
+
+        assert!(matches!(outcome, Ok(false)));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn forces_a_busy_volume_free_only_when_the_operator_agrees() {
+        let (refused, asked) = open_probe("busy", false);
+        assert!(matches!(
+            refused,
+            Err(RawWriteError::Open(DeviceError::InUse { .. }))
+        ));
+        assert_eq!(asked, 1);
+
+        let (approved, asked) = open_probe("busy", true);
+        assert!(matches!(approved, Ok(true)));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn reports_a_volume_still_busy_after_forcing() {
+        let (outcome, asked) = open_probe("stubborn", true);
+
+        assert!(matches!(
+            outcome,
+            Err(RawWriteError::Open(DeviceError::InUse { .. }))
+        ));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn never_offers_to_force_for_other_open_errors() {
+        let (outcome, asked) = open_probe("denied", true);
+
+        assert!(matches!(
+            outcome,
+            Err(RawWriteError::Open(DeviceError::Open { .. }))
+        ));
+        assert_eq!(asked, 0);
     }
 
     #[test]
@@ -1368,8 +1516,10 @@ mod tests {
 
         let audit = AuditLog::new(path.with_extension("audit.log"));
 
-        let first = write_image_to_target(&write_plan, &store, &audit, |_| {}).unwrap_err();
-        let second = write_image_to_target(&write_plan, &store, &audit, |_| {}).unwrap_err();
+        let first =
+            write_image_to_target(&write_plan, &store, &audit, |_| false, |_| {}).unwrap_err();
+        let second =
+            write_image_to_target(&write_plan, &store, &audit, |_| false, |_| {}).unwrap_err();
         let log = fs::read_to_string(audit.path()).unwrap();
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(audit.path());
@@ -1425,8 +1575,14 @@ mod tests {
         let audit_path = path.with_extension("audit-dir");
         fs::create_dir_all(&audit_path).unwrap();
 
-        let error = write_image_to_target(&write_plan, &store, &AuditLog::new(&audit_path), |_| {})
-            .unwrap_err();
+        let error = write_image_to_target(
+            &write_plan,
+            &store,
+            &AuditLog::new(&audit_path),
+            |_| false,
+            |_| {},
+        )
+        .unwrap_err();
         let still_authorized = store.load(250).unwrap();
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(&audit_path);

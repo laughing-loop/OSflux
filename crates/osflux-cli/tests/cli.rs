@@ -253,9 +253,25 @@ fn help_lists_windows_setup_options() {
         "--no-auto-bitlocker",
         "--copy-region",
         "--no-verify",
+        "--force-dismount",
     ] {
         assert!(text.contains(option), "{option}");
     }
+}
+
+#[test]
+fn force_dismount_only_works_with_execute() {
+    let output = osflux(&[
+        "--write",
+        "--image",
+        "disk.img",
+        "--target",
+        "250",
+        "--force-dismount",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).contains("--force-dismount can only be used with --write --execute"));
 }
 
 #[test]

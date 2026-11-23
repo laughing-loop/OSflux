@@ -102,6 +102,54 @@ pub fn build_image_plan_report(plan: &ImagePlan) -> PlanReport {
             .field("write strategy", plan.write_strategy.as_str()),
     );
 
+    match &plan.iso_files {
+        Some(Ok(summary)) => {
+            let largest = summary
+                .largest_file
+                .as_ref()
+                .map(|(path, size)| format!("{path} ({})", format_size(*size)))
+                .unwrap_or_else(|| "none".to_string());
+            let fits = if summary.too_large_for_fat32.is_empty() {
+                "yes".to_string()
+            } else {
+                summary
+                    .too_large_for_fat32
+                    .iter()
+                    .map(|(path, size)| format!("no, {path} is {}", format_size(*size)))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            sections.push(
+                PlanReportSection::new("files")
+                    .field("filesystem", "UDF")
+                    .field("label", summary.label.clone())
+                    .field(
+                        "files",
+                        format!(
+                            "{} ({})",
+                            summary.file_count,
+                            format_size(summary.file_bytes)
+                        ),
+                    )
+                    .field("largest file", largest)
+                    .field(
+                        "uefi loader",
+                        summary
+                            .uefi_loader
+                            .clone()
+                            .unwrap_or_else(|| "missing".to_string()),
+                    )
+                    .field("fits FAT32", fits),
+            );
+        }
+        Some(Err(reason)) => sections.push(
+            PlanReportSection::new("files")
+                .field("filesystem", "UDF")
+                .field("problem", reason.clone()),
+        ),
+        None => {}
+    }
+
     let signatures = plan.signatures.iter().fold(
         PlanReportSection::new("signatures"),
         |section, signature| section.item(PlanReportItem::new(signature.as_str())),
@@ -439,6 +487,7 @@ mod tests {
             boot_metadata: None,
             write_mode: WriteMode::Raw,
             write_strategy: ImageWriteStrategy::RawBlockWrite,
+            iso_files: None,
             notes: vec!["ready for target safety checks".to_string()],
             warnings: vec!["example warning".to_string()],
         };

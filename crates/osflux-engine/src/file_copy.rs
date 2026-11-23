@@ -86,6 +86,46 @@ impl From<UdfError> for FileCopyError {
     }
 }
 
+/// What an ISO's UDF filesystem holds, as far as copying it onto FAT32 is
+/// concerned. Shown by `--plan-image`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsoFilesSummary {
+    pub label: String,
+    pub file_count: usize,
+    pub file_bytes: u64,
+    pub largest_file: Option<(String, u64)>,
+    /// The path of `efi/boot/boot*.efi`, when there is one.
+    pub uefi_loader: Option<String>,
+    /// Files of 4 GiB or more, which FAT32 cannot hold.
+    pub too_large_for_fat32: Vec<(String, u64)>,
+}
+
+/// Summarises the files of the ISO at `image_path`: `None` when it has no
+/// UDF filesystem, an error message when one is there but cannot be read.
+pub fn summarize_iso_files(image_path: &Path) -> Option<Result<IsoFilesSummary, String>> {
+    let volume = match read_udf_file(image_path) {
+        Ok(volume) => volume,
+        Err(UdfError::NotUdf) => return None,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+    let files = volume.files();
+    Some(Ok(IsoFilesSummary {
+        label: volume.label.clone(),
+        file_count: files.len(),
+        file_bytes: files.iter().map(|(_, file)| file.size_bytes).sum(),
+        largest_file: files
+            .iter()
+            .max_by_key(|(_, file)| file.size_bytes)
+            .map(|(path, file)| (path.clone(), file.size_bytes)),
+        uefi_loader: uefi_loader_path(&volume),
+        too_large_for_fat32: files
+            .iter()
+            .filter(|(_, file)| file.size_bytes > MAX_FAT32_FILE_BYTES)
+            .map(|(path, file)| (path.clone(), file.size_bytes))
+            .collect(),
+    }))
+}
+
 /// Plans copying the files of the ISO at `image_path` onto a drive of
 /// `drive_bytes` with `sector_bytes` sectors. `session_id` seeds the volume
 /// serial number and disk signature, so they differ between writes.
@@ -186,7 +226,7 @@ impl ContentSource for UdfContent<'_> {
 pub(crate) fn fat_tree_from_udf(
     volume: &UdfVolume,
 ) -> Result<(FatDirectory, Vec<UdfFile>), FileCopyError> {
-    if !has_uefi_loader(volume) {
+    if uefi_loader_path(volume).is_none() {
         return Err(FileCopyError::NoUefiLoader);
     }
     if let Some((path, file)) = volume
@@ -232,14 +272,20 @@ fn convert_folder(folder: &UdfDirectory, files: &mut Vec<UdfFile>) -> FatDirecto
 
 /// UEFI firmware starts `\EFI\BOOT\BOOT<architecture>.EFI` from a removable
 /// drive, such as `BOOTX64.EFI` or `BOOTAA64.EFI`.
-fn has_uefi_loader(volume: &UdfVolume) -> bool {
-    matches!(
-        volume.find("efi/boot"),
-        Some(UdfEntry::Directory(folder)) if folder.entries.iter().any(|entry| {
-            let name = entry.name().to_ascii_lowercase();
-            matches!(entry, UdfEntry::File(_)) && name.starts_with("boot") && name.ends_with(".efi")
+fn uefi_loader_path(volume: &UdfVolume) -> Option<String> {
+    let Some(UdfEntry::Directory(folder)) = volume.find("efi/boot") else {
+        return None;
+    };
+    folder
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry, UdfEntry::File(_)))
+        .map(UdfEntry::name)
+        .find(|name| {
+            let name = name.to_ascii_lowercase();
+            name.starts_with("boot") && name.ends_with(".efi")
         })
-    )
+        .map(|name| format!("efi/boot/{name}"))
 }
 
 #[cfg(test)]
@@ -345,6 +391,20 @@ pub(crate) mod tests {
 
         assert_ne!(first.disk_signature, second.disk_signature);
         assert_ne!(first.volume_id, second.volume_id);
+    }
+
+    #[test]
+    fn summarizes_the_files_of_a_windows_like_iso() {
+        let iso = windows_like_iso();
+
+        let summary = super::summarize_iso_files(&iso);
+        let _ = fs::remove_file(&iso);
+        let summary = summary.unwrap().unwrap();
+
+        assert_eq!(summary.label, "CCCOMA_X64FRE_EN-US_DV9");
+        assert_eq!(summary.file_count, 48);
+        assert_eq!(summary.uefi_loader.as_deref(), Some("efi/boot/bootx64.efi"));
+        assert!(summary.too_large_for_fat32.is_empty());
     }
 
     #[test]

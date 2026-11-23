@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::file_copy::{summarize_iso_files, IsoFilesSummary};
+
 use crate::iso::{inspect_boot_metadata, BootStyle, IsoBootMetadata};
 
 const ISO_SECTOR_SIZE: u64 = 2048;
@@ -34,6 +36,9 @@ pub struct ImagePlan {
     pub boot_metadata: Option<IsoBootMetadata>,
     pub write_mode: WriteMode,
     pub write_strategy: ImageWriteStrategy,
+    /// For an ISO whose files would be copied: what its UDF filesystem
+    /// holds, or why it could not be read. `None` for other images.
+    pub iso_files: Option<Result<IsoFilesSummary, String>>,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -336,6 +341,24 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
     )
     .to_string();
 
+    // Files are only copied out of ISOs that are not hybrid.
+    let iso_files = (kind == ImageKind::Iso && !hybrid)
+        .then(|| summarize_iso_files(&source))
+        .flatten();
+    if let Some(Ok(summary)) = &iso_files {
+        for (path, size_bytes) in &summary.too_large_for_fat32 {
+            warnings.push(format!(
+                "{path} is {size_bytes} bytes; FAT32 cannot hold a file of 4 GiB or more, so this ISO cannot be written until splitting it is available."
+            ));
+        }
+        if summary.uefi_loader.is_none() {
+            warnings.push(
+                "The ISO has no UEFI boot loader (efi/boot/boot*.efi), so a stick made from it could not start a PC."
+                    .to_string(),
+            );
+        }
+    }
+
     Ok(ImagePlan {
         source,
         file_name,
@@ -349,6 +372,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         boot_metadata,
         write_mode,
         write_strategy,
+        iso_files,
         notes,
         warnings,
     })

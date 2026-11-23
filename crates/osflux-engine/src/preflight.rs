@@ -370,6 +370,7 @@ mod tests {
                 ImagePlanStatus::NeedsInspection => ImageWriteStrategy::IsoNeedsDeeperInspection,
                 ImagePlanStatus::Blocked => ImageWriteStrategy::Unknown,
             },
+            iso_files: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

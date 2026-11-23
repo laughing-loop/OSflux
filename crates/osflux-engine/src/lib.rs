@@ -4,6 +4,7 @@ pub mod clock;
 mod crc;
 pub mod drive_contents;
 pub mod fat32;
+pub mod file_copy;
 mod fingerprint;
 pub mod image_family;
 pub mod image_io;
@@ -38,6 +39,7 @@ pub use drive_contents::{
     inspect_device_contents, inspect_drive_contents, DriveContents, DriveContentsState,
     DrivePartition, FilesystemKind, PartitionScheme,
 };
+pub use file_copy::{lay_out_uefi_fat32, FileCopyError, UefiFat32Layout};
 pub use image_family::{
     build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
     ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,
@@ -69,7 +71,7 @@ pub use progress::{
 };
 pub use raw_write::{
     build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target,
-    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, WriteLayout,
     MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
 pub use target::{

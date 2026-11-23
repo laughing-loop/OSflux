@@ -20,6 +20,25 @@ pub fn format_unix_rfc3339(unix_seconds: u64) -> String {
     format!("{date}T{time}Z")
 }
 
+/// FAT's packed date and time fields for Unix seconds. FAT has no time
+/// zone, so this records UTC. Dates outside FAT's 1980 to 2107 range are
+/// clamped to it.
+pub(crate) fn fat_date_time(unix_seconds: u64) -> (u16, u16) {
+    let seconds_of_day = unix_seconds % 86_400;
+    let (year, month, day) = civil_from_days((unix_seconds / 86_400) as i64);
+    let (year, month, day) = match year {
+        ..=1979 => (1980, 1, 1),
+        2108.. => (2107, 12, 31),
+        _ => (year, month, day),
+    };
+    let date = (((year - 1980) as u16) << 9) | ((month as u16) << 5) | day as u16;
+    let hour = (seconds_of_day / 3600) as u16;
+    let minute = ((seconds_of_day % 3600) / 60) as u16;
+    let second = (seconds_of_day % 60) as u16;
+    let time = (hour << 11) | (minute << 5) | (second / 2);
+    (date, time)
+}
+
 fn utc_date_and_time(unix_seconds: u64) -> (String, String) {
     let seconds_of_day = unix_seconds % 86_400;
     let (year, month, day) = civil_from_days((unix_seconds / 86_400) as i64);
@@ -54,6 +73,24 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let year = year_of_era + era * 400 + i64::from(month <= 2);
 
     (year, month, day)
+}
+
+#[cfg(test)]
+mod fat_tests {
+    use super::fat_date_time;
+
+    #[test]
+    fn packs_fat_dates_and_times() {
+        // 2026-11-18 17:13:36 UTC
+        let (date, time) = fat_date_time(1_795_022_016);
+        assert_eq!(date >> 9, 2026 - 1980);
+        assert_eq!((date >> 5) & 0x0F, 11);
+        assert_eq!(date & 0x1F, 18);
+        assert_eq!(time >> 11, 17);
+        assert_eq!((time >> 5) & 0x3F, 13);
+        assert_eq!((time & 0x1F) * 2, 36);
+        assert_eq!(fat_date_time(0), ((1 << 5) | 1, 0));
+    }
 }
 
 #[cfg(test)]

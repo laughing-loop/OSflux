@@ -3,6 +3,7 @@ pub mod chunk_plan;
 pub mod clock;
 mod crc;
 pub mod drive_contents;
+pub mod fat32;
 mod fingerprint;
 pub mod image_family;
 pub mod image_io;

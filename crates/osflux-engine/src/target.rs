@@ -2,6 +2,7 @@ use std::fmt;
 
 use osflux_core::device::{self, DeviceAccess, PhysicalDevice};
 
+use crate::drive_contents::{inspect_device_contents, DriveContents, DriveContentsState};
 use crate::fingerprint::stable_fingerprint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +21,9 @@ pub struct TargetAssessment {
     pub contains_system_volume: bool,
     pub likely_removable: bool,
     pub requires_confirmation: bool,
+    /// What the drive holds, read without changing it. `None` when the drive
+    /// was not looked inside, such as a blocked drive.
+    pub contents: Option<DriveContents>,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -43,6 +47,7 @@ impl TargetAssessment {
                 "  \"containsSystemVolume\": {},\n",
                 "  \"likelyRemovable\": {},\n",
                 "  \"requiresConfirmation\": {},\n",
+                "  \"contents\": {},\n",
                 "  \"notes\": {},\n",
                 "  \"warnings\": {}\n",
                 "}}\n"
@@ -61,6 +66,10 @@ impl TargetAssessment {
             self.contains_system_volume,
             self.likely_removable,
             self.requires_confirmation,
+            self.contents
+                .as_ref()
+                .map(|contents| contents.to_json(2))
+                .unwrap_or_else(|| "null".to_string()),
             string_array_json(&self.notes),
             string_array_json(&self.warnings),
         )
@@ -109,7 +118,48 @@ pub fn assess_target(index: u32) -> Result<TargetAssessment, TargetAssessmentErr
         return Err(TargetAssessmentError::NotFound { index });
     };
 
-    Ok(assess_target_device(&device))
+    let assessment = assess_target_device(&device);
+    // A blocked drive is never written, so there is no reason to read it.
+    if assessment.status == TargetAssessmentStatus::Blocked {
+        return Ok(assessment);
+    }
+
+    Ok(with_drive_contents(
+        assessment,
+        inspect_device_contents(&device),
+    ))
+}
+
+/// Adds what the drive holds to an assessment. A drive that would otherwise
+/// need the full confirmation phrase becomes `Eligible` when it is blank or
+/// holds one empty FAT32 or exFAT partition, so its short identity code is
+/// enough. A blocked drive stays blocked whatever it holds.
+pub fn with_drive_contents(
+    mut assessment: TargetAssessment,
+    contents: DriveContents,
+) -> TargetAssessment {
+    if assessment.status == TargetAssessmentStatus::NeedsConfirmation {
+        if contents.state.allows_short_confirmation() {
+            assessment.status = TargetAssessmentStatus::Eligible;
+            assessment.reason =
+                "target is empty, so its identity code is enough to confirm a write".to_string();
+            assessment
+                .notes
+                .push(format!("Contents: {}.", contents.reason));
+        } else if contents.state == DriveContentsState::HasData {
+            assessment.warnings.push(format!(
+                "The drive holds data that a write would erase: {}.",
+                contents.reason
+            ));
+        } else {
+            assessment
+                .notes
+                .push(format!("Contents unknown: {}.", contents.reason));
+        }
+    }
+
+    assessment.contents = Some(contents);
+    assessment
 }
 
 pub fn assess_target_device(device: &PhysicalDevice) -> TargetAssessment {
@@ -166,6 +216,7 @@ pub fn assess_target_device(device: &PhysicalDevice) -> TargetAssessment {
         contains_system_volume: device.contains_system_volume,
         likely_removable,
         requires_confirmation,
+        contents: None,
         notes,
         warnings,
     }
@@ -292,8 +343,75 @@ fn escape_json_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{assess_target_device, TargetAssessmentStatus};
+    use super::{assess_target_device, with_drive_contents, TargetAssessmentStatus};
+    use crate::drive_contents::{DriveContents, DriveContentsState};
     use osflux_core::device::{DeviceAccess, PhysicalDevice};
+
+    fn contents(state: DriveContentsState, reason: &str) -> DriveContents {
+        DriveContents {
+            state,
+            reason: reason.to_string(),
+            partition_scheme: None,
+            partitions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_blank_or_empty_stick_is_eligible() {
+        for state in [
+            DriveContentsState::Blank,
+            DriveContentsState::EmptyFilesystem,
+        ] {
+            let stick = assess_target_device(&device(false, true, Some(32 * 1024 * 1024)));
+            assert_eq!(stick.status, TargetAssessmentStatus::NeedsConfirmation);
+
+            let assessment = with_drive_contents(stick, contents(state, "empty"));
+
+            assert_eq!(assessment.status, TargetAssessmentStatus::Eligible);
+            assert!(assessment.requires_confirmation);
+            assert_eq!(
+                assessment.contents.map(|contents| contents.state),
+                Some(state)
+            );
+        }
+    }
+
+    #[test]
+    fn a_stick_with_data_or_unknown_contents_still_needs_the_full_phrase() {
+        for state in [DriveContentsState::HasData, DriveContentsState::Unknown] {
+            let stick = assess_target_device(&device(false, true, Some(32 * 1024 * 1024)));
+
+            let assessment = with_drive_contents(stick, contents(state, "photos"));
+
+            assert_eq!(assessment.status, TargetAssessmentStatus::NeedsConfirmation);
+        }
+    }
+
+    #[test]
+    fn a_stick_with_data_warns_that_it_would_be_erased() {
+        let stick = assess_target_device(&device(false, true, Some(32 * 1024 * 1024)));
+
+        let assessment = with_drive_contents(
+            stick,
+            contents(DriveContentsState::HasData, "the drive has 2 partitions"),
+        );
+
+        assert!(assessment
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("the drive has 2 partitions")));
+    }
+
+    #[test]
+    fn an_empty_drive_that_is_blocked_stays_blocked() {
+        let system_drive = assess_target_device(&device(true, true, Some(32 * 1024 * 1024)));
+        assert_eq!(system_drive.status, TargetAssessmentStatus::Blocked);
+
+        let assessment =
+            with_drive_contents(system_drive, contents(DriveContentsState::Blank, "empty"));
+
+        assert_eq!(assessment.status, TargetAssessmentStatus::Blocked);
+    }
 
     #[test]
     fn blocks_system_drive() {

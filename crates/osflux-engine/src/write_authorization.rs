@@ -6,14 +6,16 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::clock::format_unix_utc;
-use crate::write_intent::{WriteIntent, WriteIntentStatus};
+use crate::write_intent::{match_confirmation, ConfirmationForm, WriteIntent, WriteIntentStatus};
 
 /// How long a confirmation issued by `--intent` stays usable.
 pub const AUTHORIZATION_LIFETIME_SECONDS: u64 = 10 * 60;
 /// Overrides where OSflux keeps its state, for managed machines and tests.
 pub const STATE_DIR_ENV: &str = "OSFLUX_STATE_DIR";
 
-const RECORD_HEADER: &str = "osflux-write-authorization 1";
+// Version 2 added `short_confirmation`. Records only live for ten minutes, so
+// an older record is simply refused and `--intent` run again.
+const RECORD_HEADER: &str = "osflux-write-authorization 2";
 /// Tolerates small clock corrections between issuing and checking.
 const CLOCK_SKEW_SECONDS: u64 = 60;
 
@@ -52,6 +54,9 @@ pub struct WriteAuthorization {
     pub target_path: String,
     pub target_identity_code: String,
     pub confirmation_phrase: String,
+    /// The identity code, when the drive was empty at `--intent` and the code
+    /// alone may confirm the write.
+    pub short_confirmation: Option<String>,
     pub image: ImageIdentity,
     pub issued_at_unix_seconds: u64,
     pub expires_at_unix_seconds: u64,
@@ -60,9 +65,14 @@ pub struct WriteAuthorization {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthorizationProblem {
     Missing,
-    Expired { expired_at_unix_seconds: u64 },
+    Expired {
+        expired_at_unix_seconds: u64,
+    },
     IssuedInFuture,
     PhraseMismatch,
+    /// The identity code was typed, but the drive was not empty when the
+    /// confirmation was issued, so only the full phrase covers it.
+    ShortConfirmationNotRecorded,
     TargetChanged,
     ImageMismatch,
 }
@@ -84,6 +94,9 @@ impl AuthorizationProblem {
             ),
             Self::PhraseMismatch => format!(
                 "the confirmation phrase is not the one --intent recorded for drive {target_index}"
+            ),
+            Self::ShortConfirmationNotRecorded => format!(
+                "drive {target_index} was not empty when --intent ran, so the write needs the full phrase; if the drive has been emptied since, run --intent again"
             ),
             Self::TargetChanged => format!(
                 "drive {target_index} is not the drive the confirmation was issued for; run --intent again"
@@ -112,6 +125,7 @@ impl WriteAuthorization {
             target_path: intent.target_path.clone(),
             target_identity_code: intent.target_identity_code.clone()?,
             confirmation_phrase: intent.confirmation_phrase.clone()?,
+            short_confirmation: intent.short_confirmation.clone(),
             image,
             issued_at_unix_seconds: now_unix_seconds,
             expires_at_unix_seconds: now_unix_seconds + AUTHORIZATION_LIFETIME_SECONDS,
@@ -119,7 +133,8 @@ impl WriteAuthorization {
     }
 
     /// Checks that this authorization covers writing `image` to the drive
-    /// described by the other arguments, right now.
+    /// described by the other arguments, right now, and says which accepted
+    /// confirmation was typed.
     pub fn check(
         &self,
         target_index: u32,
@@ -128,7 +143,7 @@ impl WriteAuthorization {
         image: &ImageIdentity,
         supplied_phrase: &str,
         now_unix_seconds: u64,
-    ) -> Result<(), AuthorizationProblem> {
+    ) -> Result<ConfirmationForm, AuthorizationProblem> {
         if self.issued_at_unix_seconds > now_unix_seconds + CLOCK_SKEW_SECONDS {
             return Err(AuthorizationProblem::IssuedInFuture);
         }
@@ -146,15 +161,25 @@ impl WriteAuthorization {
             return Err(AuthorizationProblem::TargetChanged);
         }
 
-        if self.confirmation_phrase != supplied_phrase {
+        let Some(form) = match_confirmation(
+            Some(&self.confirmation_phrase),
+            self.short_confirmation.as_deref(),
+            supplied_phrase,
+        ) else {
+            if supplied_phrase
+                .trim()
+                .eq_ignore_ascii_case(&self.target_identity_code)
+            {
+                return Err(AuthorizationProblem::ShortConfirmationNotRecorded);
+            }
             return Err(AuthorizationProblem::PhraseMismatch);
-        }
+        };
 
         if &self.image != image {
             return Err(AuthorizationProblem::ImageMismatch);
         }
 
-        Ok(())
+        Ok(form)
     }
 
     fn to_record(&self) -> Result<String, AuthorizationStoreError> {
@@ -163,6 +188,10 @@ impl WriteAuthorization {
             ("target_path", self.target_path.clone()),
             ("target_identity_code", self.target_identity_code.clone()),
             ("confirmation_phrase", self.confirmation_phrase.clone()),
+            (
+                "short_confirmation",
+                self.short_confirmation.clone().unwrap_or_default(),
+            ),
             ("image_path", self.image.path.clone()),
             ("image_size_bytes", self.image.size_bytes.to_string()),
             (
@@ -227,6 +256,7 @@ impl WriteAuthorization {
             target_path: text("target_path")?,
             target_identity_code: text("target_identity_code")?,
             confirmation_phrase: text("confirmation_phrase")?,
+            short_confirmation: Some(text("short_confirmation")?).filter(|code| !code.is_empty()),
             image: ImageIdentity {
                 path: text("image_path")?,
                 size_bytes: number("image_size_bytes")?,
@@ -417,7 +447,7 @@ mod tests {
         AuthorizationStoreError, ImageIdentity, WriteAuthorization, AUTHORIZATION_LIFETIME_SECONDS,
     };
     use crate::preflight::WritePreflightStatus;
-    use crate::write_intent::{WriteIntent, WriteIntentStatus};
+    use crate::write_intent::{ConfirmationForm, WriteIntent, WriteIntentStatus};
     use std::fs;
     use std::path::PathBuf;
 
@@ -522,6 +552,82 @@ mod tests {
     }
 
     #[test]
+    fn accepts_the_identity_code_when_the_drive_was_empty() {
+        let mut empty_drive = intent();
+        empty_drive.short_confirmation = Some("2E85".to_string());
+        let authorization = WriteAuthorization::issue(&empty_drive, image(), NOW).unwrap();
+
+        assert_eq!(
+            check_with(&authorization, "2e85", NOW),
+            Ok(ConfirmationForm::IdentityCode)
+        );
+        assert_eq!(
+            check_with(&authorization, "OSFLUX ERASE TARGET 3 2E85", NOW),
+            Ok(ConfirmationForm::FullPhrase)
+        );
+    }
+
+    #[test]
+    fn refuses_the_identity_code_when_the_drive_was_not_empty() {
+        let authorization = WriteAuthorization::issue(&intent(), image(), NOW).unwrap();
+
+        assert_eq!(
+            check_with(&authorization, "2E85", NOW),
+            Err(AuthorizationProblem::ShortConfirmationNotRecorded)
+        );
+        assert_eq!(
+            check_with(&authorization, "0B21", NOW),
+            Err(AuthorizationProblem::PhraseMismatch)
+        );
+    }
+
+    #[test]
+    fn keeps_the_short_confirmation_across_save_and_load() {
+        let store = AuthorizationStore::new(temp_dir());
+        let mut empty_drive = intent();
+        empty_drive.short_confirmation = Some("2E85".to_string());
+        let with_code = WriteAuthorization::issue(&empty_drive, image(), NOW).unwrap();
+        let without_code = WriteAuthorization::issue(&intent(), image(), NOW).unwrap();
+
+        store.save(&with_code).unwrap();
+        let loaded_with = store.load(3).unwrap();
+        store.save(&without_code).unwrap();
+        let loaded_without = store.load(3).unwrap();
+        let _ = fs::remove_dir_all(store.directory());
+
+        assert_eq!(loaded_with, Some(with_code));
+        assert_eq!(loaded_without, Some(without_code));
+    }
+
+    #[test]
+    fn refuses_a_record_from_an_older_version() {
+        let store = AuthorizationStore::new(temp_dir());
+        let mut record = WriteAuthorization::issue(&intent(), image(), NOW)
+            .unwrap()
+            .to_record()
+            .unwrap();
+        record = record
+            .replace(
+                "osflux-write-authorization 2",
+                "osflux-write-authorization 1",
+            )
+            .lines()
+            .filter(|line| !line.starts_with("short_confirmation="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::create_dir_all(store.directory()).unwrap();
+        fs::write(store.directory().join("target-3.authorization"), record).unwrap();
+
+        let loaded = store.load(3);
+        let _ = fs::remove_dir_all(store.directory());
+
+        assert!(matches!(
+            loaded,
+            Err(AuthorizationStoreError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
     fn saves_loads_and_consumes_once() {
         let store = AuthorizationStore::new(temp_dir());
         let authorization = WriteAuthorization::issue(&intent(), image(), NOW).unwrap();
@@ -563,7 +669,7 @@ mod tests {
         fs::create_dir_all(store.directory()).unwrap();
         fs::write(
             store.directory().join("target-3.authorization"),
-            "osflux-write-authorization 1\ntarget_index=3\n",
+            "osflux-write-authorization 2\ntarget_index=3\n",
         )
         .unwrap();
 
@@ -641,14 +747,15 @@ mod tests {
     }
 
     fn check(authorization: &WriteAuthorization, now: u64) -> Result<(), AuthorizationProblem> {
-        authorization.check(
-            3,
-            r"\\.\PhysicalDrive3",
-            "2E85",
-            &image(),
-            "OSFLUX ERASE TARGET 3 2E85",
-            now,
-        )
+        check_with(authorization, "OSFLUX ERASE TARGET 3 2E85", now).map(|_| ())
+    }
+
+    fn check_with(
+        authorization: &WriteAuthorization,
+        supplied: &str,
+        now: u64,
+    ) -> Result<ConfirmationForm, AuthorizationProblem> {
+        authorization.check(3, r"\\.\PhysicalDrive3", "2E85", &image(), supplied, now)
     }
 
     fn intent() -> WriteIntent {
@@ -656,6 +763,7 @@ mod tests {
             status: WriteIntentStatus::ConfirmationRequired,
             reason: "preflight passed".to_string(),
             confirmation_phrase: Some("OSFLUX ERASE TARGET 3 2E85".to_string()),
+            short_confirmation: None,
             image_source: r"C:\images\alpine.iso".to_string(),
             target_index: 3,
             target_path: r"\\.\PhysicalDrive3".to_string(),

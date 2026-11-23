@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
 use crate::clock::now_unix_seconds;
+use crate::drive_contents::inspect_drive_contents;
 use crate::json::string_json;
 use crate::target::{
     assess_target, TargetAssessment, TargetAssessmentError, TargetAssessmentStatus,
@@ -16,7 +17,7 @@ use crate::target::{
 use crate::write_authorization::{
     AuthorizationProblem, AuthorizationStore, AuthorizationStoreError, ImageIdentity,
 };
-use crate::write_intent::confirmation_phrase;
+use crate::write_intent::{confirmation_phrase, match_confirmation, ConfirmationForm};
 use crate::write_mode_selection::{
     select_write_mode, SelectedWriteMode, WriteModeSelection, WriteModeSelectionError,
     WriteModeSelectionStatus,
@@ -38,6 +39,10 @@ pub struct RawWritePlan {
     pub target_size_bytes: u64,
     pub target_identity_code: String,
     pub chunk_size_bytes: u64,
+    /// Which confirmation was typed. With the identity code, the drive is
+    /// checked again once it is locked, and the write stops if it is no
+    /// longer empty.
+    pub confirmation_form: ConfirmationForm,
     /// When the one-time confirmation for this write expires; zero until
     /// `prepare_raw_write` has checked it.
     pub authorization_expires_at_unix_seconds: u64,
@@ -135,6 +140,12 @@ pub enum RawWriteError {
     ConfirmationMismatch {
         target_index: u32,
     },
+    /// The identity code was typed for a drive that is not empty, so only the
+    /// full phrase can confirm the write.
+    ShortConfirmationRefused {
+        target_index: u32,
+        reason: String,
+    },
     /// OSflux can only read the drive's details, not open it, so it stops
     /// before the final prompt and leaves the confirmation unused.
     NeedsAdministrator {
@@ -192,6 +203,13 @@ impl fmt::Display for RawWriteError {
             Self::ConfirmationMismatch { target_index } => write!(
                 formatter,
                 "the confirmation phrase does not match drive {target_index}; copy the exact phrase that --intent prints for it"
+            ),
+            Self::ShortConfirmationRefused {
+                target_index,
+                reason,
+            } => write!(
+                formatter,
+                "the identity code alone only confirms a write to an empty drive, and drive {target_index} is not empty ({reason}); type the full phrase that --intent prints instead"
             ),
             Self::NeedsAdministrator { target_index } => write!(
                 formatter,
@@ -336,11 +354,31 @@ pub fn build_raw_write_plan(
         });
     };
 
-    if confirmation_phrase(target.index, &identity_code) != supplied_confirmation_phrase {
+    // The short code only counts while the drive is empty, judged from this
+    // fresh look at it rather than from when `--intent` ran.
+    let full_phrase = confirmation_phrase(target.index, &identity_code);
+    let short_code =
+        (target.status == TargetAssessmentStatus::Eligible).then_some(identity_code.as_str());
+    let Some(confirmation_form) =
+        match_confirmation(Some(&full_phrase), short_code, supplied_confirmation_phrase)
+    else {
+        if supplied_confirmation_phrase
+            .trim()
+            .eq_ignore_ascii_case(&identity_code)
+        {
+            return Err(RawWriteError::ShortConfirmationRefused {
+                target_index: target.index,
+                reason: target
+                    .contents
+                    .as_ref()
+                    .map(|contents| contents.reason.clone())
+                    .unwrap_or_else(|| "its contents could not be checked".to_string()),
+            });
+        }
         return Err(RawWriteError::ConfirmationMismatch {
             target_index: target.index,
         });
-    }
+    };
 
     if selection.status != WriteModeSelectionStatus::Selected {
         return Err(RawWriteError::Blocked {
@@ -377,6 +415,7 @@ pub fn build_raw_write_plan(
         target_size_bytes,
         target_identity_code: identity_code,
         chunk_size_bytes,
+        confirmation_form,
         authorization_expires_at_unix_seconds: 0,
     })
 }
@@ -393,8 +432,16 @@ pub fn write_image_to_target(
 ) -> Result<RawWriteReport, RawWriteError> {
     // No write without a record of it: when the start cannot be logged, the
     // confirmation and the drive are both left alone.
+    let confirmed_with = match plan.confirmation_form {
+        ConfirmationForm::FullPhrase => "confirmed with the full phrase",
+        ConfirmationForm::IdentityCode => {
+            "confirmed with the drive's identity code, because the drive was empty"
+        }
+    };
     audit
-        .record(&AuditEvent::for_plan(AuditEventKind::WriteStarted, plan))
+        .record(
+            &AuditEvent::for_plan(AuditEventKind::WriteStarted, plan).with_detail(confirmed_with),
+        )
         .map_err(|source| RawWriteError::Audit {
             path: audit.path().to_path_buf(),
             source,
@@ -452,6 +499,19 @@ pub fn execute_raw_write<D: BlockDevice>(
                 plan.target_size_bytes
             ),
         });
+    }
+
+    // The short code was accepted because the drive was empty. It is locked
+    // and dismounted now, so nothing can be added any more: this is the last
+    // moment to check, and nothing has been written yet.
+    if plan.confirmation_form == ConfirmationForm::IdentityCode {
+        let contents = inspect_drive_contents(device);
+        if !contents.state.allows_short_confirmation() {
+            return Err(RawWriteError::ShortConfirmationRefused {
+                target_index: plan.target_index,
+                reason: contents.reason,
+            });
+        }
     }
 
     let image_error = |source| RawWriteError::Image {
@@ -601,6 +661,7 @@ mod tests {
     use crate::image_plan::{ImagePlanStatus, ImageWriteStrategy};
     use crate::target::{TargetAssessment, TargetAssessmentStatus};
     use crate::write_authorization::{AuthorizationStore, ImageIdentity, WriteAuthorization};
+    use crate::write_intent::ConfirmationForm;
     use crate::write_mode_selection::{
         SelectedWriteMode, WriteModeSelection, WriteModeSelectionStatus,
     };
@@ -710,6 +771,128 @@ mod tests {
             .iter()
             .any(|event| event.phase == RawWritePhase::Writing
                 && event.completed_bytes == image.len() as u64));
+    }
+
+    #[test]
+    fn writes_to_a_drive_confirmed_with_its_identity_code_while_it_is_still_empty() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(8 * MIB);
+        drive.data.borrow_mut().fill(0);
+        let mut short = plan(&path, image.len() as u64, 8 * MIB);
+        short.confirmation_form = ConfirmationForm::IdentityCode;
+
+        let report = execute_raw_write(&short, &drive, |_| {}).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(report.bytes_written, image.len() as u64);
+        assert_eq!(&drive.data.borrow()[..image.len()], &image[..]);
+    }
+
+    #[test]
+    fn stops_before_writing_when_a_drive_confirmed_with_its_code_is_no_longer_empty() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        // MemoryDrive starts filled with 0xEE, which is not an empty drive.
+        let drive = MemoryDrive::new(8 * MIB);
+        let mut short = plan(&path, image.len() as u64, 8 * MIB);
+        short.confirmation_form = ConfirmationForm::IdentityCode;
+
+        let error = execute_raw_write(&short, &drive, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            matches!(
+                error,
+                RawWriteError::ShortConfirmationRefused {
+                    target_index: 2,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(drive.writes.borrow().is_empty(), "nothing may be written");
+        assert!(drive.data.borrow().iter().all(|&byte| byte == 0xEE));
+    }
+
+    #[test]
+    fn the_full_phrase_writes_to_a_drive_that_holds_data() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(8 * MIB);
+
+        let report =
+            execute_raw_write(&plan(&path, image.len() as u64, 8 * MIB), &drive, |_| {}).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(report.bytes_written, image.len() as u64);
+    }
+
+    #[test]
+    fn accepts_the_identity_code_for_an_empty_drive() {
+        let mut empty = target(Some("7F3A"));
+        empty.status = TargetAssessmentStatus::Eligible;
+
+        let plan = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &empty,
+            " 7f3a ",
+            4 * MIB,
+        )
+        .unwrap();
+
+        assert_eq!(plan.confirmation_form, ConfirmationForm::IdentityCode);
+    }
+
+    #[test]
+    fn refuses_the_identity_code_for_a_drive_that_holds_data() {
+        let mut with_data = target(Some("7F3A"));
+        with_data.contents = Some(crate::drive_contents::DriveContents {
+            state: crate::drive_contents::DriveContentsState::HasData,
+            reason: "the FAT32 partition's root folder holds \"Holiday Photo.jpg\"".to_string(),
+            partition_scheme: None,
+            partitions: Vec::new(),
+        });
+
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &with_data,
+            "7F3A",
+            4 * MIB,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                RawWriteError::ShortConfirmationRefused {
+                    target_index: 2,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Holiday Photo.jpg"), "{error}");
+        assert!(error.to_string().contains("full phrase"), "{error}");
+    }
+
+    #[test]
+    fn the_full_phrase_still_works_for_an_empty_drive() {
+        let mut empty = target(Some("7F3A"));
+        empty.status = TargetAssessmentStatus::Eligible;
+
+        let plan = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &empty,
+            "OSFLUX ERASE TARGET 2 7F3A",
+            4 * MIB,
+        )
+        .unwrap();
+
+        assert_eq!(plan.confirmation_form, ConfirmationForm::FullPhrase);
     }
 
     #[test]
@@ -823,6 +1006,7 @@ mod tests {
                 target_path: write_plan.target_path.clone(),
                 target_identity_code: "7F3A".to_string(),
                 confirmation_phrase: "OSFLUX ERASE TARGET 250 7F3A".to_string(),
+                short_confirmation: None,
                 image: ImageIdentity::read(&path).unwrap(),
                 issued_at_unix_seconds: now_unix_seconds(),
                 expires_at_unix_seconds: now_unix_seconds() + 600,
@@ -878,6 +1062,7 @@ mod tests {
             target_path: write_plan.target_path.clone(),
             target_identity_code: "7F3A".to_string(),
             confirmation_phrase: "OSFLUX ERASE TARGET 250 7F3A".to_string(),
+            short_confirmation: None,
             image: ImageIdentity::read(&path).unwrap(),
             issued_at_unix_seconds: now_unix_seconds(),
             expires_at_unix_seconds: now_unix_seconds() + 600,
@@ -1068,6 +1253,7 @@ mod tests {
             target_size_bytes: target_size,
             target_identity_code: "7F3A".to_string(),
             chunk_size_bytes: 4 * MIB,
+            confirmation_form: ConfirmationForm::FullPhrase,
             authorization_expires_at_unix_seconds: 0,
         }
     }
@@ -1109,6 +1295,7 @@ mod tests {
             contains_system_volume: false,
             likely_removable: true,
             requires_confirmation: true,
+            contents: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

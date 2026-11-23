@@ -4,12 +4,16 @@ use std::path::Path;
 use crate::preflight::{
     run_write_preflight, WritePreflight, WritePreflightError, WritePreflightStatus,
 };
+use crate::target::TargetAssessmentStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteIntent {
     pub status: WriteIntentStatus,
     pub reason: String,
     pub confirmation_phrase: Option<String>,
+    /// The drive's identity code, offered as a short confirmation only when
+    /// the drive is empty. The full phrase is always accepted as well.
+    pub short_confirmation: Option<String>,
     pub image_source: String,
     pub target_index: u32,
     pub target_path: String,
@@ -25,6 +29,16 @@ pub struct WriteIntent {
 }
 
 impl WriteIntent {
+    /// `short` when the identity code alone confirms the write, `full` when
+    /// the whole phrase is needed, `None` when the intent cannot be confirmed.
+    pub fn confirmation_level(&self) -> Option<&'static str> {
+        match (&self.confirmation_phrase, &self.short_confirmation) {
+            (None, _) => None,
+            (Some(_), Some(_)) => Some("short"),
+            (Some(_), None) => Some("full"),
+        }
+    }
+
     pub fn to_json_pretty(&self) -> String {
         format!(
             concat!(
@@ -32,6 +46,8 @@ impl WriteIntent {
                 "  \"status\": \"{}\",\n",
                 "  \"reason\": \"{}\",\n",
                 "  \"confirmationPhrase\": {},\n",
+                "  \"confirmationLevel\": {},\n",
+                "  \"shortConfirmation\": {},\n",
                 "  \"imageSource\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
@@ -48,6 +64,8 @@ impl WriteIntent {
             self.status.as_str(),
             escape_json_string(&self.reason),
             optional_string_json(self.confirmation_phrase.as_deref()),
+            optional_string_json(self.confirmation_level()),
+            optional_string_json(self.short_confirmation.as_deref()),
             escape_json_string(&self.image_source),
             self.target_index,
             escape_json_string(&self.target_path),
@@ -98,6 +116,41 @@ pub fn confirmation_phrase(target_index: u32, identity_code: &str) -> String {
     format!("OSFLUX ERASE TARGET {target_index} {identity_code}")
 }
 
+/// Which of the accepted confirmations was typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationForm {
+    /// `OSFLUX ERASE TARGET <index> <code>`, accepted for any drive.
+    FullPhrase,
+    /// The four-character identity code alone, accepted only for an empty
+    /// drive.
+    IdentityCode,
+}
+
+impl ConfirmationForm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FullPhrase => "full-phrase",
+            Self::IdentityCode => "identity-code",
+        }
+    }
+}
+
+/// Matches what the operator typed against the full phrase and, when one is
+/// on offer, the short identity code. The phrase must match exactly; the code
+/// ignores surrounding spaces and letter case.
+pub fn match_confirmation(
+    full_phrase: Option<&str>,
+    short_code: Option<&str>,
+    supplied: &str,
+) -> Option<ConfirmationForm> {
+    if full_phrase == Some(supplied) {
+        return Some(ConfirmationForm::FullPhrase);
+    }
+    short_code
+        .filter(|code| supplied.trim().eq_ignore_ascii_case(code))
+        .map(|_| ConfirmationForm::IdentityCode)
+}
+
 pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
     let status = classify_intent_status(preflight.status);
     // The identity code ties the phrase to this drive, so a phrase confirmed
@@ -105,6 +158,18 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
     let confirmation_phrase = match (status, preflight.target_identity_code.as_deref()) {
         (WriteIntentStatus::ConfirmationRequired, Some(identity_code)) => {
             Some(confirmation_phrase(preflight.target_index, identity_code))
+        }
+        _ => None,
+    };
+    // Only an empty drive gets the short confirmation: there is nothing on it
+    // that a mistake could cost.
+    let short_confirmation = match (
+        &confirmation_phrase,
+        preflight.target_status,
+        preflight.target_identity_code.as_deref(),
+    ) {
+        (Some(_), TargetAssessmentStatus::Eligible, Some(identity_code)) => {
+            Some(identity_code.to_string())
         }
         _ => None,
     };
@@ -119,6 +184,11 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         "The phrase includes the target's identity code, so it stops matching if a different drive takes this index."
             .to_string(),
     );
+    if let Some(code) = &short_confirmation {
+        notes.push(format!(
+            "The drive is empty, so typing its identity code {code} also confirms the write. If anything is added to the drive first, the code is refused."
+        ));
+    }
 
     let mut warnings = preflight.warnings.clone();
     if status == WriteIntentStatus::ConfirmationRequired {
@@ -132,6 +202,7 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         status,
         reason: intent_reason(preflight.status).to_string(),
         confirmation_phrase,
+        short_confirmation,
         image_source: preflight.image_source.clone(),
         target_index: preflight.target_index,
         target_path: preflight.target_path.clone(),
@@ -221,7 +292,7 @@ fn escape_json_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_write_intent, WriteIntentStatus};
+    use super::{build_write_intent, match_confirmation, ConfirmationForm, WriteIntentStatus};
     use crate::image_plan::ImagePlanStatus;
     use crate::preflight::{WritePreflight, WritePreflightStatus};
     use crate::target::TargetAssessmentStatus;
@@ -285,6 +356,67 @@ mod tests {
         assert_eq!(
             intent.reason,
             "image needs deeper inspection before write intent can continue"
+        );
+    }
+
+    #[test]
+    fn offers_the_identity_code_for_an_empty_drive() {
+        let mut empty_drive = preflight(WritePreflightStatus::Ready);
+        empty_drive.target_status = TargetAssessmentStatus::Eligible;
+
+        let intent = build_write_intent(&empty_drive);
+
+        assert_eq!(intent.short_confirmation.as_deref(), Some("7F3A"));
+        assert_eq!(intent.confirmation_level(), Some("short"));
+        assert_eq!(
+            intent.confirmation_phrase.as_deref(),
+            Some("OSFLUX ERASE TARGET 2 7F3A")
+        );
+        let json = intent.to_json_pretty();
+        assert!(json.contains("\"confirmationLevel\": \"short\""), "{json}");
+        assert!(json.contains("\"shortConfirmation\": \"7F3A\""), "{json}");
+    }
+
+    #[test]
+    fn needs_the_full_phrase_for_a_drive_with_data() {
+        let intent = build_write_intent(&preflight(WritePreflightStatus::NeedsConfirmation));
+
+        assert_eq!(intent.short_confirmation, None);
+        assert_eq!(intent.confirmation_level(), Some("full"));
+    }
+
+    #[test]
+    fn offers_nothing_for_a_blocked_drive() {
+        let mut blocked = preflight(WritePreflightStatus::Blocked);
+        blocked.target_status = TargetAssessmentStatus::Eligible;
+
+        let intent = build_write_intent(&blocked);
+
+        assert_eq!(intent.short_confirmation, None);
+        assert_eq!(intent.confirmation_level(), None);
+    }
+
+    #[test]
+    fn matches_the_phrase_exactly_and_the_code_loosely() {
+        let phrase = Some("OSFLUX ERASE TARGET 2 7F3A");
+
+        assert_eq!(
+            match_confirmation(phrase, Some("7F3A"), "OSFLUX ERASE TARGET 2 7F3A"),
+            Some(ConfirmationForm::FullPhrase)
+        );
+        assert_eq!(
+            match_confirmation(phrase, None, "OSFLUX ERASE TARGET 2 7F3A"),
+            Some(ConfirmationForm::FullPhrase)
+        );
+        assert_eq!(
+            match_confirmation(phrase, Some("7F3A"), " 7f3a "),
+            Some(ConfirmationForm::IdentityCode)
+        );
+        assert_eq!(match_confirmation(phrase, None, "7F3A"), None);
+        assert_eq!(match_confirmation(phrase, Some("7F3A"), "7F3B"), None);
+        assert_eq!(
+            match_confirmation(phrase, Some("7F3A"), "osflux erase target 2 7f3a"),
+            None
         );
     }
 

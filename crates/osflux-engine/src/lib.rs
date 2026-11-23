@@ -1,6 +1,8 @@
 pub mod audit;
 pub mod chunk_plan;
 pub mod clock;
+mod crc32;
+pub mod drive_contents;
 mod fingerprint;
 pub mod image_family;
 pub mod image_plan;
@@ -27,6 +29,10 @@ pub use chunk_plan::{
     DEFAULT_CHUNK_SIZE_BYTES,
 };
 pub use clock::{format_unix_rfc3339, format_unix_utc, now_unix_seconds};
+pub use drive_contents::{
+    inspect_device_contents, inspect_drive_contents, DriveContents, DriveContentsState,
+    DrivePartition, FilesystemKind, PartitionScheme,
+};
 pub use image_family::{
     build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
     ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,
@@ -62,8 +68,8 @@ pub use raw_write::{
     MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
 pub use target::{
-    assess_target, assess_target_device, TargetAssessment, TargetAssessmentError,
-    TargetAssessmentStatus,
+    assess_target, assess_target_device, with_drive_contents, TargetAssessment,
+    TargetAssessmentError, TargetAssessmentStatus,
 };
 pub use write_authorization::{
     record_write_authorization, state_directory, AuthorizationProblem, AuthorizationStore,
@@ -74,7 +80,8 @@ pub use write_command::{
     build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,
 };
 pub use write_intent::{
-    build_write_intent, confirmation_phrase, create_write_intent, WriteIntent, WriteIntentStatus,
+    build_write_intent, confirmation_phrase, create_write_intent, match_confirmation,
+    ConfirmationForm, WriteIntent, WriteIntentStatus,
 };
 pub use write_mode_selection::{
     build_write_mode_selection, select_write_mode, SelectedWriteMode, WriteModeSelection,

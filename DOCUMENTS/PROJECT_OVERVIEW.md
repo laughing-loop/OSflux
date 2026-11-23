@@ -146,7 +146,7 @@ OSflux can now assess a target drive by index:
 cargo run -- --assess-target 2
 ```
 
-This is still read-only. It classifies the selected drive as blocked or needing confirmation before any future write workflow can touch it.
+This is still read-only. It classifies the selected drive as blocked, needing confirmation, or eligible. Eligible means the drive is blank or holds one empty FAT32 or exFAT partition, so its four-character identity code is enough to confirm a write.
 
 OSflux can now combine image planning and target assessment into a write preflight:
 

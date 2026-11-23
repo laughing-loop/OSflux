@@ -2,7 +2,9 @@ use std::fmt;
 use std::path::Path;
 
 use crate::preflight::{WritePreflightError, WritePreflightStatus};
-use crate::write_intent::{create_write_intent, WriteIntent, WriteIntentStatus};
+use crate::write_intent::{
+    create_write_intent, match_confirmation, WriteIntent, WriteIntentStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteCommandPlan {
@@ -101,10 +103,14 @@ pub fn build_write_command_plan(
     confirmation_phrase: Option<&str>,
 ) -> WriteCommandPlan {
     let supplied_confirmation_phrase_present = confirmation_phrase.is_some();
-    let confirmation_matches = match (intent.confirmation_phrase.as_deref(), confirmation_phrase) {
-        (Some(expected), Some(supplied)) => expected == supplied,
-        _ => false,
-    };
+    let confirmation_matches = confirmation_phrase.is_some_and(|supplied| {
+        match_confirmation(
+            intent.confirmation_phrase.as_deref(),
+            intent.short_confirmation.as_deref(),
+            supplied,
+        )
+        .is_some()
+    });
     let status = classify_write_command(intent, confirmation_phrase, confirmation_matches);
     let reason = write_command_reason(intent, status);
 
@@ -113,7 +119,10 @@ pub fn build_write_command_plan(
         "Write command skeleton is a dry-run; no target drive was opened for write access."
             .to_string(),
     );
-    notes.push("Confirmation is checked with exact string matching.".to_string());
+    notes.push(
+        "The phrase is checked with exact string matching; an empty drive also accepts its identity code."
+            .to_string(),
+    );
     notes.push("The next milestone is wiring this plan into a locked write session.".to_string());
 
     let mut warnings = intent.warnings.clone();
@@ -321,6 +330,22 @@ mod tests {
         assert!(json.contains("\"writeAccessAttempted\": false"));
     }
 
+    #[test]
+    fn accepts_the_identity_code_only_when_the_intent_offers_it() {
+        let mut empty_drive = intent(WriteIntentStatus::ConfirmationRequired);
+        empty_drive.short_confirmation = Some("7F3A".to_string());
+
+        let short = build_write_command_plan(&empty_drive, Some("7f3a"));
+        let refused = build_write_command_plan(
+            &intent(WriteIntentStatus::ConfirmationRequired),
+            Some("7F3A"),
+        );
+
+        assert_eq!(short.status, WriteCommandStatus::ReadyDryRun);
+        assert!(short.confirmation_matches);
+        assert_eq!(refused.status, WriteCommandStatus::ConfirmationMismatch);
+    }
+
     fn intent(status: WriteIntentStatus) -> WriteIntent {
         WriteIntent {
             status,
@@ -330,6 +355,7 @@ mod tests {
             } else {
                 None
             },
+            short_confirmation: None,
             image_source: "C:\\images\\sample.iso".to_string(),
             target_index: 2,
             target_path: "\\\\.\\PhysicalDrive2".to_string(),

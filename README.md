@@ -1,4 +1,9 @@
-# OSflux
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/svg/osflux-lockup-white.svg">
+    <img src="assets/brand/svg/osflux-lockup-blue.svg" alt="OSflux" width="360">
+  </picture>
+</h1>
 
 OSflux is a next-generation bootable media and OS deployment platform.
 

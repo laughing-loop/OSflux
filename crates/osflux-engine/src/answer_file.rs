@@ -7,6 +7,7 @@
 
 use std::fmt::Write as _;
 
+use osflux_core::region::is_input_method_tip;
 pub use osflux_core::region::RegionSettings;
 
 /// The name Windows Setup looks for at the root of removable drives.
@@ -98,9 +99,15 @@ impl SetupOptions {
             lines.push("no automatic BitLocker device encryption".to_string());
         }
         if let Some(region) = &self.region {
+            let keyboards: Vec<&str> = region.input_locale.split(';').collect();
+            let keyboards = match keyboards.as_slice() {
+                [only] => format!("keyboard {only}"),
+                [first, rest @ ..] => format!("keyboards {first} (default), {}", rest.join(", ")),
+                [] => String::new(),
+            };
             lines.push(format!(
-                "region and keyboard copied from this PC: formats {}, system locale {}, keyboard {}",
-                region.user_locale, region.system_locale, region.input_locale
+                "region and keyboard copied from this PC: formats {}, system locale {}, {keyboards}",
+                region.user_locale, region.system_locale
             ));
         }
         lines
@@ -196,16 +203,10 @@ fn validate_region(region: &RegionSettings) -> Result<(), String> {
             ));
         }
     }
-    let keyboard_ok = region.input_locale.len() == 13
-        && region.input_locale.as_bytes()[4] == b':'
-        && region
-            .input_locale
-            .bytes()
-            .enumerate()
-            .all(|(index, byte)| index == 4 || byte.is_ascii_hexdigit());
-    if !keyboard_ok {
+    let keyboards: Vec<&str> = region.input_locale.split(';').collect();
+    if keyboards.is_empty() || !keyboards.iter().all(|tip| is_input_method_tip(tip)) {
         return Err(format!(
-            "the keyboard {:?} is not in the form 0809:00000809",
+            "the keyboard list {:?} is not in the form 0809:00020409;0809:00000809",
             region.input_locale
         ));
     }
@@ -489,6 +490,13 @@ mod tests {
     #[test]
     fn copies_the_region_and_keyboard() {
         let xml = only(|options| options.region = all_options().region);
+        let several = only(|options| {
+            options.region = Some(RegionSettings {
+                input_locale: "0809:00020409;0809:00000809".to_string(),
+                ..all_options().region.unwrap()
+            })
+        });
+        assert!(several.contains("<InputLocale>0809:00020409;0809:00000809</InputLocale>"));
 
         assert!(xml.contains("<InputLocale>0809:00000809</InputLocale>"));
         assert!(xml.contains("<SystemLocale>en-GB</SystemLocale>"));
@@ -594,6 +602,10 @@ mod tests {
         assert!(options.validate().is_ok());
         options.region.as_mut().unwrap().input_locale = "0809-00000809".to_string();
         assert!(options.validate().is_err());
+        options.region.as_mut().unwrap().input_locale = "0809:00020409;".to_string();
+        assert!(options.validate().is_err());
+        options.region.as_mut().unwrap().input_locale = "0809:00020409;0809:00000809".to_string();
+        assert!(options.validate().is_ok());
         let mut options = all_options();
         options.region.as_mut().unwrap().user_locale = "en GB".to_string();
         assert!(options.validate().is_err());

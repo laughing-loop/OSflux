@@ -55,6 +55,21 @@ genisoimage -quiet -udf -input-charset utf-8 -V CCCOMA_X64FRE_EN-US_DV9 \
     -o "$work/windows-like.iso" "$tree"
 to_sparse "$work/windows-like.iso" windows-like-udf
 
+# Shaped like Microsoft's Windows ISOs: the ISO 9660 directory holds only a
+# README, every other file is in UDF only, and El Torito has BIOS and UEFI
+# entries.
+udfonly="$work/udf-only"
+mkdir -p "$udfonly/boot" "$udfonly/efi/boot" "$udfonly/efi/microsoft/boot"
+printf 'This disc contains a "UDF" file system.\r\n' >"$udfonly/README.TXT"
+head -c 2048 /dev/zero | tr '\0' 'B' >"$udfonly/boot/etfsboot.com"
+head -c 2048 /dev/zero | tr '\0' 'E' >"$udfonly/efi/microsoft/boot/efisys.bin"
+printf 'loader' >"$udfonly/efi/boot/bootx64.efi"
+genisoimage -quiet -udf -input-charset utf-8 -V CCCOMA_X64FRE_EN-US_DV9 \
+    -b boot/etfsboot.com -no-emul-boot -boot-load-size 4 -c boot/boot.cat -hide boot.cat \
+    -eltorito-alt-boot -e efi/microsoft/boot/efisys.bin -no-emul-boot \
+    -hide boot -hide efi -o "$work/udf-only.iso" "$udfonly"
+to_sparse "$work/udf-only.iso" windows-udf-only
+
 # A plain ISO 9660 image, with no UDF.
 mkdir -p "$work/plain"
 printf 'readme\n' >"$work/plain/readme.txt"

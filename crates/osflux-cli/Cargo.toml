@@ -1,12 +1,18 @@
 [package]
 name = "osflux-cli"
+description = "OSflux: plans and writes bootable USB drives"
 version.workspace = true
 edition.workspace = true
+
+# The program is osflux (osflux.exe on Windows); the package keeps its name.
+[[bin]]
+name = "osflux"
+path = "src/main.rs"
 
 [dependencies]
 osflux-engine = { path = "../osflux-engine" }
 
 [build-dependencies]
-# Embeds the Windows icon in osflux-cli.exe. The toml feature, which reads
+# Embeds the Windows icon and version details in osflux.exe. The toml feature, which reads
 # settings from Cargo.toml, is not needed.
 winresource = { version = "0.1.34", default-features = false }

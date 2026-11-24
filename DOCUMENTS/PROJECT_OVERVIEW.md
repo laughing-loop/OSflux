@@ -84,8 +84,8 @@ Right now it is the first user-facing entrypoint because it is faster to build, 
 Later commands may look like:
 
 ```powershell
-osflux-cli --list-devices
-osflux-cli write --image Windows.iso --target PhysicalDrive2
+osflux --list-devices
+osflux write --image Windows.iso --target PhysicalDrive2
 ```
 
 ## OSflux Studio
@@ -114,13 +114,7 @@ We pushed the first commit to GitHub:
 https://github.com/laughing-loop/OSflux
 ```
 
-We prepared a GitHub Actions workflow template:
-
-```text
-DOCUMENTS/CI_WORKFLOW_TEMPLATE.md
-```
-
-The active workflow is disabled for now because GitHub is failing before any job starts. Local Rust checks still work, and we can restore the workflow when the GitHub-side setting is fixed.
+Continuous integration runs from `.github/workflows/ci.yml`; `DOCUMENTS/RELEASING.md` describes it, along with releases and code signing.
 
 We added the first read-only device command:
 
@@ -324,30 +318,16 @@ This command classifies the image, reads its size, chooses an initial write mode
 
 ## GitHub Actions Status
 
-GitHub Actions is the robot that can build and check the project on GitHub.
+GitHub Actions is the robot that builds and checks the project on GitHub.
 
-For now, the active workflow is disabled because GitHub starts every run with a startup failure before any job is created.
+Every pull request to `main`, and every push to it, runs `.github/workflows/ci.yml` on Windows and Linux:
 
-The workflow template is stored here:
-
-```text
-DOCUMENTS/CI_WORKFLOW_TEMPLATE.md
-```
-
-When the GitHub-side issue is fixed, that workflow can:
-
-- install/configure Rust
 - check formatting
-- compile the full workspace
-- run tests
+- run clippy with warnings treated as errors
+- run every test, with the independent FAT32, WIM and XML checking tools installed on Linux
+- build `osflux.exe`, and check the Windows build from Linux too
 
-Because OSflux uses Windows APIs, the workflow runs on:
-
-```text
-windows-latest
-```
-
-That is intentional.
+Pushing a version tag runs `.github/workflows/release.yml`, which packages `osflux.exe` and signs it once a code signing certificate is set up. `DOCUMENTS/RELEASING.md` explains both, and what to check if runs fail before any job starts, as they once did on this repository.
 
 ## How To Run The Project Locally
 

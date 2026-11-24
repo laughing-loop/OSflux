@@ -26,23 +26,28 @@ For a beginner-friendly explanation of the project direction, read:
 
 - `DOCUMENTS/PROJECT_OVERVIEW.md`
 
-The GitHub Actions workflow is stored as a template until repository Actions startup is fixed:
+For continuous integration, releases and code signing, read:
 
-- `DOCUMENTS/CI_WORKFLOW_TEMPLATE.md`
+- `DOCUMENTS/RELEASING.md`
 
 ## Development
 
 Requirements:
 
-- Rust stable MSVC toolchain
+- Rust, through rustup. The version is pinned in `rust-toolchain.toml`, and rustup installs it the first time `cargo` runs here.
 - Visual Studio C++ build tools
 - Windows SDK
+
+The program is `osflux` (`osflux.exe` on Windows). From the source folder, `cargo run --` runs it, and `cargo build --release` puts it in `target\release\osflux.exe`.
 
 Run the CLI:
 
 ```powershell
 cargo run
+cargo run -- --version
 ```
+
+Every pull request is checked on Windows and Linux: formatting, lints as errors, all tests and the Windows build. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and code signing. Notable changes are listed in `CHANGELOG.md`.
 
 List visible physical drives:
 

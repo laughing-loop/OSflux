@@ -216,6 +216,9 @@ where
         if arg == "--help" || arg == "-h" {
             print_help();
             std::process::exit(0);
+        } else if arg == "--version" || arg == "-V" {
+            println!("osflux {}", env!("CARGO_PKG_VERSION"));
+            std::process::exit(0);
         } else if arg == "--json" {
             output = OutputFormat::Json;
         } else if arg == "--preflight" {
@@ -1973,8 +1976,10 @@ fn format_basis_points(basis_points: u32) -> String {
 }
 
 fn print_help() {
-    println!("OSflux CLI");
-    println!("Usage:");
+    println!("OSflux {}", env!("CARGO_PKG_VERSION"));
+    println!("Usage: osflux [OPTIONS], or from the source folder: cargo run -- [OPTIONS]");
+    println!();
+    println!("Examples:");
     println!("  cargo run -- --list-devices");
     println!(
         "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
@@ -2024,6 +2029,8 @@ fn print_help() {
     println!("  cargo run -- --blocks=16 --block-size=1048576");
     println!();
     println!("Options:");
+    println!("  --help, -h        Show this help.");
+    println!("  --version, -V     Show the OSflux version.");
     println!("  --list-devices    List visible physical drives without writing to them.");
     println!("  --select-mode     Select the read-only write mode for the planned image.");
     println!("  --progress-preview  Prepare dry-run progress events from a chunk plan.");

@@ -27,10 +27,32 @@ pub use UnsupportedReadOnlyDevice as ReadOnlyDevice;
 
 pub type DeviceResult<T> = Result<T, DeviceError>;
 
+/// What to do when a volume on the drive stays in use after Windows has
+/// asked the programs holding it to let go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyVolumes {
+    /// Stop with [`DeviceError::InUse`].
+    Refuse,
+    /// Force a dismount, as chkdsk and format do once the person agrees:
+    /// other programs' handles to the volume stop working and anything
+    /// unsaved on it is lost. Then lock it.
+    ForceDismount,
+}
+
 pub trait BlockDevice {
     fn open(path: &str) -> DeviceResult<Self>
     where
         Self: Sized;
+
+    /// Opens the drive for writing, handling a volume that stays in use as
+    /// `busy_volumes` says. Drives without volumes to lock ignore it.
+    fn open_with(path: &str, busy_volumes: BusyVolumes) -> DeviceResult<Self>
+    where
+        Self: Sized,
+    {
+        let _ = busy_volumes;
+        Self::open(path)
+    }
 
     fn write_at(&self, offset: u64, buffer: &[u8]) -> DeviceResult<usize>;
 
@@ -135,6 +157,12 @@ pub enum DeviceError {
     Unsupported {
         operation: &'static str,
     },
+    /// Another program kept one of the drive's volumes open, so it could
+    /// not be locked for writing.
+    InUse {
+        volume: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for DeviceError {
@@ -152,6 +180,10 @@ impl fmt::Display for DeviceError {
                     "{operation} is not implemented on this platform yet"
                 )
             }
+            Self::InUse { volume, message } => write!(
+                formatter,
+                "the drive's volume {volume} is in use by another program or window ({message})"
+            ),
         }
     }
 }

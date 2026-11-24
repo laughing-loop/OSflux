@@ -4,9 +4,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use osflux_core::device::{BlockDevice, DeviceAccess, DeviceError, NativeBlockDevice};
+use osflux_core::device::{BlockDevice, BusyVolumes, DeviceAccess, DeviceError, NativeBlockDevice};
 use sha2::{Digest, Sha256};
 
+use crate::answer_file::SetupOptions;
 use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
 use crate::clock::now_unix_seconds;
 use crate::drive_contents::inspect_drive_contents;
@@ -40,7 +41,7 @@ pub enum WriteLayout {
     Raw,
     /// The ISO's files are copied onto a new MBR drive with one FAT32
     /// partition that starts in UEFI mode, as Windows installers need.
-    UefiFat32(UefiFat32Layout),
+    UefiFat32(Box<UefiFat32Layout>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,9 +60,30 @@ pub struct RawWritePlan {
     /// longer empty.
     pub confirmation_form: ConfirmationForm,
     pub layout: WriteLayout,
+    /// Whether the written bytes are read back and compared. On unless the
+    /// operator asks to skip it.
+    pub verification: Verification,
     /// When the one-time confirmation for this write expires; zero until
     /// `prepare_raw_write` has checked it.
     pub authorization_expires_at_unix_seconds: u64,
+}
+
+/// Whether a write is read back and compared once it is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verification {
+    /// Every written byte is read back from the drive and compared.
+    ReadBack,
+    /// Nothing is read back, for a quicker write.
+    Skipped,
+}
+
+impl Verification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadBack => "read-back",
+            Self::Skipped => "skipped",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +121,12 @@ pub struct RawWriteReport {
     /// raw copy, the ISO itself when its files were copied.
     pub image_sha256: String,
     pub bytes_written: u64,
+    /// Zero when verification was skipped.
     pub bytes_verified: u64,
+    pub verification: Verification,
+    /// Whether a volume on the drive stayed in use and its dismount was
+    /// forced with the operator's approval.
+    pub forced_dismount: bool,
     pub write_millis: u64,
     pub verify_millis: u64,
     /// Whether the outcome was added to the audit log.
@@ -119,6 +146,8 @@ impl RawWriteReport {
                 "  \"targetIdentityCode\": {},\n",
                 "  \"bytesWritten\": {},\n",
                 "  \"bytesVerified\": {},\n",
+                "  \"verification\": {},\n",
+                "  \"forcedDismount\": {},\n",
                 "  \"writeMillis\": {},\n",
                 "  \"verifyMillis\": {},\n",
                 "  \"auditRecorded\": {}\n",
@@ -131,6 +160,8 @@ impl RawWriteReport {
             string_json(&self.target_identity_code),
             self.bytes_written,
             self.bytes_verified,
+            string_json(self.verification.as_str()),
+            self.forced_dismount,
             self.write_millis,
             self.verify_millis,
             self.audit_recorded,
@@ -279,10 +310,16 @@ pub fn prepare_raw_write(
     target_index: u32,
     supplied_confirmation_phrase: &str,
     chunk_size_bytes: u64,
+    setup_options: &SetupOptions,
     authorizations: &AuthorizationStore,
 ) -> Result<RawWritePlan, RawWriteError> {
     let image_path = image_path.as_ref();
     validate_chunk_size(chunk_size_bytes)?;
+    // Checked before anything slow, so a mistyped account name is reported
+    // straight away.
+    setup_options
+        .validate()
+        .map_err(|reason| RawWriteError::Blocked { reason })?;
     let selection = select_write_mode(
         image_path,
         target_index,
@@ -309,10 +346,12 @@ pub fn prepare_raw_write(
                 sector_bytes,
                 &session_id,
                 now_unix_seconds(),
+                setup_options,
             )
             .map_err(|error| file_copy_error(image_path, error))
         },
     )?;
+    check_setup_options_apply(&plan.layout, setup_options)?;
 
     // The phrase alone stays valid for as long as the same drive sits at the
     // same index. The recorded confirmation also ties the write to this
@@ -441,7 +480,7 @@ pub fn build_raw_write_plan(
             WriteLayout::Raw
         }
         Some(SelectedWriteMode::IsoFilesystemBootSetup) => {
-            WriteLayout::UefiFat32(lay_out_files(target_size_bytes)?)
+            WriteLayout::UefiFat32(Box::new(lay_out_files(target_size_bytes)?))
         }
         None => {
             return Err(RawWriteError::Blocked {
@@ -462,8 +501,23 @@ pub fn build_raw_write_plan(
         chunk_size_bytes,
         confirmation_form,
         layout,
+        verification: Verification::ReadBack,
         authorization_expires_at_unix_seconds: 0,
     })
+}
+
+/// Windows Setup options go into an answer file on the copied FAT32 drive,
+/// so an image copied byte for byte cannot take them.
+fn check_setup_options_apply(
+    layout: &WriteLayout,
+    setup_options: &SetupOptions,
+) -> Result<(), RawWriteError> {
+    if matches!(layout, WriteLayout::Raw) && !setup_options.is_empty() {
+        return Err(RawWriteError::Blocked {
+            reason: "Windows Setup options only apply to Windows installer ISOs, whose files OSflux copies; this image is copied byte for byte, so OSflux cannot add an answer file to it".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// The drive's sector size, which the FAT32 layout depends on. Read through
@@ -497,6 +551,7 @@ pub fn write_image_to_target(
     plan: &RawWritePlan,
     authorizations: &AuthorizationStore,
     audit: &AuditLog,
+    mut approve_forced_dismount: impl FnMut(&DeviceError) -> bool,
     on_progress: impl FnMut(RawWriteProgress),
 ) -> Result<RawWriteReport, RawWriteError> {
     // No write without a record of it: when the start cannot be logged, the
@@ -521,7 +576,19 @@ pub fn write_image_to_target(
                     split.parts.len()
                 ));
             }
+            if !layout.setup_options.is_empty() {
+                detail.push_str(&format!(
+                    "; Windows Setup answer file with {}",
+                    layout.setup_options.audit_summary()
+                ));
+            }
             detail
+        }
+    };
+    let confirmed_with = match plan.verification {
+        Verification::ReadBack => confirmed_with,
+        Verification::Skipped => {
+            format!("{confirmed_with}; read-back verification skipped at the operator's request")
         }
     };
     audit
@@ -533,16 +600,48 @@ pub fn write_image_to_target(
             source,
         })?;
 
-    let outcome = consume_and_write(plan, authorizations, on_progress);
+    let mut forced_dismount = false;
+    let mut force_approved = false;
+    let mut approve = |error: &DeviceError| {
+        let approved = approve_forced_dismount(error);
+        force_approved |= approved;
+        approved
+    };
+    let outcome = consume_and_write(
+        plan,
+        authorizations,
+        &mut approve,
+        &mut forced_dismount,
+        on_progress,
+    );
 
     // The write has already happened or failed by now, so a problem logging
     // its outcome is reported on the result instead of replacing it.
+    let mut notes = Vec::new();
+    if forced_dismount {
+        notes.push(FORCED_DISMOUNT_NOTE.to_string());
+    } else if force_approved {
+        notes.push(
+            "a volume on the drive stayed in use; the operator approved forcing a dismount, but the drive could not be locked"
+                .to_string(),
+        );
+    }
     let outcome_event = match &outcome {
         Ok(report) => {
-            AuditEvent::for_plan(AuditEventKind::WriteSucceeded, plan).with_report(report)
+            if report.verification == Verification::Skipped {
+                notes.push("written but not verified: read-back was skipped".to_string());
+            }
+            let event =
+                AuditEvent::for_plan(AuditEventKind::WriteSucceeded, plan).with_report(report);
+            if notes.is_empty() {
+                event
+            } else {
+                event.with_detail(notes.join("; "))
+            }
         }
         Err(error) => {
-            AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(error.to_string())
+            notes.insert(0, error.to_string());
+            AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(notes.join("; "))
         }
     };
     let audit_recorded = audit.record(&outcome_event).is_ok();
@@ -553,9 +652,14 @@ pub fn write_image_to_target(
     })
 }
 
+const FORCED_DISMOUNT_NOTE: &str =
+    "a volume on the drive stayed in use, and its dismount was forced with the operator's approval";
+
 fn consume_and_write(
     plan: &RawWritePlan,
     authorizations: &AuthorizationStore,
+    approve_forced_dismount: &mut dyn FnMut(&DeviceError) -> bool,
+    forced_dismount: &mut bool,
     on_progress: impl FnMut(RawWriteProgress),
 ) -> Result<RawWriteReport, RawWriteError> {
     // Used up before the drive is touched, so one confirmation can never
@@ -563,12 +667,40 @@ fn consume_and_write(
     authorizations
         .consume(plan.target_index)
         .map_err(RawWriteError::AuthorizationStore)?;
-    let device = NativeBlockDevice::open(&plan.target_path).map_err(RawWriteError::Open)?;
-    execute_raw_write(plan, &device, on_progress)
+    let (device, forced) =
+        open_target::<NativeBlockDevice>(&plan.target_path, approve_forced_dismount)?;
+    *forced_dismount = forced;
+    execute_raw_write(plan, &device, on_progress).map(|report| RawWriteReport {
+        forced_dismount: forced,
+        ..report
+    })
 }
 
-/// Writes the planned bytes to `device` chunk by chunk, flushes, then reads
-/// every byte back and compares it with the same bytes generated again.
+/// Opens the target drive, asking Windows' usual way for its volumes. When
+/// one stays in use, `approve_forced_dismount` is asked, and only on
+/// approval is the drive opened again forcing a dismount. Returns the drive
+/// and whether a dismount was forced.
+fn open_target<D: BlockDevice>(
+    path: &str,
+    approve_forced_dismount: &mut dyn FnMut(&DeviceError) -> bool,
+) -> Result<(D, bool), RawWriteError> {
+    match D::open_with(path, BusyVolumes::Refuse) {
+        Ok(device) => Ok((device, false)),
+        Err(error @ DeviceError::InUse { .. }) => {
+            if !approve_forced_dismount(&error) {
+                return Err(RawWriteError::Open(error));
+            }
+            D::open_with(path, BusyVolumes::ForceDismount)
+                .map(|device| (device, true))
+                .map_err(RawWriteError::Open)
+        }
+        Err(error) => Err(RawWriteError::Open(error)),
+    }
+}
+
+/// Writes the planned bytes to `device` chunk by chunk, flushes, then,
+/// unless the plan skips verification, reads every byte back and compares it
+/// with the same bytes generated again.
 pub fn execute_raw_write<D: BlockDevice>(
     plan: &RawWritePlan,
     device: &D,
@@ -617,6 +749,7 @@ pub fn execute_raw_write<D: BlockDevice>(
         device,
         device_size,
         chunk_size: plan.chunk_size_bytes as usize,
+        verification: plan.verification,
     };
     let (image_sha256, written) = match &plan.layout {
         WriteLayout::Raw => {
@@ -683,7 +816,9 @@ pub fn execute_raw_write<D: BlockDevice>(
         target_identity_code: plan.target_identity_code.clone(),
         image_sha256,
         bytes_written: written.bytes,
-        bytes_verified: written.bytes,
+        bytes_verified: written.bytes_verified,
+        verification: plan.verification,
+        forced_dismount: false,
         write_millis: written.write_millis,
         verify_millis: written.verify_millis,
         audit_recorded: false,
@@ -728,6 +863,7 @@ fn hex(bytes: &[u8]) -> String {
 
 struct Written {
     bytes: u64,
+    bytes_verified: u64,
     write_millis: u64,
     verify_millis: u64,
 }
@@ -738,6 +874,7 @@ struct WriteStream<'a, D: BlockDevice> {
     device: &'a D,
     device_size: u64,
     chunk_size: usize,
+    verification: Verification,
 }
 
 impl<D: BlockDevice> WriteStream<'_, D> {
@@ -777,6 +914,15 @@ impl<D: BlockDevice> WriteStream<'_, D> {
         self.device.flush().map_err(RawWriteError::Device)?;
         let write_millis = write_started.elapsed().as_millis() as u64;
 
+        if self.verification == Verification::Skipped {
+            return Ok(Written {
+                bytes: total,
+                bytes_verified: 0,
+                write_millis,
+                verify_millis: 0,
+            });
+        }
+
         let verify_started = Instant::now();
         let mut device_buffer = vec![0u8; self.chunk_size];
         done = 0;
@@ -806,6 +952,7 @@ impl<D: BlockDevice> WriteStream<'_, D> {
 
         Ok(Written {
             bytes: total,
+            bytes_verified: total,
             write_millis,
             verify_millis,
         })
@@ -858,10 +1005,11 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_write_plan, execute_raw_write, trailing_wipe, write_image_to_target,
-        RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, WriteLayout,
-        RAW_WRITE_ALIGNMENT_BYTES,
+        build_raw_write_plan, check_setup_options_apply, execute_raw_write, open_target,
+        trailing_wipe, write_image_to_target, RawWriteError, RawWritePhase, RawWritePlan,
+        RawWriteProgress, Verification, WriteLayout, RAW_WRITE_ALIGNMENT_BYTES,
     };
+    use crate::answer_file::SetupOptions;
     use crate::audit::AuditLog;
     use crate::clock::now_unix_seconds;
     use crate::file_copy::UefiFat32Layout;
@@ -872,7 +1020,7 @@ mod tests {
     use crate::write_mode_selection::{
         SelectedWriteMode, WriteModeSelection, WriteModeSelectionStatus,
     };
-    use osflux_core::device::{BlockDevice, DeviceAccess, DeviceError, DeviceResult};
+    use osflux_core::device::{BlockDevice, BusyVolumes, DeviceAccess, DeviceError, DeviceResult};
     use std::cell::RefCell;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -978,6 +1126,160 @@ mod tests {
             .iter()
             .any(|event| event.phase == RawWritePhase::Writing
                 && event.completed_bytes == image.len() as u64));
+    }
+
+    /// A drive whose path says how opening it goes.
+    struct OpenProbe;
+
+    impl BlockDevice for OpenProbe {
+        fn open(_path: &str) -> DeviceResult<Self> {
+            unreachable!("the write opens drives with open_with")
+        }
+
+        fn open_with(path: &str, busy_volumes: BusyVolumes) -> DeviceResult<Self> {
+            let in_use = || DeviceError::InUse {
+                volume: r"\\?\Volume{probe}".to_string(),
+                message: "Access is denied.".to_string(),
+            };
+            match (path, busy_volumes) {
+                ("free", _) | ("busy", BusyVolumes::ForceDismount) => Ok(Self),
+                ("busy", BusyVolumes::Refuse) | ("stubborn", _) => Err(in_use()),
+                _ => Err(DeviceError::Open {
+                    path: path.to_string(),
+                    message: "Access is denied.".to_string(),
+                }),
+            }
+        }
+
+        fn write_at(&self, _offset: u64, _buffer: &[u8]) -> DeviceResult<usize> {
+            unreachable!()
+        }
+
+        fn read_at(&self, _offset: u64, _buffer: &mut [u8]) -> DeviceResult<usize> {
+            unreachable!()
+        }
+
+        fn flush(&self) -> DeviceResult<()> {
+            unreachable!()
+        }
+
+        fn size(&self) -> DeviceResult<u64> {
+            unreachable!()
+        }
+    }
+
+    fn open_probe(path: &str, approve: bool) -> (Result<bool, RawWriteError>, usize) {
+        let mut asked = 0;
+        let outcome = open_target::<OpenProbe>(path, &mut |error| {
+            assert!(matches!(error, DeviceError::InUse { .. }));
+            asked += 1;
+            approve
+        })
+        .map(|(_, forced)| forced);
+        (outcome, asked)
+    }
+
+    #[test]
+    fn opens_a_free_drive_without_asking() {
+        let (outcome, asked) = open_probe("free", false);
+
+        assert!(matches!(outcome, Ok(false)));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn forces_a_busy_volume_free_only_when_the_operator_agrees() {
+        let (refused, asked) = open_probe("busy", false);
+        assert!(matches!(
+            refused,
+            Err(RawWriteError::Open(DeviceError::InUse { .. }))
+        ));
+        assert_eq!(asked, 1);
+
+        let (approved, asked) = open_probe("busy", true);
+        assert!(matches!(approved, Ok(true)));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn reports_a_volume_still_busy_after_forcing() {
+        let (outcome, asked) = open_probe("stubborn", true);
+
+        assert!(matches!(
+            outcome,
+            Err(RawWriteError::Open(DeviceError::InUse { .. }))
+        ));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn never_offers_to_force_for_other_open_errors() {
+        let (outcome, asked) = open_probe("denied", true);
+
+        assert!(matches!(
+            outcome,
+            Err(RawWriteError::Open(DeviceError::Open { .. }))
+        ));
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn windows_setup_options_only_apply_to_copied_isos() {
+        let options = SetupOptions {
+            skip_privacy_questions: true,
+            ..SetupOptions::default()
+        };
+
+        let error = check_setup_options_apply(&WriteLayout::Raw, &options).unwrap_err();
+
+        assert!(
+            matches!(&error, RawWriteError::Blocked { reason } if reason.contains("byte for byte"))
+        );
+        assert!(check_setup_options_apply(&WriteLayout::Raw, &SetupOptions::default()).is_ok());
+        assert!(check_setup_options_apply(
+            &WriteLayout::UefiFat32(Box::new(sample_layout())),
+            &options
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn skipping_verification_writes_without_reading_back() {
+        let image = image_bytes((2 * MIB + 1000) as usize);
+        let path = temp_image(&image);
+        // A drive that flips a byte as it is written: only a read-back would
+        // notice, so with verification skipped the write still succeeds.
+        let mut drive = MemoryDrive::new(8 * MIB);
+        drive.corrupt_offset = Some(MIB + 7);
+        let quick = RawWritePlan {
+            verification: Verification::Skipped,
+            ..plan(&path, image.len() as u64, 8 * MIB)
+        };
+        let mut events = Vec::new();
+
+        let report = execute_raw_write(&quick, &drive, |event| events.push(event)).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(report.verification, Verification::Skipped);
+        assert_eq!(report.bytes_written, image.len() as u64);
+        assert_eq!(report.bytes_verified, 0);
+        assert_eq!(report.verify_millis, 0);
+        assert!(events
+            .iter()
+            .all(|event| event.phase != RawWritePhase::Verifying));
+        assert!(report
+            .to_json_pretty()
+            .contains("\"verification\": \"skipped\""));
+
+        // The same drive fault is caught when the write is verified.
+        let path = temp_image(&image);
+        let error = execute_raw_write(&plan(&path, image.len() as u64, 8 * MIB), &drive, |_| {})
+            .unwrap_err();
+        let _ = fs::remove_file(&path);
+        assert!(
+            matches!(error, RawWriteError::VerifyMismatch { .. }),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1225,8 +1527,10 @@ mod tests {
 
         let audit = AuditLog::new(path.with_extension("audit.log"));
 
-        let first = write_image_to_target(&write_plan, &store, &audit, |_| {}).unwrap_err();
-        let second = write_image_to_target(&write_plan, &store, &audit, |_| {}).unwrap_err();
+        let first =
+            write_image_to_target(&write_plan, &store, &audit, |_| false, |_| {}).unwrap_err();
+        let second =
+            write_image_to_target(&write_plan, &store, &audit, |_| false, |_| {}).unwrap_err();
         let log = fs::read_to_string(audit.path()).unwrap();
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(audit.path());
@@ -1282,8 +1586,14 @@ mod tests {
         let audit_path = path.with_extension("audit-dir");
         fs::create_dir_all(&audit_path).unwrap();
 
-        let error = write_image_to_target(&write_plan, &store, &AuditLog::new(&audit_path), |_| {})
-            .unwrap_err();
+        let error = write_image_to_target(
+            &write_plan,
+            &store,
+            &AuditLog::new(&audit_path),
+            |_| false,
+            |_| {},
+        )
+        .unwrap_err();
         let still_authorized = store.load(250).unwrap();
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(&audit_path);
@@ -1323,6 +1633,8 @@ mod tests {
             file_bytes: 10,
             largest_file: Some(("setup.exe".to_string(), 8)),
             split_files: Vec::new(),
+            setup_options: SetupOptions::default(),
+            answer_file_bytes: None,
             image_bytes: 4 * MIB,
             sector_bytes: 512,
             cluster_bytes: 4096,
@@ -1350,7 +1662,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(asked_for, Some(16 * MIB));
-        assert_eq!(plan.layout, WriteLayout::UefiFat32(sample_layout()));
+        assert_eq!(
+            plan.layout,
+            WriteLayout::UefiFat32(Box::new(sample_layout()))
+        );
     }
 
     #[test]
@@ -1402,11 +1717,12 @@ mod tests {
             512,
             "OSFLUX-SESSION-TEST",
             1_795_022_016,
+            &SetupOptions::default(),
         )
         .unwrap();
         let iso_bytes = fs::read(&iso).unwrap();
         let mut copy_plan = plan(&iso, iso_bytes.len() as u64, drive_bytes);
-        copy_plan.layout = WriteLayout::UefiFat32(layout.clone());
+        copy_plan.layout = WriteLayout::UefiFat32(Box::new(layout.clone()));
         // Starts filled with 0xEE, so untouched bytes stand out.
         let drive = MemoryDrive::new(drive_bytes);
         let mut phases = Vec::new();
@@ -1461,11 +1777,19 @@ mod tests {
     #[test]
     fn refuses_a_file_copy_when_the_drive_reports_other_sectors() {
         let iso = crate::file_copy::tests::windows_like_iso();
-        let mut layout = crate::file_copy::lay_out_uefi_fat32(&iso, 64 * MIB, 512, "S", 0).unwrap();
+        let mut layout = crate::file_copy::lay_out_uefi_fat32(
+            &iso,
+            64 * MIB,
+            512,
+            "S",
+            0,
+            &SetupOptions::default(),
+        )
+        .unwrap();
         layout.sector_bytes = 4096;
         let size = fs::metadata(&iso).unwrap().len();
         let mut copy_plan = plan(&iso, size, 64 * MIB);
-        copy_plan.layout = WriteLayout::UefiFat32(layout);
+        copy_plan.layout = WriteLayout::UefiFat32(Box::new(layout));
         let drive = MemoryDrive::new(64 * MIB);
 
         let error = execute_raw_write(&copy_plan, &drive, |_| {}).unwrap_err();
@@ -1481,11 +1805,19 @@ mod tests {
     #[test]
     fn refuses_a_file_copy_that_no_longer_matches_its_plan() {
         let iso = crate::file_copy::tests::windows_like_iso();
-        let mut layout = crate::file_copy::lay_out_uefi_fat32(&iso, 64 * MIB, 512, "S", 0).unwrap();
+        let mut layout = crate::file_copy::lay_out_uefi_fat32(
+            &iso,
+            64 * MIB,
+            512,
+            "S",
+            0,
+            &SetupOptions::default(),
+        )
+        .unwrap();
         layout.image_bytes += 4096;
         let size = fs::metadata(&iso).unwrap().len();
         let mut copy_plan = plan(&iso, size, 64 * MIB);
-        copy_plan.layout = WriteLayout::UefiFat32(layout);
+        copy_plan.layout = WriteLayout::UefiFat32(Box::new(layout));
         let drive = MemoryDrive::new(64 * MIB);
 
         let error = execute_raw_write(&copy_plan, &drive, |_| {}).unwrap_err();
@@ -1656,6 +1988,7 @@ mod tests {
             chunk_size_bytes: 4 * MIB,
             confirmation_form: ConfirmationForm::FullPhrase,
             layout: WriteLayout::Raw,
+            verification: Verification::ReadBack,
             authorization_expires_at_unix_seconds: 0,
         }
     }

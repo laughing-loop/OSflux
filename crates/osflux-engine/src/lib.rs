@@ -1,3 +1,4 @@
+pub mod answer_file;
 pub mod audit;
 pub mod chunk_plan;
 pub mod clock;
@@ -30,6 +31,9 @@ pub mod write_session;
 use osflux_core::device::{self, PhysicalDevice};
 use osflux_core::pipeline;
 
+pub use answer_file::{
+    validate_account_name, Architecture, RegionSettings, SetupOptions, ANSWER_FILE_NAME,
+};
 pub use audit::{AuditEvent, AuditEventKind, AuditLog};
 pub use chunk_plan::{
     build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
@@ -65,6 +69,8 @@ pub use iso_filesystem_plan::{
     build_iso_filesystem_plan, plan_iso_filesystem, IsoFilesystemCapabilities, IsoFilesystemPlan,
     IsoFilesystemPlanError, IsoFilesystemPlanStatus, IsoFilesystemStrategy,
 };
+pub use osflux_core::device::DeviceError;
+pub use osflux_core::region::read_region_settings;
 pub use preflight::{
     build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,
     WritePreflightStatus,
@@ -75,8 +81,8 @@ pub use progress::{
 };
 pub use raw_write::{
     build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target,
-    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, WriteLayout,
-    MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, Verification,
+    WriteLayout, MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
 pub use target::{
     assess_target, assess_target_device, with_drive_contents, TargetAssessment,

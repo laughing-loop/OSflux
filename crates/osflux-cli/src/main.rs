@@ -4,15 +4,17 @@ use osflux_engine::{
     assess_target, build_image_plan_report, create_write_intent, detect_image_family,
     format_unix_utc, inspect_device_contents, list_devices, now_unix_seconds, plan_image,
     plan_iso_filesystem, plan_write_chunks, prepare_raw_write, prepare_write_command,
-    prepare_write_session, preview_write_progress, record_write_authorization, run_write_preflight,
-    select_write_mode, write_image_to_target, AuditEvent, AuditEventKind, AuditLog,
-    AuthorizationStore, ChunkPlan, ChunkPlanStatus, ConfirmationForm, DriveContents, Engine,
-    EngineConfig, ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
+    prepare_write_session, preview_write_progress, read_region_settings,
+    record_write_authorization, run_write_preflight, select_write_mode, validate_account_name,
+    write_image_to_target, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, ChunkPlan,
+    ChunkPlanStatus, ConfirmationForm, DeviceError, DriveContents, Engine, EngineConfig,
+    ImageFamilyReport, ImageFamilyStatus, ImagePlanStatus, IsoFilesystemPlan,
     IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
-    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
-    TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
-    WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
-    WritePreflightStatus, WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
+    RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, SetupOptions, TargetAssessment,
+    TargetAssessmentStatus, Verification, WriteCommandPlan, WriteCommandStatus, WriteIntent,
+    WriteIntentStatus, WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
+    WritePreflightStatus, WriteSession, WriteSessionStatus, ANSWER_FILE_NAME,
+    DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 /// Exit code for a command that ran but whose result is blocked or needs inspection.
@@ -47,6 +49,9 @@ fn main() {
             chunk_size,
             execute,
             assume_yes,
+            verification,
+            setup,
+            force_dismount,
             output,
         } => {
             if execute {
@@ -55,7 +60,12 @@ fn main() {
                     target,
                     confirm.as_deref(),
                     chunk_size,
-                    assume_yes,
+                    WriteChoices {
+                        assume_yes,
+                        verification,
+                        setup,
+                        force_dismount,
+                    },
                     output,
                 );
             } else {
@@ -128,6 +138,9 @@ enum Command {
         chunk_size: u64,
         execute: bool,
         assume_yes: bool,
+        verification: Verification,
+        setup: SetupChoices,
+        force_dismount: bool,
         output: OutputFormat,
     },
     Session {
@@ -184,6 +197,9 @@ where
     let mut write_requested = false;
     let mut execute_requested = false;
     let mut assume_yes = false;
+    let mut no_verify = false;
+    let mut force_dismount = false;
+    let mut setup = SetupChoices::default();
     let mut session_requested = false;
     let mut chunk_plan_requested = false;
     let mut progress_preview_requested = false;
@@ -212,6 +228,28 @@ where
             execute_requested = true;
         } else if arg == "--yes" {
             assume_yes = true;
+        } else if arg == "--no-verify" {
+            no_verify = true;
+        } else if arg == "--force-dismount" {
+            force_dismount = true;
+        } else if arg == "--bypass-requirements" {
+            setup.options.bypass_requirements = true;
+        } else if let Some(name) = arg.strip_prefix("--local-account=") {
+            setup.options.local_account = Some(parse_account_name(name));
+        } else if arg == "--local-account" {
+            let Some(name) = args.get(index + 1) else {
+                eprintln!("missing account name after --local-account");
+                std::process::exit(2);
+            };
+
+            setup.options.local_account = Some(parse_account_name(name));
+            index += 1;
+        } else if arg == "--skip-privacy-questions" {
+            setup.options.skip_privacy_questions = true;
+        } else if arg == "--no-auto-bitlocker" {
+            setup.options.disable_bitlocker_auto_encryption = true;
+        } else if arg == "--copy-region" {
+            setup.copy_region = true;
         } else if arg == "--session" {
             session_requested = true;
         } else if arg == "--chunk-plan" {
@@ -317,6 +355,20 @@ where
         eprintln!("--yes can only be used with --write --execute");
         std::process::exit(2);
     }
+    if no_verify && !execute_requested {
+        eprintln!("--no-verify can only be used with --write --execute");
+        std::process::exit(2);
+    }
+    if force_dismount && !execute_requested {
+        eprintln!("--force-dismount can only be used with --write --execute");
+        std::process::exit(2);
+    }
+    if setup.any() && !execute_requested {
+        eprintln!(
+            "Windows Setup options (--bypass-requirements, --local-account, --skip-privacy-questions, --no-auto-bitlocker, --copy-region) can only be used with --write --execute"
+        );
+        std::process::exit(2);
+    }
 
     if mode_selection_requested {
         let Some(image) = preflight_image else {
@@ -410,6 +462,13 @@ where
             chunk_size: chunk_size_bytes,
             execute: execute_requested,
             assume_yes,
+            verification: if no_verify {
+                Verification::Skipped
+            } else {
+                Verification::ReadBack
+            },
+            setup,
+            force_dismount,
             output,
         };
     }
@@ -929,9 +988,15 @@ fn run_raw_write(
     target: u32,
     confirmation_phrase: Option<&str>,
     chunk_size: u64,
-    assume_yes: bool,
+    choices: WriteChoices,
     output: OutputFormat,
 ) {
+    let WriteChoices {
+        assume_yes,
+        verification,
+        setup,
+        force_dismount,
+    } = choices;
     let Some(confirmation_phrase) = confirmation_phrase else {
         eprintln!(
             "--write --execute needs --confirm with the phrase printed by --intent, or the drive's identity code if --intent offered it"
@@ -949,6 +1014,18 @@ fn run_raw_write(
         std::process::exit(2);
     }
 
+    let mut setup_options = setup.options;
+    if setup.copy_region {
+        match read_region_settings() {
+            Ok(region) => setup_options.region = Some(region),
+            Err(error) => {
+                eprintln!("OSflux did not write the image.");
+                eprintln!("--copy-region: {error}");
+                std::process::exit(2);
+            }
+        }
+    }
+
     let authorizations = open_authorization_store();
     let audit = open_audit_log();
     let plan = match prepare_raw_write(
@@ -956,9 +1033,13 @@ fn run_raw_write(
         target,
         confirmation_phrase,
         chunk_size,
+        &setup_options,
         &authorizations,
     ) {
-        Ok(plan) => plan,
+        Ok(plan) => RawWritePlan {
+            verification,
+            ..plan
+        },
         Err(error) => {
             record_audit_event(
                 &audit,
@@ -982,9 +1063,24 @@ fn run_raw_write(
     }
 
     let mut progress = RawWriteProgressPrinter::new(output);
-    let result = write_image_to_target(&plan, &authorizations, &audit, |event| {
-        progress.update(event)
-    });
+    let approve_forced_dismount = |error: &DeviceError| {
+        if force_dismount {
+            eprintln!("{error}.");
+            eprintln!("Forcing a dismount, as --force-dismount allows.");
+            true
+        } else if assume_yes {
+            false
+        } else {
+            ask_to_force_dismount(error)
+        }
+    };
+    let result = write_image_to_target(
+        &plan,
+        &authorizations,
+        &audit,
+        approve_forced_dismount,
+        |event| progress.update(event),
+    );
     progress.finish();
 
     match result {
@@ -1002,6 +1098,37 @@ fn run_raw_write(
         }
         Err(error) => exit_with_raw_write_error(error),
     }
+}
+
+/// Windows Setup options from the command line. The region is read from
+/// this PC only when the write runs.
+#[derive(Debug, Default)]
+struct SetupChoices {
+    options: SetupOptions,
+    copy_region: bool,
+}
+
+impl SetupChoices {
+    fn any(&self) -> bool {
+        self.copy_region || !self.options.is_empty()
+    }
+}
+
+/// How a confirmed write runs, besides what it writes and where.
+struct WriteChoices {
+    assume_yes: bool,
+    verification: Verification,
+    setup: SetupChoices,
+    /// Force a busy volume free without asking, for scripts using --yes.
+    force_dismount: bool,
+}
+
+fn parse_account_name(name: &str) -> String {
+    if let Err(reason) = validate_account_name(name) {
+        eprintln!("--local-account: {reason}");
+        std::process::exit(2);
+    }
+    name.to_string()
 }
 
 fn open_audit_log() -> AuditLog {
@@ -1082,6 +1209,15 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
                 split.parts.join(", ")
             );
         }
+        if let Some(bytes) = layout.answer_file_bytes {
+            println!(
+                "windows setup: {ANSWER_FILE_NAME} ({}) at the root of the stick, which Windows Setup reads:",
+                format_size(bytes)
+            );
+            for line in layout.setup_options.describe() {
+                println!("  - {line}");
+            }
+        }
         println!(
             "to write: {}, then the last MiB of the drive is cleared",
             format_size(layout.image_bytes)
@@ -1091,6 +1227,14 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
         ConfirmationForm::FullPhrase => println!("confirmed with: the full phrase"),
         ConfirmationForm::IdentityCode => println!(
             "confirmed with: the identity code, because the drive is empty (checked again once the drive is locked)"
+        ),
+    }
+    match plan.verification {
+        Verification::ReadBack => {
+            println!("verify: every written byte is read back and compared")
+        }
+        Verification::Skipped => println!(
+            "verify: skipped (--no-verify); the written bytes are not read back, so a faulty or fake-capacity drive would not be noticed"
         ),
     }
 }
@@ -1124,6 +1268,25 @@ fn confirm_erase_interactively(plan: &RawWritePlan, audit: &AuditLog) {
     }
 }
 
+/// Asked when a program keeps the drive open after Windows asked it to let
+/// go, the way chkdsk and format ask before forcing a dismount.
+fn ask_to_force_dismount(error: &DeviceError) -> bool {
+    eprintln!();
+    eprintln!("{error}.");
+    eprintln!(
+        "A program is keeping the drive open and did not let go when Windows asked. OSflux can force a dismount, as chkdsk and format do: programs using the drive lose access to it, and anything unsaved on it is lost. The drive is about to be erased anyway."
+    );
+    eprint!("Type yes to force a dismount and continue: ");
+    let _ = std::io::stderr().flush();
+
+    let mut answer = String::new();
+    let agreed = std::io::stdin().read_line(&mut answer).is_ok() && is_erase_confirmation(&answer);
+    if agreed {
+        eprintln!("Forcing a dismount.");
+    }
+    agreed
+}
+
 fn is_erase_confirmation(answer: &str) -> bool {
     answer.trim().eq_ignore_ascii_case("yes")
 }
@@ -1136,11 +1299,21 @@ fn print_raw_write_report(report: &RawWriteReport, audit: &AuditLog) {
         format_size(report.bytes_written),
         format_rate(report.bytes_written, report.write_millis)
     );
-    println!(
-        "verified {} in {}",
-        format_size(report.bytes_verified),
-        format_rate(report.bytes_verified, report.verify_millis)
-    );
+    match report.verification {
+        Verification::ReadBack => println!(
+            "verified {} in {}",
+            format_size(report.bytes_verified),
+            format_rate(report.bytes_verified, report.verify_millis)
+        ),
+        Verification::Skipped => {
+            println!("not verified: the written bytes were not read back (--no-verify)")
+        }
+    }
+    if report.forced_dismount {
+        println!(
+            "forced dismount: a program had the drive open; its dismount was forced with your approval"
+        );
+    }
     println!("audit log: {}", audit.path().display());
     println!("The drive can be removed.");
 }
@@ -1171,8 +1344,16 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
     eprintln!("OSflux did not write the image.");
     eprintln!("{error}");
     match error {
+        RawWriteError::Open(DeviceError::InUse { .. }) => {
+            eprintln!(
+                "Nothing was written. Close any File Explorer windows, programs or terminals that show or use the drive, wait a few seconds, then run --intent again: the confirmation is used up as soon as a write starts."
+            );
+            eprintln!(
+                "If a program will not let go, OSflux can force a dismount: answer yes when it asks, or add --force-dismount when using --yes."
+            )
+        }
         RawWriteError::Open(_) => eprintln!(
-            "Run PowerShell as Administrator, and close any programs or windows using the drive."
+            "Nothing was written. Make sure PowerShell runs as Administrator and no program or window is using the drive, then run --intent again: the confirmation is used up as soon as a write starts."
         ),
         RawWriteError::TargetBlocked { .. } => eprintln!(
             "Drive numbers can change when drives are unplugged or plugged in. Run --list-devices to see which drive has which number, then run --intent for the right one."
@@ -1835,10 +2016,33 @@ fn print_help() {
     println!("  --session         Prepare a locked dry-run write session.");
     println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
     println!(
-        "  --execute         With --write: erase the target and write the image, then verify it. Raw images and hybrid ISOs are copied byte for byte; UDF ISOs such as Windows installers have their files copied onto a new FAT32 partition that starts in UEFI mode."
+        "  --execute         With --write: erase the target and write the image, then read it back and compare (unless --no-verify). Raw images and hybrid ISOs are copied byte for byte; UDF ISOs such as Windows installers have their files copied onto a new FAT32 partition that starts in UEFI mode."
     );
     println!(
         "  --yes             With --write --execute: skip the final prompt, for scripts and automation."
+    );
+    println!(
+        "  --no-verify       With --write --execute: skip reading the drive back after writing. Quicker, but a faulty or fake-capacity drive is not noticed. Recorded in the audit log."
+    );
+    println!(
+        "  --force-dismount  With --write --execute: when a program keeps the drive open after Windows asks it to let go, force a dismount without asking, as chkdsk and format do. Without it, OSflux asks first, or with --yes stops. Recorded in the audit log."
+    );
+    println!();
+    println!("Windows Setup options, with --write --execute and a Windows installer ISO. Each adds a setting to an answer file (autounattend.xml) at the root of the stick, which Windows Setup reads on any PC started from it. All are off unless given:");
+    println!(
+        "  --bypass-requirements     Skip Setup's TPM 2.0, Secure Boot and 4 GB memory checks. Microsoft does not support Windows 11 on PCs that fail them."
+    );
+    println!(
+        "  --local-account <NAME>    Create this local account instead of asking for a Microsoft account. No password is written: the account starts with a blank one, signs in once by itself to finish setup, and Windows asks for a new password at the next sign-in."
+    );
+    println!(
+        "  --skip-privacy-questions  Answer the privacy questions with the choices that send the least data to Microsoft."
+    );
+    println!(
+        "  --no-auto-bitlocker       Stop Windows from turning on BitLocker device encryption by itself. BitLocker can still be turned on later."
+    );
+    println!(
+        "  --copy-region             Use this PC's formats, system locale and keyboard instead of asking for them."
     );
     println!("  --intent          Create a read-only write intent and confirmation phrase.");
     println!("  --preflight       Combine image and target checks without writing.");

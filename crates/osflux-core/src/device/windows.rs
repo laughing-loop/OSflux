@@ -27,6 +27,8 @@ const DEFAULT_SCAN_LIMIT: u32 = 32;
 const VOLUME_LOCK_ATTEMPTS: u32 = 20;
 const VOLUME_LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
 const FORCED_DISMOUNT_ROUNDS: u32 = 5;
+const REMOUNT_ATTEMPTS: u32 = 20;
+const REMOUNT_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_VOLUME_NAME_CHARS: usize = 260;
 const MAX_VOLUME_EXTENTS: usize = 32;
 const DISK_EXTENTS_HEADER_SIZE: usize = 8;
@@ -429,43 +431,80 @@ fn open_volume(device_path: &str) -> DeviceResult<LockedVolume> {
 }
 
 /// For a program that keeps the volume open after Windows asked it to let
-/// go. Dismounting without the lock is documented to make every handle to
-/// the volume invalid, the one that asked included; the volume mounts again,
-/// with no other program attached, when it is next opened. So it is opened
-/// again straight away and that new handle takes the lock before anything
-/// else can open it. A program that reopens it at once can win that race,
-/// so it is tried a few times.
-fn force_dismount_and_lock(
-    mut volume: LockedVolume,
-    device_path: &str,
-) -> DeviceResult<LockedVolume> {
-    let mut last_error = None;
+/// go. Dismounting without the lock is documented to make every other
+/// handle to the volume invalid. Each round first takes the lock with the
+/// handle that dismounted the volume, as `chkdsk /X` does. If that fails,
+/// the handle is closed and the volume opened again, which mounts it with
+/// no other program attached, and the new handle takes the lock straight
+/// away. A program that reopens the volume at once can win that race, so
+/// it is tried a few times.
+fn force_dismount_and_lock(volume: LockedVolume, device_path: &str) -> DeviceResult<LockedVolume> {
+    let mut current = Some(volume);
+    let mut last_error = String::new();
     for _ in 0..FORCED_DISMOUNT_ROUNDS {
+        let volume = match current.take() {
+            Some(volume) => volume,
+            None => open_volume_when_ready(device_path)?,
+        };
         // A volume that is already dismounted answers "not ready", which is
         // the state wanted here.
         if let Err(error) = volume_control(volume.handle, FSCTL_DISMOUNT_VOLUME) {
-            if error.code() != ERROR_NOT_READY.to_hresult() {
+            if !is_not_ready(&error) {
                 return Err(volume_lock_error(
                     device_path,
                     format!("could not force a dismount: {error}"),
                 ));
             }
         }
-        volume = open_volume(device_path)?;
-        match volume_control(volume.handle, FSCTL_LOCK_VOLUME) {
-            Ok(()) => return Ok(volume),
-            Err(error) => last_error = Some(error),
+        if volume_control(volume.handle, FSCTL_LOCK_VOLUME).is_ok() {
+            return Ok(volume);
+        }
+
+        drop(volume);
+        let fresh = open_volume_when_ready(device_path)?;
+        match volume_control(fresh.handle, FSCTL_LOCK_VOLUME) {
+            Ok(()) => return Ok(fresh),
+            Err(error) => {
+                last_error = error.to_string();
+                current = Some(fresh);
+            }
         }
     }
     Err(DeviceError::InUse {
         volume: device_path.to_string(),
         message: format!(
-            "still in use after {FORCED_DISMOUNT_ROUNDS} forced dismounts: {}",
-            last_error
-                .map(|error| error.to_string())
-                .unwrap_or_default()
+            "still in use after {FORCED_DISMOUNT_ROUNDS} forced dismounts: {last_error}"
         ),
     })
+}
+
+/// Opens the volume after a forced dismount. It can answer "not ready" for
+/// a moment while it mounts again, so that is retried briefly.
+fn open_volume_when_ready(device_path: &str) -> DeviceResult<LockedVolume> {
+    let mut attempts = 1;
+    loop {
+        match open_handle(
+            device_path,
+            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+            FILE_ATTRIBUTE_NORMAL,
+        ) {
+            Ok(handle) => return Ok(LockedVolume { handle }),
+            Err(error) if is_not_ready(&error) && attempts < REMOUNT_ATTEMPTS => {
+                attempts += 1;
+                std::thread::sleep(REMOUNT_RETRY_DELAY);
+            }
+            Err(error) => {
+                return Err(volume_lock_error(
+                    device_path,
+                    format!("could not open it again after the forced dismount: {error}"),
+                ))
+            }
+        }
+    }
+}
+
+fn is_not_ready(error: &windows::core::Error) -> bool {
+    error.code() == ERROR_NOT_READY.to_hresult()
 }
 
 fn volume_control(handle: HANDLE, control_code: u32) -> windows::core::Result<()> {

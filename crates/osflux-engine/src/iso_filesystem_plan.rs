@@ -594,6 +594,7 @@ mod tests {
             }),
             write_mode: WriteMode::FileSystem,
             write_strategy: ImageWriteStrategy::IsoFileSystemBootSetup,
+            iso_files: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

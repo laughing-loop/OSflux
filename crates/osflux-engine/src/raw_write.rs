@@ -1,6 +1,6 @@
 use std::fmt;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
 use crate::clock::now_unix_seconds;
 use crate::drive_contents::inspect_drive_contents;
+use crate::file_copy::{lay_out_uefi_fat32, prepare_copy, FileCopyError, UefiFat32Layout};
+use crate::image_io::ImageRead;
 use crate::json::string_json;
 use crate::target::{
     assess_target, TargetAssessment, TargetAssessmentError, TargetAssessmentStatus,
@@ -27,6 +29,19 @@ use crate::write_mode_selection::{
 /// 4096 bytes covers both 512-byte and 4K-sector drives.
 pub const RAW_WRITE_ALIGNMENT_BYTES: u64 = 4096;
 pub const MAX_RAW_WRITE_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
+/// How much of the end of the drive is cleared when files are copied, so an
+/// old backup GPT there cannot be mistaken for the drive's partition table.
+const TRAILING_WIPE_BYTES: u64 = 1024 * 1024;
+
+/// How the image becomes the drive's contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteLayout {
+    /// The image is copied byte for byte: raw disk images and hybrid ISOs.
+    Raw,
+    /// The ISO's files are copied onto a new MBR drive with one FAT32
+    /// partition that starts in UEFI mode, as Windows installers need.
+    UefiFat32(UefiFat32Layout),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawWritePlan {
@@ -43,6 +58,7 @@ pub struct RawWritePlan {
     /// checked again once it is locked, and the write stops if it is no
     /// longer empty.
     pub confirmation_form: ConfirmationForm,
+    pub layout: WriteLayout,
     /// When the one-time confirmation for this write expires; zero until
     /// `prepare_raw_write` has checked it.
     pub authorization_expires_at_unix_seconds: u64,
@@ -50,6 +66,8 @@ pub struct RawWritePlan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawWritePhase {
+    /// Reading the ISO to report its SHA-256, before copying its files.
+    Hashing,
     Writing,
     Verifying,
 }
@@ -57,6 +75,7 @@ pub enum RawWritePhase {
 impl RawWritePhase {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Hashing => "hashing",
             Self::Writing => "writing",
             Self::Verifying => "verifying",
         }
@@ -76,7 +95,8 @@ pub struct RawWriteReport {
     pub image_path: String,
     pub target_path: String,
     pub target_identity_code: String,
-    /// SHA-256 of the image as it was read for writing, in lowercase hex.
+    /// SHA-256 of the image file, in lowercase hex: the bytes written for a
+    /// raw copy, the ISO itself when its files were copied.
     pub image_sha256: String,
     pub bytes_written: u64,
     pub bytes_verified: u64,
@@ -273,12 +293,25 @@ pub fn prepare_raw_write(
     // A second, fresh look at the drive just before it is opened.
     let target = assess_target(target_index).map_err(RawWriteError::Target)?;
 
+    let session_id = selection.session_id.clone();
+    let target_path = target.path.clone();
     let plan = build_raw_write_plan(
         image_path,
         &selection,
         &target,
         supplied_confirmation_phrase,
         chunk_size_bytes,
+        |drive_bytes| {
+            let sector_bytes = read_sector_size(&target_path)?;
+            lay_out_uefi_fat32(
+                image_path,
+                drive_bytes,
+                sector_bytes,
+                &session_id,
+                now_unix_seconds(),
+            )
+            .map_err(|error| file_copy_error(image_path, error))
+        },
     )?;
 
     // The phrase alone stays valid for as long as the same drive sits at the
@@ -313,12 +346,18 @@ pub fn prepare_raw_write(
     })
 }
 
+/// Checks the target, the confirmation and the selected mode, then plans
+/// the write. For an ISO whose files are copied, `lay_out_files` plans the
+/// FAT32 drive for a drive of the given size; it only runs once every other
+/// check has passed, so a blocked drive or a mistyped phrase is reported as
+/// itself.
 pub fn build_raw_write_plan(
     image_path: &Path,
     selection: &WriteModeSelection,
     target: &TargetAssessment,
     supplied_confirmation_phrase: &str,
     chunk_size_bytes: u64,
+    lay_out_files: impl FnOnce(u64) -> Result<UefiFat32Layout, RawWriteError>,
 ) -> Result<RawWritePlan, RawWriteError> {
     validate_chunk_size(chunk_size_bytes)?;
 
@@ -386,24 +425,30 @@ pub fn build_raw_write_plan(
         });
     }
 
-    if selection.selected_mode != Some(SelectedWriteMode::RawBlockWrite) {
-        return Err(RawWriteError::Blocked {
-            reason: "only raw disk images and hybrid ISOs can be written so far; this ISO needs its files extracted, which is not supported yet"
-                .to_string(),
-        });
-    }
-
     let Some(target_size_bytes) = target.size_bytes else {
         return Err(RawWriteError::Blocked {
             reason: "target size is unknown".to_string(),
         });
     };
 
-    if selection.planned_bytes > target_size_bytes {
-        return Err(RawWriteError::Blocked {
-            reason: "image is larger than the target device".to_string(),
-        });
-    }
+    let layout = match selection.selected_mode {
+        Some(SelectedWriteMode::RawBlockWrite) => {
+            if selection.planned_bytes > target_size_bytes {
+                return Err(RawWriteError::Blocked {
+                    reason: "image is larger than the target device".to_string(),
+                });
+            }
+            WriteLayout::Raw
+        }
+        Some(SelectedWriteMode::IsoFilesystemBootSetup) => {
+            WriteLayout::UefiFat32(lay_out_files(target_size_bytes)?)
+        }
+        None => {
+            return Err(RawWriteError::Blocked {
+                reason: "no write mode was selected for this image".to_string(),
+            })
+        }
+    };
 
     Ok(RawWritePlan {
         session_id: selection.session_id.clone(),
@@ -416,8 +461,32 @@ pub fn build_raw_write_plan(
         target_identity_code: identity_code,
         chunk_size_bytes,
         confirmation_form,
+        layout,
         authorization_expires_at_unix_seconds: 0,
     })
+}
+
+/// The drive's sector size, which the FAT32 layout depends on. Read through
+/// a read-only handle, so nothing is locked yet.
+fn read_sector_size(target_path: &str) -> Result<u32, RawWriteError> {
+    use osflux_core::device::{open_read_only, DeviceRead};
+    open_read_only(target_path)
+        .and_then(|drive| drive.sector_size_bytes())
+        .map_err(|error| RawWriteError::Blocked {
+            reason: format!("could not read the drive's sector size: {error}"),
+        })
+}
+
+fn file_copy_error(image_path: &Path, error: FileCopyError) -> RawWriteError {
+    match error {
+        FileCopyError::Image(source) => RawWriteError::Image {
+            path: image_path.to_path_buf(),
+            source,
+        },
+        other => RawWriteError::Blocked {
+            reason: other.to_string(),
+        },
+    }
 }
 
 /// Records the start in the audit log, uses up the confirmation, opens the
@@ -436,6 +505,23 @@ pub fn write_image_to_target(
         ConfirmationForm::FullPhrase => "confirmed with the full phrase",
         ConfirmationForm::IdentityCode => {
             "confirmed with the drive's identity code, because the drive was empty"
+        }
+    };
+    let confirmed_with = match &plan.layout {
+        WriteLayout::Raw => format!("{confirmed_with}; image copied byte for byte"),
+        WriteLayout::UefiFat32(layout) => {
+            let mut detail = format!(
+                "{confirmed_with}; {} files copied onto a new FAT32 partition labelled {}",
+                layout.file_count, layout.label
+            );
+            for split in &layout.split_files {
+                detail.push_str(&format!(
+                    "; {} split into {} parts",
+                    split.path,
+                    split.parts.len()
+                ));
+            }
+            detail
         }
     };
     audit
@@ -481,8 +567,8 @@ fn consume_and_write(
     execute_raw_write(plan, &device, on_progress)
 }
 
-/// Writes the image to `device` chunk by chunk, flushes, then reads every
-/// byte back and compares it with the image.
+/// Writes the planned bytes to `device` chunk by chunk, flushes, then reads
+/// every byte back and compares it with the same bytes generated again.
 pub fn execute_raw_write<D: BlockDevice>(
     plan: &RawWritePlan,
     device: &D,
@@ -518,7 +604,7 @@ pub fn execute_raw_write<D: BlockDevice>(
         path: plan.image_path.clone(),
         source,
     };
-    let mut image = File::open(&plan.image_path).map_err(image_error)?;
+    let image = File::open(&plan.image_path).map_err(image_error)?;
     let image_size = image.metadata().map_err(image_error)?.len();
     if image_size != plan.image_size_bytes {
         return Err(RawWriteError::ImageChanged {
@@ -527,71 +613,68 @@ pub fn execute_raw_write<D: BlockDevice>(
         });
     }
 
-    let chunk_size = plan.chunk_size_bytes as usize;
-    let mut image_buffer = vec![0u8; chunk_size];
-
-    let write_started = Instant::now();
-    // Hashed while writing so the report names exactly what went onto the
-    // drive, without a second pass over the image.
-    let mut image_hash = Sha256::new();
-    let mut offset = 0u64;
-    report(&mut on_progress, RawWritePhase::Writing, 0, image_size);
-    while offset < image_size {
-        let length = chunk_length(chunk_size, offset, image_size);
-        image
-            .read_exact(&mut image_buffer[..length])
-            .map_err(image_error)?;
-        image_hash.update(&image_buffer[..length]);
-        let padded = padded_length(length, offset, device_size);
-        image_buffer[length..padded].fill(0);
-
-        device
-            .write_at(offset, &image_buffer[..padded])
-            .map_err(RawWriteError::Device)?;
-
-        offset += length as u64;
-        report(&mut on_progress, RawWritePhase::Writing, offset, image_size);
-    }
-    device.flush().map_err(RawWriteError::Device)?;
-    let write_millis = write_started.elapsed().as_millis() as u64;
-    let image_sha256 = image_hash
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-
-    let verify_started = Instant::now();
-    let mut device_buffer = vec![0u8; chunk_size];
-    image.seek(SeekFrom::Start(0)).map_err(image_error)?;
-    offset = 0;
-    report(&mut on_progress, RawWritePhase::Verifying, 0, image_size);
-    while offset < image_size {
-        let length = chunk_length(chunk_size, offset, image_size);
-        image
-            .read_exact(&mut image_buffer[..length])
-            .map_err(image_error)?;
-        let padded = padded_length(length, offset, device_size);
-
-        device
-            .read_at(offset, &mut device_buffer[..padded])
-            .map_err(RawWriteError::Device)?;
-
-        if let Some(position) = first_difference(&image_buffer[..length], &device_buffer[..length])
-        {
-            return Err(RawWriteError::VerifyMismatch {
-                offset: offset + position as u64,
-            });
+    let stream = WriteStream {
+        device,
+        device_size,
+        chunk_size: plan.chunk_size_bytes as usize,
+    };
+    let (image_sha256, written) = match &plan.layout {
+        WriteLayout::Raw => {
+            // Hashed while writing so the report names exactly what went
+            // onto the drive, without a second pass over the image.
+            let mut image_hash = Sha256::new();
+            let written = stream.write_and_verify(
+                &[(0, image_size)],
+                |offset, buffer| image.read_image_at(offset, buffer).map_err(image_error),
+                |bytes| image_hash.update(bytes),
+                &mut on_progress,
+            )?;
+            (hex(&image_hash.finalize()), written)
         }
+        WriteLayout::UefiFat32(layout) => {
+            let sector_bytes = device
+                .logical_sector_size()
+                .map_err(RawWriteError::Device)?;
+            if sector_bytes != layout.sector_bytes {
+                return Err(RawWriteError::TargetChanged {
+                    reason: format!(
+                        "the opened drive uses {sector_bytes}-byte sectors but the plan was made for {}-byte sectors",
+                        layout.sector_bytes
+                    ),
+                });
+            }
 
-        offset += length as u64;
-        report(
-            &mut on_progress,
-            RawWritePhase::Verifying,
-            offset,
-            image_size,
-        );
-    }
-    let verify_millis = verify_started.elapsed().as_millis() as u64;
+            let image_sha256 = hash_image(&image, image_size, stream.chunk_size, &mut on_progress)
+                .map_err(image_error)?;
+            let copy = prepare_copy(&plan.image_path, device_size, layout)
+                .map_err(|error| file_copy_error(&plan.image_path, error))?;
+            let image_bytes = copy.image.image_len();
+            if image_bytes != layout.image_bytes {
+                return Err(RawWriteError::ImageChanged {
+                    expected_bytes: layout.image_bytes,
+                    actual_bytes: image_bytes,
+                });
+            }
+
+            let mut regions = vec![(0, image_bytes)];
+            regions.extend(trailing_wipe(image_bytes, device_size));
+            let written = stream.write_and_verify(
+                &regions,
+                |offset, buffer| {
+                    // The wipe region lies past the image and is all zeros.
+                    if offset >= image_bytes {
+                        buffer.fill(0);
+                        Ok(())
+                    } else {
+                        copy.read_at(offset, buffer).map_err(image_error)
+                    }
+                },
+                |_| {},
+                &mut on_progress,
+            )?;
+            (image_sha256, written)
+        }
+    };
 
     Ok(RawWriteReport {
         session_id: plan.session_id.clone(),
@@ -599,12 +682,134 @@ pub fn execute_raw_write<D: BlockDevice>(
         target_path: plan.target_path.clone(),
         target_identity_code: plan.target_identity_code.clone(),
         image_sha256,
-        bytes_written: image_size,
-        bytes_verified: image_size,
-        write_millis,
-        verify_millis,
+        bytes_written: written.bytes,
+        bytes_verified: written.bytes,
+        write_millis: written.write_millis,
+        verify_millis: written.verify_millis,
         audit_recorded: false,
     })
+}
+
+/// The part at the end of the drive that is cleared after copying files:
+/// the last MiB, or less when the image itself reaches into it.
+fn trailing_wipe(image_bytes: u64, device_size: u64) -> Option<(u64, u64)> {
+    let image_end = image_bytes.div_ceil(RAW_WRITE_ALIGNMENT_BYTES) * RAW_WRITE_ALIGNMENT_BYTES;
+    let tail = device_size.saturating_sub(TRAILING_WIPE_BYTES) / RAW_WRITE_ALIGNMENT_BYTES
+        * RAW_WRITE_ALIGNMENT_BYTES;
+    let start = image_end.max(tail);
+    (start < device_size).then_some((start, device_size - start))
+}
+
+/// Reads the whole image once to report its SHA-256.
+fn hash_image(
+    image: &File,
+    image_size: u64,
+    chunk_size: usize,
+    on_progress: &mut impl FnMut(RawWriteProgress),
+) -> std::io::Result<String> {
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; chunk_size];
+    let mut reader = image;
+    let mut offset = 0u64;
+    report(on_progress, RawWritePhase::Hashing, 0, image_size);
+    while offset < image_size {
+        let length = chunk_length(chunk_size, offset, image_size);
+        reader.read_exact(&mut buffer[..length])?;
+        hash.update(&buffer[..length]);
+        offset += length as u64;
+        report(on_progress, RawWritePhase::Hashing, offset, image_size);
+    }
+    Ok(hex(&hash.finalize()))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+struct Written {
+    bytes: u64,
+    write_millis: u64,
+    verify_millis: u64,
+}
+
+/// Writes regions of a drive from bytes that can be generated more than
+/// once, then reads them back and compares.
+struct WriteStream<'a, D: BlockDevice> {
+    device: &'a D,
+    device_size: u64,
+    chunk_size: usize,
+}
+
+impl<D: BlockDevice> WriteStream<'_, D> {
+    /// `regions` are `(start, length)` pairs in drive order; `fill` produces
+    /// the bytes for any piece of them; `on_written` sees each piece as it is
+    /// written.
+    fn write_and_verify(
+        &self,
+        regions: &[(u64, u64)],
+        mut fill: impl FnMut(u64, &mut [u8]) -> Result<(), RawWriteError>,
+        mut on_written: impl FnMut(&[u8]),
+        on_progress: &mut impl FnMut(RawWriteProgress),
+    ) -> Result<Written, RawWriteError> {
+        let total: u64 = regions.iter().map(|(_, length)| length).sum();
+        let mut buffer = vec![0u8; self.chunk_size];
+
+        let write_started = Instant::now();
+        let mut done = 0u64;
+        report(on_progress, RawWritePhase::Writing, 0, total);
+        for &(start, length) in regions {
+            let end = start + length;
+            let mut offset = start;
+            while offset < end {
+                let piece = chunk_length(self.chunk_size, offset, end);
+                fill(offset, &mut buffer[..piece])?;
+                on_written(&buffer[..piece]);
+                let padded = padded_length(piece, offset, self.device_size);
+                buffer[piece..padded].fill(0);
+                self.device
+                    .write_at(offset, &buffer[..padded])
+                    .map_err(RawWriteError::Device)?;
+                offset += piece as u64;
+                done += piece as u64;
+                report(on_progress, RawWritePhase::Writing, done, total);
+            }
+        }
+        self.device.flush().map_err(RawWriteError::Device)?;
+        let write_millis = write_started.elapsed().as_millis() as u64;
+
+        let verify_started = Instant::now();
+        let mut device_buffer = vec![0u8; self.chunk_size];
+        done = 0;
+        report(on_progress, RawWritePhase::Verifying, 0, total);
+        for &(start, length) in regions {
+            let end = start + length;
+            let mut offset = start;
+            while offset < end {
+                let piece = chunk_length(self.chunk_size, offset, end);
+                fill(offset, &mut buffer[..piece])?;
+                let padded = padded_length(piece, offset, self.device_size);
+                self.device
+                    .read_at(offset, &mut device_buffer[..padded])
+                    .map_err(RawWriteError::Device)?;
+                if let Some(position) = first_difference(&buffer[..piece], &device_buffer[..piece])
+                {
+                    return Err(RawWriteError::VerifyMismatch {
+                        offset: offset + position as u64,
+                    });
+                }
+                offset += piece as u64;
+                done += piece as u64;
+                report(on_progress, RawWritePhase::Verifying, done, total);
+            }
+        }
+        let verify_millis = verify_started.elapsed().as_millis() as u64;
+
+        Ok(Written {
+            bytes: total,
+            write_millis,
+            verify_millis,
+        })
+    }
 }
 
 fn validate_chunk_size(chunk_size_bytes: u64) -> Result<(), RawWriteError> {
@@ -618,8 +823,8 @@ fn validate_chunk_size(chunk_size_bytes: u64) -> Result<(), RawWriteError> {
     Ok(())
 }
 
-fn chunk_length(chunk_size: usize, offset: u64, image_size: u64) -> usize {
-    (chunk_size as u64).min(image_size - offset) as usize
+fn chunk_length(chunk_size: usize, offset: u64, end: u64) -> usize {
+    (chunk_size as u64).min(end - offset) as usize
 }
 
 /// The final chunk of an image is usually not a whole number of sectors, so
@@ -653,11 +858,13 @@ fn report(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_raw_write_plan, execute_raw_write, write_image_to_target, RawWriteError,
-        RawWritePhase, RawWritePlan, RawWriteProgress, RAW_WRITE_ALIGNMENT_BYTES,
+        build_raw_write_plan, execute_raw_write, trailing_wipe, write_image_to_target,
+        RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, WriteLayout,
+        RAW_WRITE_ALIGNMENT_BYTES,
     };
     use crate::audit::AuditLog;
     use crate::clock::now_unix_seconds;
+    use crate::file_copy::UefiFat32Layout;
     use crate::image_plan::{ImagePlanStatus, ImageWriteStrategy};
     use crate::target::{TargetAssessment, TargetAssessmentStatus};
     use crate::write_authorization::{AuthorizationStore, ImageIdentity, WriteAuthorization};
@@ -839,6 +1046,7 @@ mod tests {
             &empty,
             " 7f3a ",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap();
 
@@ -861,6 +1069,7 @@ mod tests {
             &with_data,
             "7F3A",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
 
@@ -889,6 +1098,7 @@ mod tests {
             &empty,
             "OSFLUX ERASE TARGET 2 7F3A",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap();
 
@@ -1091,6 +1301,7 @@ mod tests {
             &target(Some("7F3A")),
             "OSFLUX ERASE TARGET 2 7F3A",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap();
 
@@ -1100,18 +1311,202 @@ mod tests {
         assert_eq!(plan.target_size_bytes, 16 * MIB);
     }
 
+    /// For raw images the file copy step must never run.
+    fn no_file_copy(_: u64) -> Result<UefiFat32Layout, RawWriteError> {
+        panic!("the file copy step ran for a write that does not copy files")
+    }
+
+    fn sample_layout() -> UefiFat32Layout {
+        UefiFat32Layout {
+            label: "CCCOMA_X64F".to_string(),
+            file_count: 3,
+            file_bytes: 10,
+            largest_file: Some(("setup.exe".to_string(), 8)),
+            split_files: Vec::new(),
+            image_bytes: 4 * MIB,
+            sector_bytes: 512,
+            cluster_bytes: 4096,
+            volume_id: 1,
+            disk_signature: 3,
+            created_unix_seconds: 0,
+        }
+    }
+
     #[test]
-    fn refuses_iso_images_for_now() {
-        let error = build_raw_write_plan(
-            Path::new("disk.iso"),
+    fn plans_a_file_copy_for_an_iso_that_needs_one() {
+        let mut asked_for = None;
+
+        let plan = build_raw_write_plan(
+            Path::new("windows.iso"),
             &selection(Some(SelectedWriteMode::IsoFilesystemBootSetup)),
             &target(Some("7F3A")),
             "OSFLUX ERASE TARGET 2 7F3A",
             4 * MIB,
+            |drive_bytes| {
+                asked_for = Some(drive_bytes);
+                Ok(sample_layout())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(asked_for, Some(16 * MIB));
+        assert_eq!(plan.layout, WriteLayout::UefiFat32(sample_layout()));
+    }
+
+    #[test]
+    fn reports_a_file_copy_problem_only_after_the_other_checks() {
+        let mut blocked = target(Some("7F3A"));
+        blocked.status = TargetAssessmentStatus::Blocked;
+        blocked.reason = "target contains the system volume".to_string();
+
+        let error = build_raw_write_plan(
+            Path::new("windows.iso"),
+            &selection(Some(SelectedWriteMode::IsoFilesystemBootSetup)),
+            &blocked,
+            "OSFLUX ERASE TARGET 2 7F3A",
+            4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
+        assert!(
+            matches!(error, RawWriteError::TargetBlocked { .. }),
+            "{error}"
+        );
 
-        assert!(matches!(error, RawWriteError::Blocked { .. }));
+        let error = build_raw_write_plan(
+            Path::new("windows.iso"),
+            &selection(Some(SelectedWriteMode::IsoFilesystemBootSetup)),
+            &target(Some("7F3A")),
+            "OSFLUX ERASE TARGET 2 7F3A",
+            4 * MIB,
+            |_| {
+                Err(RawWriteError::Blocked {
+                    reason: "sources/install.wim is 5.00 GiB".to_string(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("install.wim"), "{error}");
+    }
+
+    #[test]
+    fn copies_an_isos_files_onto_a_uefi_fat32_drive_and_verifies_them() {
+        use crate::drive_contents::{inspect_drive_contents, FilesystemKind};
+        use sha2::{Digest, Sha256};
+
+        let iso = crate::file_copy::tests::windows_like_iso();
+        let drive_bytes = 64 * MIB;
+        let layout = crate::file_copy::lay_out_uefi_fat32(
+            &iso,
+            drive_bytes,
+            512,
+            "OSFLUX-SESSION-TEST",
+            1_795_022_016,
+        )
+        .unwrap();
+        let iso_bytes = fs::read(&iso).unwrap();
+        let mut copy_plan = plan(&iso, iso_bytes.len() as u64, drive_bytes);
+        copy_plan.layout = WriteLayout::UefiFat32(layout.clone());
+        // Starts filled with 0xEE, so untouched bytes stand out.
+        let drive = MemoryDrive::new(drive_bytes);
+        let mut phases = Vec::new();
+
+        let report = execute_raw_write(&copy_plan, &drive, |event| {
+            if phases.last() != Some(&event.phase) {
+                phases.push(event.phase);
+            }
+        })
+        .unwrap();
+        let _ = fs::remove_file(&iso);
+
+        let expected_hash: String = Sha256::digest(&iso_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(report.image_sha256, expected_hash);
+        assert_eq!(report.bytes_written, layout.image_bytes + MIB);
+        assert_eq!(
+            phases,
+            [
+                RawWritePhase::Hashing,
+                RawWritePhase::Writing,
+                RawWritePhase::Verifying
+            ]
+        );
+
+        let contents = inspect_drive_contents(&drive);
+        assert_eq!(contents.partitions.len(), 1);
+        assert_eq!(
+            contents.partitions[0].filesystem,
+            Some(FilesystemKind::Fat32)
+        );
+        assert_eq!(contents.partitions[0].label.as_deref(), Some("CCCOMA_X64F"));
+        assert!(
+            contents.reason.contains("autorun.inf"),
+            "{}",
+            contents.reason
+        );
+
+        let data = drive.data.borrow();
+        let last_mib = (drive_bytes - MIB) as usize;
+        assert!(
+            data[last_mib..].iter().all(|&byte| byte == 0),
+            "last MiB cleared"
+        );
+        let free_space = layout.image_bytes.div_ceil(4096) as usize * 4096 + 4096;
+        assert!(free_space < last_mib);
+        assert_eq!(data[free_space], 0xEE, "free space is not written");
+    }
+
+    #[test]
+    fn refuses_a_file_copy_when_the_drive_reports_other_sectors() {
+        let iso = crate::file_copy::tests::windows_like_iso();
+        let mut layout = crate::file_copy::lay_out_uefi_fat32(&iso, 64 * MIB, 512, "S", 0).unwrap();
+        layout.sector_bytes = 4096;
+        let size = fs::metadata(&iso).unwrap().len();
+        let mut copy_plan = plan(&iso, size, 64 * MIB);
+        copy_plan.layout = WriteLayout::UefiFat32(layout);
+        let drive = MemoryDrive::new(64 * MIB);
+
+        let error = execute_raw_write(&copy_plan, &drive, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&iso);
+
+        assert!(
+            matches!(error, RawWriteError::TargetChanged { .. }),
+            "{error}"
+        );
+        assert!(drive.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn refuses_a_file_copy_that_no_longer_matches_its_plan() {
+        let iso = crate::file_copy::tests::windows_like_iso();
+        let mut layout = crate::file_copy::lay_out_uefi_fat32(&iso, 64 * MIB, 512, "S", 0).unwrap();
+        layout.image_bytes += 4096;
+        let size = fs::metadata(&iso).unwrap().len();
+        let mut copy_plan = plan(&iso, size, 64 * MIB);
+        copy_plan.layout = WriteLayout::UefiFat32(layout);
+        let drive = MemoryDrive::new(64 * MIB);
+
+        let error = execute_raw_write(&copy_plan, &drive, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&iso);
+
+        assert!(
+            matches!(error, RawWriteError::ImageChanged { .. }),
+            "{error}"
+        );
+        assert!(drive.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn clears_the_last_mib_after_the_image_without_overlapping_it() {
+        assert_eq!(trailing_wipe(4 * MIB, 64 * MIB), Some((63 * MIB, MIB)));
+        // An image reaching into the last MiB: only what follows it.
+        assert_eq!(
+            trailing_wipe(63 * MIB + 5000, 64 * MIB),
+            Some((63 * MIB + 8192, MIB - 8192))
+        );
+        assert_eq!(trailing_wipe(64 * MIB, 64 * MIB), None);
     }
 
     #[test]
@@ -1122,6 +1517,7 @@ mod tests {
             &target(Some("0B21")),
             "OSFLUX ERASE TARGET 2 7F3A",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
 
@@ -1145,6 +1541,7 @@ mod tests {
             &target(Some("2E85")),
             "OSFLUX ERASE TARGET 2 XXXX",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
 
@@ -1168,6 +1565,7 @@ mod tests {
             &external_disk,
             "OSFLUX ERASE TARGET 2 XXXX",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
 
@@ -1195,6 +1593,7 @@ mod tests {
             &metadata_only,
             "OSFLUX ERASE TARGET 2 7F3A",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
 
@@ -1217,6 +1616,7 @@ mod tests {
             &target(Some("7F3A")),
             "OSFLUX ERASE TARGET 2 7F3A",
             4 * MIB,
+            no_file_copy,
         )
         .unwrap_err();
 
@@ -1235,6 +1635,7 @@ mod tests {
                 &target(Some("7F3A")),
                 "OSFLUX ERASE TARGET 2 7F3A",
                 chunk_size,
+                no_file_copy,
             )
             .unwrap_err();
 
@@ -1254,6 +1655,7 @@ mod tests {
             target_identity_code: "7F3A".to_string(),
             chunk_size_bytes: 4 * MIB,
             confirmation_form: ConfirmationForm::FullPhrase,
+            layout: WriteLayout::Raw,
             authorization_expires_at_unix_seconds: 0,
         }
     }

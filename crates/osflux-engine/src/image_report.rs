@@ -102,6 +102,64 @@ pub fn build_image_plan_report(plan: &ImagePlan) -> PlanReport {
             .field("write strategy", plan.write_strategy.as_str()),
     );
 
+    match &plan.iso_files {
+        Some(Ok(summary)) => {
+            let largest = summary
+                .largest_file
+                .as_ref()
+                .map(|(path, size)| format!("{path} ({})", format_size(*size)))
+                .unwrap_or_else(|| "none".to_string());
+            let fits = if !summary.cannot_copy.is_empty() {
+                format!("no: {}", summary.cannot_copy.join("; "))
+            } else if summary.split_files.is_empty() {
+                "yes".to_string()
+            } else {
+                let splits = summary
+                    .split_files
+                    .iter()
+                    .map(|split| {
+                        format!(
+                            "{} ({}) into {} parts",
+                            split.path,
+                            format_size(split.size_bytes),
+                            split.parts.len()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("yes, after splitting {splits}")
+            };
+            sections.push(
+                PlanReportSection::new("files")
+                    .field("filesystem", "UDF")
+                    .field("label", summary.label.clone())
+                    .field(
+                        "files",
+                        format!(
+                            "{} ({})",
+                            summary.file_count,
+                            format_size(summary.file_bytes)
+                        ),
+                    )
+                    .field("largest file", largest)
+                    .field(
+                        "uefi loader",
+                        summary
+                            .uefi_loader
+                            .clone()
+                            .unwrap_or_else(|| "missing".to_string()),
+                    )
+                    .field("fits FAT32", fits),
+            );
+        }
+        Some(Err(reason)) => sections.push(
+            PlanReportSection::new("files")
+                .field("filesystem", "UDF")
+                .field("problem", reason.clone()),
+        ),
+        None => {}
+    }
+
     let signatures = plan.signatures.iter().fold(
         PlanReportSection::new("signatures"),
         |section, signature| section.item(PlanReportItem::new(signature.as_str())),
@@ -419,6 +477,7 @@ fn escape_json_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{build_image_plan_report, PlanReport, PlanReportField, PlanReportSection};
+    use crate::file_copy::{IsoFilesSummary, SplitFile};
     use crate::image_plan::{
         DetectionMethod, ImageKind, ImagePlan, ImagePlanStatus, ImageSignature, ImageWriteStrategy,
         WriteMode,
@@ -439,6 +498,7 @@ mod tests {
             boot_metadata: None,
             write_mode: WriteMode::Raw,
             write_strategy: ImageWriteStrategy::RawBlockWrite,
+            iso_files: None,
             notes: vec!["ready for target safety checks".to_string()],
             warnings: vec!["example warning".to_string()],
         };
@@ -459,6 +519,68 @@ mod tests {
         assert_eq!(section(&report.sections, "signatures").items.len(), 1);
         assert_eq!(section(&report.sections, "notes").items.len(), 1);
         assert_eq!(section(&report.sections, "warnings").items.len(), 1);
+    }
+
+    fn windows_plan(summary: IsoFilesSummary) -> ImagePlan {
+        ImagePlan {
+            source: "C:\\images\\Win11.iso".into(),
+            file_name: "Win11.iso".to_string(),
+            size_bytes: 6 * 1024 * 1024 * 1024,
+            status: ImagePlanStatus::Ready,
+            status_reason: "ready".to_string(),
+            kind: ImageKind::Iso,
+            detection_method: DetectionMethod::Signature,
+            signatures: vec![ImageSignature::Udf],
+            hybrid: false,
+            boot_metadata: None,
+            write_mode: WriteMode::Raw,
+            write_strategy: ImageWriteStrategy::RawBlockWrite,
+            iso_files: Some(Ok(summary)),
+            notes: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn summary() -> IsoFilesSummary {
+        IsoFilesSummary {
+            label: "CCCOMA_X64FRE_EN-US_DV9".to_string(),
+            file_count: 1000,
+            file_bytes: 6 * 1024 * 1024 * 1024,
+            largest_file: Some(("sources/install.wim".to_string(), 5_500_000_000)),
+            uefi_loader: Some("efi/boot/bootx64.efi".to_string()),
+            split_files: Vec::new(),
+            cannot_copy: Vec::new(),
+        }
+    }
+
+    fn fits(summary: IsoFilesSummary) -> String {
+        let report = build_image_plan_report(&windows_plan(summary));
+        field(section(&report.sections, "files"), "fits FAT32").to_string()
+    }
+
+    #[test]
+    fn says_whether_an_isos_files_fit_on_fat32() {
+        assert_eq!(fits(summary()), "yes");
+
+        let mut split = summary();
+        split.split_files.push(SplitFile {
+            path: "sources/install.wim".to_string(),
+            size_bytes: 5_500_000_000,
+            parts: vec!["install.swm".to_string(), "install2.swm".to_string()],
+        });
+        assert_eq!(
+            fits(split),
+            "yes, after splitting sources/install.wim (5.12 GiB) into 2 parts"
+        );
+
+        let mut refused = summary();
+        refused
+            .cannot_copy
+            .push("sources/install.esd is too large for FAT32 and cannot be split".to_string());
+        assert_eq!(
+            fits(refused),
+            "no: sources/install.esd is too large for FAT32 and cannot be split"
+        );
     }
 
     #[test]

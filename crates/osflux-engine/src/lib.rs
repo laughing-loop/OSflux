@@ -1,10 +1,13 @@
 pub mod audit;
 pub mod chunk_plan;
 pub mod clock;
-mod crc32;
+mod crc;
 pub mod drive_contents;
+pub mod fat32;
+pub mod file_copy;
 mod fingerprint;
 pub mod image_family;
+pub mod image_io;
 pub mod image_plan;
 pub mod image_report;
 pub mod iso;
@@ -14,6 +17,10 @@ pub mod preflight;
 pub mod progress;
 pub mod raw_write;
 pub mod target;
+#[cfg(test)]
+mod test_support;
+pub mod udf;
+pub mod wim_split;
 pub mod write_authorization;
 pub mod write_command;
 pub mod write_intent;
@@ -32,6 +39,10 @@ pub use clock::{format_unix_rfc3339, format_unix_utc, now_unix_seconds};
 pub use drive_contents::{
     inspect_device_contents, inspect_drive_contents, DriveContents, DriveContentsState,
     DrivePartition, FilesystemKind, PartitionScheme,
+};
+pub use file_copy::{
+    lay_out_uefi_fat32, summarize_iso_files, FileCopyError, IsoFilesSummary, SplitFile,
+    UefiFat32Layout,
 };
 pub use image_family::{
     build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
@@ -64,7 +75,7 @@ pub use progress::{
 };
 pub use raw_write::{
     build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target,
-    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport,
+    RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, WriteLayout,
     MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
 pub use target::{

@@ -3,9 +3,13 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::file_copy::{summarize_iso_files, IsoFilesSummary};
+
 use crate::iso::{inspect_boot_metadata, BootStyle, IsoBootMetadata};
 
 const ISO_SECTOR_SIZE: u64 = 2048;
+const NO_ISO9660_BOOT_ASSETS: &str =
+    "No known boot asset paths were found in ISO directory records.";
 const ISO_VOLUME_DESCRIPTOR_START: u64 = 16 * ISO_SECTOR_SIZE;
 const GPT_HEADER_OFFSET: u64 = 512;
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
@@ -34,6 +38,9 @@ pub struct ImagePlan {
     pub boot_metadata: Option<IsoBootMetadata>,
     pub write_mode: WriteMode,
     pub write_strategy: ImageWriteStrategy,
+    /// For an ISO whose files would be copied: what its UDF filesystem
+    /// holds, or why it could not be read. `None` for other images.
+    pub iso_files: Option<Result<IsoFilesSummary, String>>,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -271,10 +278,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
                         ));
 
                         if directory.boot_assets.is_empty() {
-                            warnings.push(
-                                "No known boot asset paths were found in ISO directory records."
-                                    .to_string(),
-                            );
+                            warnings.push(NO_ISO9660_BOOT_ASSETS.to_string());
                         } else {
                             notes.push(format!(
                                 "ISO directory records exposed {} boot asset path(s).",
@@ -336,6 +340,32 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
     )
     .to_string();
 
+    // Files are only copied out of ISOs that are not hybrid.
+    let iso_files = (kind == ImageKind::Iso && !hybrid)
+        .then(|| summarize_iso_files(&source))
+        .flatten();
+    if let Some(Ok(summary)) = &iso_files {
+        for reason in &summary.cannot_copy {
+            warnings.push(format!("This ISO cannot be written: {reason}."));
+        }
+        match &summary.uefi_loader {
+            Some(loader) => {
+                // Windows ISOs list only a README in their ISO 9660 directory,
+                // so that directory having no boot files is expected.
+                if warnings.iter().any(|warning| warning == NO_ISO9660_BOOT_ASSETS) {
+                    warnings.retain(|warning| warning != NO_ISO9660_BOOT_ASSETS);
+                    notes.push(format!(
+                        "The boot files are in the ISO's UDF filesystem, not its ISO 9660 directory; UEFI loader: {loader}."
+                    ));
+                }
+            }
+            None => warnings.push(
+                "The ISO has no UEFI boot loader (efi/boot/boot*.efi), so a stick made from it could not start a PC."
+                    .to_string(),
+            ),
+        }
+    }
+
     Ok(ImagePlan {
         source,
         file_name,
@@ -349,6 +379,7 @@ pub fn plan_image(path: impl AsRef<Path>) -> Result<ImagePlan, ImagePlanError> {
         boot_metadata,
         write_mode,
         write_strategy,
+        iso_files,
         notes,
         warnings,
     })
@@ -695,6 +726,36 @@ mod tests {
         assert_eq!(plan.status, ImagePlanStatus::Ready);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn finds_the_boot_files_of_a_windows_iso_in_udf() {
+        // Microsoft's ISOs list only a README in their ISO 9660 directory;
+        // the boot files are in UDF, which OSflux reads.
+        let image = crate::test_support::SparseDrive::from_fixture(include_str!(
+            "../tests/fixtures/isos/windows-udf-only.sparse"
+        ));
+        let size = crate::image_io::ImageRead::image_len(&image).unwrap() as usize;
+        let path = std::env::temp_dir().join(unique_name("iso"));
+        fs::write(&path, image.read(0, size)).unwrap();
+
+        let plan = plan_image(&path);
+        let _ = fs::remove_file(&path);
+        let plan = plan.unwrap();
+
+        assert_eq!(plan.status, ImagePlanStatus::Ready);
+        assert_eq!(
+            plan.write_strategy,
+            ImageWriteStrategy::IsoFileSystemBootSetup
+        );
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        assert!(
+            plan.notes
+                .iter()
+                .any(|note| note.contains("UDF") && note.contains("efi/boot/bootx64.efi")),
+            "{:?}",
+            plan.notes
+        );
     }
 
     #[test]

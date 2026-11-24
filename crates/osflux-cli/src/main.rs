@@ -11,8 +11,8 @@ use osflux_engine::{
     IsoFilesystemPlanStatus, PlanReport, ProgressPreview, ProgressPreviewStatus, RawWriteError,
     RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, TargetAssessment,
     TargetAssessmentStatus, WriteCommandPlan, WriteCommandStatus, WriteIntent, WriteIntentStatus,
-    WriteModeSelection, WriteModeSelectionStatus, WritePreflight, WritePreflightStatus,
-    WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
+    WriteLayout, WriteModeSelection, WriteModeSelectionStatus, WritePreflight,
+    WritePreflightStatus, WriteSession, WriteSessionStatus, DEFAULT_CHUNK_SIZE_BYTES,
 };
 
 /// Exit code for a command that ran but whose result is blocked or needs inspection.
@@ -1041,7 +1041,12 @@ fn open_authorization_store() -> AuthorizationStore {
 }
 
 fn print_raw_write_plan(plan: &RawWritePlan) {
-    println!("OSflux raw write");
+    match &plan.layout {
+        WriteLayout::Raw => println!("OSflux raw write"),
+        WriteLayout::UefiFat32(_) => {
+            println!("OSflux write: copy the ISO's files onto a UEFI stick")
+        }
+    }
     println!("session id: {}", plan.session_id);
     println!(
         "image: {} ({})",
@@ -1056,6 +1061,32 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
     );
     println!("target size: {}", format_size(plan.target_size_bytes));
     println!("target identity code: {}", plan.target_identity_code);
+    if let WriteLayout::UefiFat32(layout) = &plan.layout {
+        println!(
+            "layout: new MBR partition table, one FAT32 partition labelled {}, starts in UEFI mode only",
+            layout.label
+        );
+        println!(
+            "files: {} files, {}",
+            layout.file_count,
+            format_size(layout.file_bytes)
+        );
+        if let Some((path, size)) = &layout.largest_file {
+            println!("largest file: {path} ({})", format_size(*size));
+        }
+        for split in &layout.split_files {
+            println!(
+                "split: {} ({}) is too large for FAT32, so it is written as {}",
+                split.path,
+                format_size(split.size_bytes),
+                split.parts.join(", ")
+            );
+        }
+        println!(
+            "to write: {}, then the last MiB of the drive is cleared",
+            format_size(layout.image_bytes)
+        );
+    }
     match plan.confirmation_form {
         ConfirmationForm::FullPhrase => println!("confirmed with: the full phrase"),
         ConfirmationForm::IdentityCode => println!(
@@ -1804,7 +1835,7 @@ fn print_help() {
     println!("  --session         Prepare a locked dry-run write session.");
     println!("  --write           Validate a confirmed write command as a dry-run skeleton.");
     println!(
-        "  --execute         With --write: erase the target and write a raw disk image, then verify it."
+        "  --execute         With --write: erase the target and write the image, then verify it. Raw images and hybrid ISOs are copied byte for byte; UDF ISOs such as Windows installers have their files copied onto a new FAT32 partition that starts in UEFI mode."
     );
     println!(
         "  --yes             With --write --execute: skip the final prompt, for scripts and automation."

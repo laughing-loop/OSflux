@@ -481,6 +481,7 @@ mod tests {
                 ImageKind::Unknown => WriteMode::Unknown,
             },
             write_strategy,
+            iso_files: None,
             notes: Vec::new(),
             warnings: Vec::new(),
         }

@@ -3,6 +3,7 @@ name = "osflux-cli"
 description = "OSflux: plans and writes bootable USB drives"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 # The program is osflux (osflux.exe on Windows); the package keeps its name.
 [[bin]]

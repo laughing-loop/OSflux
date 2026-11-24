@@ -24,7 +24,11 @@ fn main() {
         .set("ProductName", "OSflux")
         .set("FileDescription", "OSflux")
         .set("InternalName", "osflux")
-        .set("OriginalFilename", "osflux.exe");
+        .set("OriginalFilename", "osflux.exe")
+        .set(
+            "LegalCopyright",
+            "Copyright (C) 2026 HOD Technologies Limited",
+        );
     if let Err(error) = resource.compile() {
         panic!(
             "could not embed the Windows icon from {}: {error}. On Windows this needs the \

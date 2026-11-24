@@ -279,12 +279,15 @@ fn prints_its_version() {
     for flag in ["--version", "-V"] {
         let output = osflux(&[flag]);
 
+        let text = String::from_utf8_lossy(&output.stdout);
         assert_eq!(output.status.code(), Some(0), "{flag}");
         assert_eq!(
-            String::from_utf8_lossy(&output.stdout).trim(),
-            format!("osflux {}", env!("CARGO_PKG_VERSION")),
+            text.lines().next(),
+            Some(format!("osflux {}", env!("CARGO_PKG_VERSION")).as_str()),
             "{flag}"
         );
+        assert!(text.contains("HOD Technologies Limited"), "{flag}");
+        assert!(text.contains("GPL-3.0-or-later"), "{flag}");
     }
 }
 

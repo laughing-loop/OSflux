@@ -8,6 +8,9 @@
 |---|---|
 | Windows | clippy with warnings as errors, all tests, and the release build of `osflux.exe`, kept as a workflow artifact for 14 days |
 | Linux | the formatting check, clippy, all tests (with mtools, dosfstools, wimtools and xmllint installed, so the independent cross-checks run instead of being skipped), and the Windows build check from Linux |
+| Dependency licences | `cargo deny check licenses`, which fails if any crate in the build uses a licence outside the GPL-3.0-compatible allow-list in `deny.toml` |
+
+**Adding a dependency.** If the licence check fails on a new crate, check its licence against the FSF's list of GPL-compatible licences before adding it to `deny.toml`. A crate under an incompatible licence, such as GPL-2.0-only, cannot be used in OSflux.
 
 Rust is pinned in `rust-toolchain.toml`, so CI and every developer machine use the same compiler and see the same lints. rustup installs that version the first time `cargo` runs in the repository. Moving to a newer Rust is a deliberate change: update the version there, fix any new lints, and open a pull request.
 
@@ -29,7 +32,7 @@ Rust is pinned in `rust-toolchain.toml`, so CI and every developer machine use t
 4. **Watch `.github/workflows/release.yml` run:**
    - It checks that the tag matches `Cargo.toml`.
    - It runs the tests, builds `osflux.exe` and signs it, if signing is set up.
-   - It packages `osflux-<version>-windows-x64.zip` (with the README and changelog) and `SHA256SUMS.txt`.
+   - It packages `osflux-<version>-windows-x64.zip` (with the licence, README and changelog) and `SHA256SUMS.txt`.
    - It publishes a GitHub release whose notes are the version's changelog section.
    - A version with a hyphen, such as `0.2.0-beta.1`, is published as a pre-release.
 

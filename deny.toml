@@ -1,0 +1,57 @@
+# cargo-deny configuration: https://embarkstudios.github.io/cargo-deny/
+#
+# CI runs `cargo deny check licenses`, which fails when any crate in the
+# build, including OSflux's own, has a licence outside the allow-list below.
+# Run the same check locally with:
+#
+#   cargo install cargo-deny --locked
+#   cargo deny check licenses
+
+[graph]
+# Every platform OSflux builds for, so platform-only dependencies (the
+# `windows` crates, for one) are checked too.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
+    "x86_64-unknown-linux-gnu",
+]
+all-features = true
+
+[licenses]
+# OSflux is GPL-3.0-or-later, so a dependency may only use a licence that
+# the Free Software Foundation lists as compatible with GPL version 3:
+# https://www.gnu.org/licenses/license-list.html
+#
+# Not on the list, because they are incompatible or would change OSflux's
+# terms: GPL-2.0-only, Apache-1.1, BSD-4-Clause, OpenSSL, SSPL, the Business
+# Source License, AGPL, and any licence that restricts commercial use. A new
+# licence needs checking against the FSF's list before it is added here.
+allow = [
+    "GPL-3.0-or-later", # OSflux itself
+    "GPL-3.0-only",
+    "LGPL-2.1-only",    # its section 3 allows the GPL instead
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "MPL-2.0",          # compatible through its "Secondary License" terms
+    "Apache-2.0",       # compatible with GPL-3.0, though not with GPL-2.0
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+# Only take a licence from a crate's licence file when cargo-deny is sure
+# which licence the text is.
+confidence-threshold = 0.93
+# The list names compatible licences, not only the ones in use today, so a
+# new dependency under one of them passes without an edit here.
+unused-allowed-license = "allow"

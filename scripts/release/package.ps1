@@ -1,5 +1,5 @@
 # Packages a release build: dist/osflux-<version>-windows-x64.zip with
-# osflux.exe, README.md and CHANGELOG.md; dist/SHA256SUMS.txt; and
+# osflux.exe, LICENSE, README.md and CHANGELOG.md; dist/SHA256SUMS.txt; and
 # dist/release-notes.md, taken from the version's section of CHANGELOG.md.
 param(
     [Parameter(Mandatory)] [string] $Version,
@@ -16,7 +16,7 @@ if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
 $name = "osflux-$Version-windows-x64"
 $stage = Join-Path $dist $name
 New-Item -ItemType Directory -Path $stage | Out-Null
-Copy-Item $exe, (Join-Path $root 'README.md'), (Join-Path $root 'CHANGELOG.md') $stage
+Copy-Item $exe, (Join-Path $root 'LICENSE'), (Join-Path $root 'README.md'), (Join-Path $root 'CHANGELOG.md') $stage
 $zip = Join-Path $dist "$name.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 Remove-Item -Recurse -Force $stage
@@ -47,6 +47,7 @@ if (-not $notes) {
     if ($env:GITHUB_REF_TYPE -eq 'tag') { throw "CHANGELOG.md has no '## [$Version]' section" }
     $notes = "Test build of commit $($env:GITHUB_SHA), not a release.`n`n" + (Get-Section '[Unreleased]')
 }
+$notes += "`n`nOSflux is free software under the GNU General Public License, version 3 or later; see LICENSE in the zip. Its source code is in this release's Source code archives (commit $($env:GITHUB_SHA))."
 if ($Signed) {
     $notes += "`n`nosflux.exe is code-signed."
 } else {

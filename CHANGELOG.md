@@ -33,6 +33,7 @@ The first release, 0.1.0, will contain everything below.
 - **The Windows program** has the OSflux icon and version details. `--version` prints the version.
 - **Continuous integration** on Windows and Linux: formatting, lints as errors, tests, and the Windows build.
 - **A release workflow** that packages `osflux.exe` with checksums and signs it once a code signing certificate is set up.
+- **Licence.** OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence. CI checks that every dependency's licence is compatible with GPL-3.0.
 
 ### Changed
 

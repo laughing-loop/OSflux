@@ -47,7 +47,7 @@ cargo run
 cargo run -- --version
 ```
 
-Every pull request is checked on Windows and Linux: formatting, lints as errors, all tests and the Windows build. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and code signing. Notable changes are listed in `CHANGELOG.md`.
+Every pull request is checked on Windows and Linux: formatting, lints as errors, all tests, the Windows build, and that every dependency's licence is compatible with GPL-3.0. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and code signing. Notable changes are listed in `CHANGELOG.md`.
 
 List visible physical drives:
 
@@ -257,3 +257,15 @@ Run with demo pipeline options:
 ```powershell
 cargo run -- --blocks=16 --block-size=1048576
 ```
+
+## Licence
+
+Copyright (C) 2026 HOD Technologies Limited
+
+OSflux is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version (SPDX: `GPL-3.0-or-later`).
+
+OSflux is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text of the GNU General Public License.
+
+The licence covers OSflux's source code. It does not cover the OSflux name or logo, including the files in `assets/brand/`. HOD Technologies Limited keeps all rights to them, so using them, for example on a modified version, needs its permission. The logo's wordmark is drawn from IBM Plex Sans, under the SIL Open Font License 1.1.
+
+Every dependency's licence is checked for compatibility with GPL-3.0 in CI (`deny.toml`).

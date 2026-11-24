@@ -326,6 +326,7 @@ Every pull request to `main`, and every push to it, runs `.github/workflows/ci.y
 - run clippy with warnings treated as errors
 - run every test, with the independent FAT32, WIM and XML checking tools installed on Linux
 - build `osflux.exe`, and check the Windows build from Linux too
+- check that every dependency's licence is compatible with GPL-3.0, OSflux's licence (`deny.toml`)
 
 Pushing a version tag runs `.github/workflows/release.yml`, which packages `osflux.exe` and signs it once a code signing certificate is set up. `DOCUMENTS/RELEASING.md` explains both, and what to check if runs fail before any job starts, as they once did on this repository.
 

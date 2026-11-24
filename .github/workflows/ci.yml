@@ -72,13 +72,15 @@ jobs:
       # OSflux's FAT32 volumes, WIM splits and answer files with independent
       # tools. The Windows check embeds the icons and Studio's Administrator
       # manifest with mingw-w64's windres, which runs mingw-w64's gcc to
-      # preprocess the resource script. Studio's UI tests need no display:
-      # they use Slint's testing backend.
+      # preprocess the resource script. Slint finds system fonts through
+      # fontconfig, whose headers it builds against on Linux. Studio's UI
+      # tests need no display: they use Slint's testing backend.
       - name: Install test tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mtools dosfstools wimtools libxml2-utils gcc-mingw-w64-x86-64
+            mtools dosfstools wimtools libxml2-utils gcc-mingw-w64-x86-64 \
+            libfontconfig-dev
 
       - name: Install Rust
         run: |

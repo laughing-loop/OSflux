@@ -55,7 +55,7 @@ cargo run -p osflux-studio
 cargo run -p osflux-studio --features preview -- --preview gallery --theme dark
 ```
 
-Studio's design reference, the screen frames and `osflux-studio-ui-tokens.md`, is in `DOCUMENTS/studio/`. On Windows, `osflux-studio.exe` asks for Administrator when it opens. Studio itself is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
+On Linux, building Studio needs fontconfig's development files (`sudo apt install libfontconfig-dev` on Debian and Ubuntu). Studio's design reference, the screen frames and `osflux-studio-ui-tokens.md`, is in `DOCUMENTS/studio/`. On Windows, `osflux-studio.exe` asks for Administrator when it opens. Studio itself is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
 
 Every pull request is checked on Windows and Linux: formatting, lints as errors, all tests, the Windows build, and that every dependency's licence is compatible with GPL-3.0. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and code signing. Notable changes are listed in `CHANGELOG.md`.
 

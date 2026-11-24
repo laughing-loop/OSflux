@@ -3,6 +3,7 @@ members = [
     "crates/osflux-core",
     "crates/osflux-engine",
     "crates/osflux-cli",
+    "crates/osflux-studio",
 ]
 default-members = ["crates/osflux-cli"]
 resolver = "2"

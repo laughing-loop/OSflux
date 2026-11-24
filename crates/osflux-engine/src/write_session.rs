@@ -110,15 +110,12 @@ pub fn build_write_session_at(
     let locked = confirmed;
     let session_id = build_session_id(command, created_at_unix_seconds);
 
-    let mut notes = Vec::new();
-    notes.push(
+    let notes = vec![
         "Write session locks the image and target identity from the confirmed command plan."
             .to_string(),
-    );
-    notes.push(
         "This session is a dry-run model; real write execution is still disabled.".to_string(),
-    );
-    notes.push("A future write backend must re-check session identity before writing.".to_string());
+        "A future write backend must re-check session identity before writing.".to_string(),
+    ];
 
     let mut warnings = command.warnings.clone();
     if status == WriteSessionStatus::Prepared {

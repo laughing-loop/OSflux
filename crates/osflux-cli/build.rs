@@ -1,4 +1,4 @@
-//! Embeds the OSflux icon in the Windows executable.
+//! Embeds the OSflux icon and version details in the Windows executable.
 //!
 //! The check is on the target, not the machine doing the build, so a build
 //! for Windows from Linux gets the icon too (with mingw-w64's windres), and
@@ -18,6 +18,17 @@ fn main() {
 
     let mut resource = winresource::WindowsResource::new();
     resource.set_icon(icon.to_str().expect("the icon path is valid UTF-8"));
+    // Shown in the file's Properties and in Task Manager. The version
+    // numbers come from Cargo.toml.
+    resource
+        .set("ProductName", "OSflux")
+        .set("FileDescription", "OSflux")
+        .set("InternalName", "osflux")
+        .set("OriginalFilename", "osflux.exe")
+        .set(
+            "LegalCopyright",
+            "Copyright (C) 2026 HOD Technologies Limited",
+        );
     if let Err(error) = resource.compile() {
         panic!(
             "could not embed the Windows icon from {}: {error}. On Windows this needs the \

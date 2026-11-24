@@ -216,6 +216,9 @@ where
         if arg == "--help" || arg == "-h" {
             print_help();
             std::process::exit(0);
+        } else if arg == "--version" || arg == "-V" {
+            print_version();
+            std::process::exit(0);
         } else if arg == "--json" {
             output = OutputFormat::Json;
         } else if arg == "--preflight" {
@@ -1375,6 +1378,8 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
 struct RawWriteProgressPrinter {
     enabled: bool,
     last: Option<(RawWritePhase, u64)>,
+    /// Characters in the line last drawn, so a shorter line can cover it.
+    last_width: usize,
 }
 
 impl RawWriteProgressPrinter {
@@ -1382,6 +1387,7 @@ impl RawWriteProgressPrinter {
         Self {
             enabled: matches!(output, OutputFormat::Text),
             last: None,
+            last_width: 0,
         }
     }
 
@@ -1397,17 +1403,22 @@ impl RawWriteProgressPrinter {
             Some((phase, last_percent)) if phase == event.phase && last_percent == percent => {
                 return
             }
-            Some((phase, _)) if phase != event.phase => eprintln!(),
+            Some((phase, _)) if phase != event.phase => {
+                eprintln!();
+                self.last_width = 0;
+            }
             _ => {}
         }
 
-        eprint!(
-            "\r{}: {percent:>3}% ({} of {})",
+        let line = format!(
+            "{}: {percent:>3}% ({} of {})",
             event.phase.as_str(),
             format_size(event.completed_bytes),
             format_size(event.total_bytes)
         );
+        eprint!("\r{}", cover_previous_line(&line, self.last_width));
         let _ = std::io::stderr().flush();
+        self.last_width = line.chars().count();
         self.last = Some((event.phase, percent));
     }
 
@@ -1416,6 +1427,13 @@ impl RawWriteProgressPrinter {
             eprintln!();
         }
     }
+}
+
+/// `line` padded with spaces to at least `previous_width` characters, so
+/// redrawing it over a longer line leaves none of the old one showing.
+fn cover_previous_line(line: &str, previous_width: usize) -> String {
+    let width = line.chars().count();
+    format!("{line}{}", " ".repeat(previous_width.saturating_sub(width)))
 }
 
 fn print_write_command(
@@ -1957,9 +1975,20 @@ fn format_basis_points(basis_points: u32) -> String {
     format!("{}.{:02}%", basis_points / 100, basis_points % 100)
 }
 
+/// The version, with the licence notice the GPL asks programs to show.
+fn print_version() {
+    println!("osflux {}", env!("CARGO_PKG_VERSION"));
+    println!("Copyright (C) 2026 HOD Technologies Limited");
+    println!("License GPL-3.0-or-later: GNU GPL version 3 or later <https://www.gnu.org/licenses/gpl-3.0.html>");
+    println!("This is free software: you are free to change and redistribute it.");
+    println!("There is NO WARRANTY, to the extent permitted by law.");
+}
+
 fn print_help() {
-    println!("OSflux CLI");
-    println!("Usage:");
+    println!("OSflux {}", env!("CARGO_PKG_VERSION"));
+    println!("Usage: osflux [OPTIONS], or from the source folder: cargo run -- [OPTIONS]");
+    println!();
+    println!("Examples:");
     println!("  cargo run -- --list-devices");
     println!(
         "  cargo run -- --select-mode --image <PATH> --target <INDEX> --confirm \"OSFLUX ERASE TARGET <INDEX> <CODE>\""
@@ -2009,6 +2038,8 @@ fn print_help() {
     println!("  cargo run -- --blocks=16 --block-size=1048576");
     println!();
     println!("Options:");
+    println!("  --help, -h        Show this help.");
+    println!("  --version, -V     Show the OSflux version.");
     println!("  --list-devices    List visible physical drives without writing to them.");
     println!("  --select-mode     Select the read-only write mode for the planned image.");
     println!("  --progress-preview  Prepare dry-run progress events from a chunk plan.");
@@ -2079,7 +2110,20 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::is_erase_confirmation;
+    use super::{cover_previous_line, is_erase_confirmation};
+
+    #[test]
+    fn a_shorter_progress_line_covers_the_longer_one_before_it() {
+        // Seen on hardware as "hashing: 100% (8.44 GiB of 8.44 GiB)B)".
+        let before = "hashing:  99% (8.43 GiB of 8.44 GiB)".len() + 2;
+        let line = "hashing: 100% (8.44 GiB of 8.44 GiB)";
+
+        let drawn = cover_previous_line(line, before);
+
+        assert_eq!(drawn.len(), before);
+        assert_eq!(drawn.trim_end(), line);
+        assert_eq!(cover_previous_line(line, 0), line);
+    }
 
     #[test]
     fn only_yes_confirms_an_erase() {

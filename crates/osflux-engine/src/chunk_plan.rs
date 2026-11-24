@@ -172,13 +172,12 @@ pub fn build_chunk_plan(
         0
     };
 
-    let mut notes = Vec::new();
-    notes.push("Chunk plan is metadata-only; no target writes were attempted.".to_string());
-    notes.push("Chunk offsets are logical write offsets starting at byte 0.".to_string());
-    notes.push(
+    let notes = vec![
+        "Chunk plan is metadata-only; no target writes were attempted.".to_string(),
+        "Chunk offsets are logical write offsets starting at byte 0.".to_string(),
         "Future write execution can use this plan for progress accounting and scheduling."
             .to_string(),
-    );
+    ];
 
     let mut warnings = session.warnings.clone();
     if status == ChunkPlanStatus::Planned && final_chunk_size_bytes < chunk_size_bytes {

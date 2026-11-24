@@ -1,0 +1,41 @@
+# Changelog
+
+All notable changes to OSflux are listed here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Until 1.0.0, a
+minor version may change command-line options or output.
+
+## [Unreleased]
+
+The first release, 0.1.0, will contain everything below.
+
+### Added
+
+- **Drive listing.** `--list-devices` shows each physical drive with its size, model, serial number and interface. It says whether a drive is a possible target, or blocked because it holds Windows, is internal, or is an external disk rather than removable media.
+- **Image planning.** `--plan-image` reads an image's signatures, including ISO 9660, UDF, El Torito boot catalogs, MBR and GPT. It then picks how to write it, and shows what a Windows ISO's files would become on a FAT32 stick. Text or JSON.
+- **Write safety chain.**
+  - `--intent` records a one-time confirmation, tied to the drive's identity code, the image and a 10-minute limit.
+  - `--write --execute` re-checks the drive, asks a final yes, locks and dismounts the drive's volumes, writes in 4 MiB chunks, and reads every byte back to verify it.
+  - Each write is recorded in a JSON Lines audit log.
+- **Raw images and hybrid ISOs** (most Linux installers) are written byte for byte.
+- **Drive contents check.** A blank drive, or one holding a single empty FAT32 or exFAT partition, can be confirmed with its four-character identity code instead of the full phrase. This is checked again before writing.
+- **Windows installer ISOs.**
+  - OSflux reads the ISO's UDF file tree and writes its files onto a new MBR drive with one FAT32 partition that starts in UEFI mode. The image is generated as it is written.
+  - An `install.wim` over 4 GiB is written as `install.swm`, `install2.swm` and so on, the form DISM makes and Windows Setup reads.
+- **Windows Setup options**, written as an `autounattend.xml` answer file:
+  - `--bypass-requirements`
+  - `--local-account <NAME>`, which never writes a password
+  - `--skip-privacy-questions`
+  - `--no-auto-bitlocker`
+  - `--copy-region`
+- **`--no-verify`** skips the read-back for a quicker write, with a warning in the plan and a note in the audit log.
+- **A drive another program keeps open** can be freed with a forced dismount, the way `chkdsk` and `format` do. OSflux asks first. With `--yes`, it forces only when `--force-dismount` is also given.
+- **The Windows program** has the OSflux icon and version details. `--version` prints the version.
+- **Continuous integration** on Windows and Linux: formatting, lints as errors, tests, and the Windows build.
+- **A release workflow** that packages `osflux.exe` with checksums and signs it once a code signing certificate is set up.
+- **Licence.** OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence. CI checks that every dependency's licence is compatible with GPL-3.0.
+
+### Changed
+
+- **The program is now `osflux`** (`osflux.exe` on Windows); it was `osflux-cli`.
+- **Rust is pinned** to 1.97.0 in `rust-toolchain.toml`, so every machine builds and lints the same way.

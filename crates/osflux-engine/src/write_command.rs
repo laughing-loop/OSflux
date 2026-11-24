@@ -114,16 +114,13 @@ pub fn build_write_command_plan(
     let status = classify_write_command(intent, confirmation_phrase, confirmation_matches);
     let reason = write_command_reason(intent, status);
 
-    let mut notes = Vec::new();
-    notes.push(
+    let notes = vec![
         "Write command skeleton is a dry-run; no target drive was opened for write access."
             .to_string(),
-    );
-    notes.push(
         "The phrase is checked with exact string matching; an empty drive also accepts its identity code."
             .to_string(),
-    );
-    notes.push("The next milestone is wiring this plan into a locked write session.".to_string());
+        "The next milestone is wiring this plan into a locked write session.".to_string(),
+    ];
 
     let mut warnings = intent.warnings.clone();
     match status {

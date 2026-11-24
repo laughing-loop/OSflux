@@ -371,9 +371,8 @@ fn write_section_json(
     write_line(output, indent + 2, "]");
     write!(
         output,
-        "{}{}{}",
+        "{}}}{}",
         " ".repeat(indent),
-        "}",
         if trailing_comma { ",\n" } else { "\n" }
     )
     .expect("writing JSON to string should not fail");
@@ -401,9 +400,8 @@ fn write_item_json(
     write_line(output, indent + 2, "]");
     write!(
         output,
-        "{}{}{}",
+        "{}}}{}",
         " ".repeat(indent),
-        "}",
         if trailing_comma { ",\n" } else { "\n" }
     )
     .expect("writing JSON to string should not fail");
@@ -420,9 +418,8 @@ fn write_field_json(
     write_json_property(output, indent + 2, "value", &field.value, false);
     write!(
         output,
-        "{}{}{}",
+        "{}}}{}",
         " ".repeat(indent),
-        "}",
         if trailing_comma { ",\n" } else { "\n" }
     )
     .expect("writing JSON to string should not fail");
@@ -435,9 +432,9 @@ fn write_json_property(
     value: &str,
     trailing_comma: bool,
 ) {
-    write!(
+    writeln!(
         output,
-        "{}\"{}\": \"{}\"{}\n",
+        "{}\"{}\": \"{}\"{}",
         " ".repeat(indent),
         escape_json_string(key),
         escape_json_string(value),

@@ -275,6 +275,23 @@ fn force_dismount_only_works_with_execute() {
 }
 
 #[test]
+fn prints_its_version() {
+    for flag in ["--version", "-V"] {
+        let output = osflux(&[flag]);
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert_eq!(
+            text.lines().next(),
+            Some(format!("osflux {}", env!("CARGO_PKG_VERSION")).as_str()),
+            "{flag}"
+        );
+        assert!(text.contains("HOD Technologies Limited"), "{flag}");
+        assert!(text.contains("GPL-3.0-or-later"), "{flag}");
+    }
+}
+
+#[test]
 fn help_lists_exit_codes() {
     let output = osflux(&["--help"]);
 
@@ -292,11 +309,11 @@ fn osflux(args: &[&str]) -> Output {
 }
 
 fn osflux_in(args: &[&str], state_dir: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_osflux-cli"))
+    Command::new(env!("CARGO_BIN_EXE_osflux"))
         .args(args)
         .env("OSFLUX_STATE_DIR", state_dir)
         .output()
-        .expect("osflux-cli should start")
+        .expect("osflux should start")
 }
 
 fn temp_dir() -> PathBuf {

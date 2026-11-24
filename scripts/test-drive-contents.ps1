@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 $script:Root = Split-Path -Parent $PSScriptRoot
-$script:Exe = Join-Path $script:Root 'target\debug\osflux-cli.exe'
+$script:Exe = Join-Path $script:Root 'target\debug\osflux.exe'
 $script:Log = Join-Path $env:TEMP 'osflux-drive-contents-test.log'
 $script:Results = New-Object System.Collections.Generic.List[object]
 $testFileName = 'Holiday Photo.txt'
@@ -47,7 +47,7 @@ function Write-Log([string]$Text) {
     Add-Content -Path $script:Log -Value $Text
 }
 
-# Runs osflux-cli and returns its exit code, stdout and stderr.
+# Runs osflux and returns its exit code, stdout and stderr.
 function Invoke-OSflux([string[]]$Arguments) {
     $errorFile = New-TemporaryFile
     $previous = $ErrorActionPreference
@@ -62,7 +62,7 @@ function Invoke-OSflux([string[]]$Arguments) {
         Remove-Item -Path $errorFile.FullName -ErrorAction SilentlyContinue
     }
     if ($null -eq $stderr) { $stderr = '' }
-    Write-Log ("> osflux-cli {0}`n{1}{2}(exit {3})`n" -f ($Arguments -join ' '), $stdout, $stderr, $code)
+    Write-Log ("> osflux {0}`n{1}{2}(exit {3})`n" -f ($Arguments -join ' '), $stdout, $stderr, $code)
     [pscustomobject]@{ Code = $code; Stdout = $stdout; Stderr = $stderr; Text = $stdout + $stderr }
 }
 

@@ -135,7 +135,7 @@ pub fn inspect_directory_metadata_from_file(
                 });
             }
 
-            if record.is_directory && directory.depth + 1 <= MAX_DIRECTORY_DEPTH {
+            if record.is_directory && directory.depth < MAX_DIRECTORY_DEPTH {
                 queue.push_back(QueuedDirectory {
                     path: entry.path.clone(),
                     extent_lba: record.extent_lba,
@@ -547,7 +547,11 @@ mod tests {
         data_length: u32,
         is_dir: bool,
     ) -> Vec<u8> {
-        let padding = if identifier.len() % 2 == 0 { 1 } else { 0 };
+        let padding = if identifier.len().is_multiple_of(2) {
+            1
+        } else {
+            0
+        };
         let record_length = 33 + identifier.len() + padding;
         let mut record = vec![0u8; record_length];
         record[0] = record_length as u8;

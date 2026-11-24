@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # The version comes from rust-toolchain.toml.
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - name: Cache Cargo downloads and builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: windows-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: windows-cargo-
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build osflux.exe
+        run: cargo build --release --locked -p osflux-cli
+
+      - name: Keep osflux.exe for testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: osflux-windows-x64-${{ github.sha }}
+          path: target/release/osflux.exe
+          retention-days: 14
+
+  linux:
+    name: Linux, and the Windows build from Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # mtools, dosfstools, wimtools and libxml2-utils let the tests check
+      # OSflux's FAT32 volumes, WIM splits and answer files with independent
+      # tools; the mingw-w64 binutils provide windres for the Windows check.
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mtools dosfstools wimtools libxml2-utils binutils-mingw-w64-x86-64
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Cache Cargo downloads and builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: linux-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: linux-cargo-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Check the Windows build
+        run: cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu

@@ -113,14 +113,11 @@ pub fn build_progress_preview(chunk_plan: &ChunkPlan) -> ProgressPreview {
         0
     };
 
-    let mut notes = Vec::new();
-    notes.push("Progress preview is metadata-only; no target writes were attempted.".to_string());
-    notes.push(
+    let notes = vec![
+        "Progress preview is metadata-only; no target writes were attempted.".to_string(),
         "Progress percentages use integer basis points where 10000 means 100.00%.".to_string(),
-    );
-    notes.push(
         "Preview events are sampled from the full event stream to avoid huge output.".to_string(),
-    );
+    ];
 
     let mut warnings = chunk_plan.warnings.clone();
     if status == ProgressPreviewStatus::Ready && preview_events.len() as u64 != event_count {

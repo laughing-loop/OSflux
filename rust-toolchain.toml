@@ -1,0 +1,7 @@
+# Every machine and CI build with the same Rust, so formatting, lints and
+# builds match. rustup installs it on first use. Moving to a newer release
+# is a deliberate change: update the version here, then fix any new lints.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

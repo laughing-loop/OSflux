@@ -55,6 +55,9 @@ pub struct WriteEngine<S = PlatformWriteStrategy> {
 }
 
 impl WriteEngine {
+    // The platform strategy is a unit struct on some platforms only, so it
+    // is built the same way everywhere.
+    #[allow(clippy::default_constructed_unit_structs)]
     pub fn new() -> Self {
         Self {
             strategy: PlatformWriteStrategy::default(),

@@ -32,7 +32,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check the signing settings
         shell: pwsh
@@ -110,7 +110,7 @@ jobs:
         run: ./scripts/release/package.ps1 -Version '${{ steps.version.outputs.version }}' -Signed:([bool]::Parse($env:SIGNED))
 
       - name: Keep the package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: osflux-${{ steps.version.outputs.version }}-windows-x64
           path: dist/
@@ -126,7 +126,7 @@ jobs:
       contents: write
     steps:
       - name: Fetch the package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: osflux-${{ needs.build.outputs.version }}-windows-x64
           path: dist

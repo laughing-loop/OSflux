@@ -25,14 +25,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # The version comes from rust-toolchain.toml.
       - name: Install Rust
         run: rustup toolchain install
 
       - name: Cache Cargo downloads and builds
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index
@@ -52,7 +52,7 @@ jobs:
         run: cargo build --release --locked -p osflux-cli
 
       - name: Keep osflux.exe for testing
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: osflux-windows-x64-${{ github.sha }}
           path: target/release/osflux.exe
@@ -64,16 +64,17 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # mtools, dosfstools, wimtools and libxml2-utils let the tests check
       # OSflux's FAT32 volumes, WIM splits and answer files with independent
-      # tools; the mingw-w64 binutils provide windres for the Windows check.
+      # tools. The Windows check embeds the icon with mingw-w64's windres,
+      # which runs mingw-w64's gcc to preprocess the resource script.
       - name: Install test tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mtools dosfstools wimtools libxml2-utils binutils-mingw-w64-x86-64
+            mtools dosfstools wimtools libxml2-utils gcc-mingw-w64-x86-64
 
       - name: Install Rust
         run: |
@@ -81,7 +82,7 @@ jobs:
           rustup target add x86_64-pc-windows-gnu
 
       - name: Cache Cargo downloads and builds
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index
@@ -114,7 +115,7 @@ jobs:
       CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust
         run: rustup toolchain install

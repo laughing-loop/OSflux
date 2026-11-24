@@ -601,10 +601,16 @@ pub fn write_image_to_target(
         })?;
 
     let mut forced_dismount = false;
+    let mut force_approved = false;
+    let mut approve = |error: &DeviceError| {
+        let approved = approve_forced_dismount(error);
+        force_approved |= approved;
+        approved
+    };
     let outcome = consume_and_write(
         plan,
         authorizations,
-        &mut approve_forced_dismount,
+        &mut approve,
         &mut forced_dismount,
         on_progress,
     );
@@ -614,6 +620,11 @@ pub fn write_image_to_target(
     let mut notes = Vec::new();
     if forced_dismount {
         notes.push(FORCED_DISMOUNT_NOTE.to_string());
+    } else if force_approved {
+        notes.push(
+            "a volume on the drive stayed in use; the operator approved forcing a dismount, but the drive could not be locked"
+                .to_string(),
+        );
     }
     let outcome_event = match &outcome {
         Ok(report) => {

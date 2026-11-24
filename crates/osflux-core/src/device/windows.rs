@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, ERROR_NO_MORE_FILES, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_NOT_READY, ERROR_NO_MORE_FILES, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, FlushFileBuffers,
     FILE_ATTRIBUTE_NORMAL, FILE_DEVICE_DISK, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_OVERLAPPED,
@@ -380,18 +380,12 @@ fn lock_and_dismount_volume(
     busy_volumes: BusyVolumes,
 ) -> DeviceResult<LockedVolume> {
     let device_path = volume_name.trim_end_matches('\\');
-    let handle = open_handle(
-        device_path,
-        FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
-        FILE_ATTRIBUTE_NORMAL,
-    )
-    .map_err(|error| volume_lock_error(device_path, format!("could not open it: {error}")))?;
-    let volume = LockedVolume { handle };
+    let mut volume = open_volume(device_path)?;
 
     // Asking for the lock makes Windows tell the programs holding the volume
     // to let go. Explorer, antivirus scanners and indexers do, though often
     // only after a moment, so a busy volume is retried briefly.
-    if let Err(error) = lock_with_retries(handle) {
+    if let Err(error) = lock_with_retries(volume.handle) {
         match busy_volumes {
             BusyVolumes::Refuse => {
                 return Err(DeviceError::InUse {
@@ -399,11 +393,11 @@ fn lock_and_dismount_volume(
                     message: error.to_string(),
                 })
             }
-            BusyVolumes::ForceDismount => force_dismount_and_lock(handle, device_path)?,
+            BusyVolumes::ForceDismount => volume = force_dismount_and_lock(volume, device_path)?,
         }
     }
 
-    volume_control(handle, FSCTL_DISMOUNT_VOLUME).map_err(|error| {
+    volume_control(volume.handle, FSCTL_DISMOUNT_VOLUME).map_err(|error| {
         volume_lock_error(device_path, format!("could not dismount it: {error}"))
     })?;
 
@@ -424,20 +418,42 @@ fn lock_with_retries(handle: HANDLE) -> windows::core::Result<()> {
     }
 }
 
+fn open_volume(device_path: &str) -> DeviceResult<LockedVolume> {
+    let handle = open_handle(
+        device_path,
+        FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+        FILE_ATTRIBUTE_NORMAL,
+    )
+    .map_err(|error| volume_lock_error(device_path, format!("could not open it: {error}")))?;
+    Ok(LockedVolume { handle })
+}
+
 /// For a program that keeps the volume open after Windows asked it to let
-/// go. Dismounting without the lock is documented to make every other
-/// handle to the volume invalid, as chkdsk and format do after asking; this
-/// handle stays usable and takes the lock straight away, before anything
-/// can open the volume again. A program that reopens it at once can win
-/// that race, so it is tried a few times.
-fn force_dismount_and_lock(handle: HANDLE, device_path: &str) -> DeviceResult<()> {
+/// go. Dismounting without the lock is documented to make every handle to
+/// the volume invalid, the one that asked included; the volume mounts again,
+/// with no other program attached, when it is next opened. So it is opened
+/// again straight away and that new handle takes the lock before anything
+/// else can open it. A program that reopens it at once can win that race,
+/// so it is tried a few times.
+fn force_dismount_and_lock(
+    mut volume: LockedVolume,
+    device_path: &str,
+) -> DeviceResult<LockedVolume> {
     let mut last_error = None;
     for _ in 0..FORCED_DISMOUNT_ROUNDS {
-        volume_control(handle, FSCTL_DISMOUNT_VOLUME).map_err(|error| {
-            volume_lock_error(device_path, format!("could not force a dismount: {error}"))
-        })?;
-        match volume_control(handle, FSCTL_LOCK_VOLUME) {
-            Ok(()) => return Ok(()),
+        // A volume that is already dismounted answers "not ready", which is
+        // the state wanted here.
+        if let Err(error) = volume_control(volume.handle, FSCTL_DISMOUNT_VOLUME) {
+            if error.code() != ERROR_NOT_READY.to_hresult() {
+                return Err(volume_lock_error(
+                    device_path,
+                    format!("could not force a dismount: {error}"),
+                ));
+            }
+        }
+        volume = open_volume(device_path)?;
+        match volume_control(volume.handle, FSCTL_LOCK_VOLUME) {
+            Ok(()) => return Ok(volume),
             Err(error) => last_error = Some(error),
         }
     }

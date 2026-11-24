@@ -1,23 +1,49 @@
 # OSflux Studio — UI tokens and design decisions
 
 Design canvas: https://claude.ai/artifact/LcNGtozL23SK2bvSjfXcdU
-- Page "v1 · Brand": 14 frames + component sheet (rounded, brand gradient, Inter).
-- Page "v2 · Minimal": 4 key screens in dark and light (IBM-style corporate minimal, IBM Plex). In progress — chosen direction to take forward.
+- Page "v1 · Brand": 14 frames + component sheet (rounded, brand gradient, Inter). Reference only; still shows the old dry-run flow.
+- Page "v2 · Minimal": the chosen direction. 26 screens + component sheet, each in dark and light (IBM-style corporate minimal, IBM Plex). Laid out by section, dark row above light row.
 
 ---
 
 # v2 · Minimal (current direction)
 
-Decisions (2026-11-19): IBM-style corporate minimal; first pass = 4 key screens (Image loaded, Drive list, Safety check, Confirm) in dark + light; brand gradient on the logo only; fonts switched to IBM Plex Sans + IBM Plex Mono (OFL, embedded).
+Decisions (2026-11-19): IBM-style corporate minimal; brand gradient on the logo only; fonts IBM Plex Sans + IBM Plex Mono (OFL, embedded).
 
-Update (2026-11-19, later): two confirmation levels (short drive code vs full phrase), no cut-off values, labels and identifiers now match the osflux-engine source (see "Engine mapping").
+Update (2026-11-19, later): two confirmation levels (short drive code vs full phrase), no cut-off values, labels and identifiers match the osflux-engine source (see "Engine mapping").
+
+Update (2026-11-23): writing is real for raw disk images, Linux ISOs and Windows 11 ISOs. Dry-run-only wording and the dry-run result screen are gone. New: Windows options step, writing/verifying screens, Done screens, expected SHA-256, Settings (verify after writing), four error states.
+
+Update (2026-11-23, later): real OSflux logo in every v2 frame (full mark everywhere, including the header). Linux ISO write method and the Needs inspection frame corrected from the engine source (`image_plan.rs`).
+
+## Frames (v2 page)
+- Image: 01 empty · 02 Windows 11 ISO, Ready (expected SHA-256 filled) · 03 Linux ISO, Ready (hybrid, byte-for-byte copy) · 04 Needs inspection (ISO with a missing or invalid boot catalog)
+- Drive: 05 list (Not allowed open) · 06 no drives found
+- Safety check: 07 Ready · 08 Blocked (8.41 GB image on a 7.45 GB stick)
+- Windows options: 09 none selected · 10 options 1, 2 and 3 on
+- Confirm: 11–13 drive code (empty, wrong, matching) · 14 full phrase (SD card with files, verification off)
+- Writing: 15 Writing · 16 Verifying · 17 Writing with verification off
+- Done: 18 Written and verified (hash matches) · 19 Written, not verified · 20 Hash mismatch
+- Errors: 21 Confirmation expired · 22 Drive changed or unplugged · 23 Not running as Administrator
+- 24 Settings (verify on) · 25 Settings (verify off) · 26 About · 27 Component sheet
+
+## Flow
+- Windows 11 ISO: 5 steps — Image, Drive, Safety check, Windows options, Confirm. Then Writing → Verifying → Done.
+- Linux ISO and raw disk image: 4 steps — Image, Drive, Safety check, Confirm. Then Writing (→ Verifying) → Done.
+- Before an image is chosen the sidebar shows 4 steps.
+
+## Logo
+- Files in the repo: `assets/brand/svg/`. Dark theme uses `osflux-mark-white.svg`, light theme uses `osflux-mark-blue.svg` (#0068DB).
+- Use the full mark (ring + three streaks) everywhere in Studio: 24 px in the header, 40 px in About and on the component sheet.
+- Don't use the small mark (`osflux-mark-small-*`, heavy ring + two bars) in the Studio header: it reads as a different logo next to the full mark. Keep it for favicons and tray icons.
 
 ## Layout
-- Header 48 (logo, name, version · privilege status · 48×48 Settings / About).
-- Left rail 240: vertical step list (current step = selected row + 3 px accent bar), "This session" summary at the bottom (image, drive, mode).
-- Content padding 24 / 32. Title block: "Step n of 4" 12 · title 28/300 · description 14.
+- Header 48 (24 px logo, name, version · privilege status · 48×48 Settings / About).
+- Left rail 240: vertical step list (current step = selected row + 3 px accent bar). "This session" at the bottom: Image, Drive, Windows options (Windows only), Verify after writing.
+- Content padding 24 / 32. Title block: "Step n of 4/5" 12 · title 28/300 · description 14.
 - Action bar 64 at the bottom of the content column: hint text left, square buttons flush right (label left, icon right).
-- Status bar 28: dry-run notice · engine status · drives scanned time · Refresh.
+- Status bar 28: "Verify after writing: On/Off" (or "Writing — keep the stick plugged in") · engine status · drives scanned time · Refresh.
+- Settings and About are 520 px square dialogs over a dimmed window, with flush 64 px buttons.
 
 ## Colour
 | Token | Dark | Light |
@@ -31,13 +57,16 @@ Update (2026-11-19, later): two confirmation levels (short drive code vs full ph
 | text | #F2F2F2 | #161616 |
 | text-secondary | #A8A8A8 | #525252 |
 | text-disabled | #6B6B6B | #A8A8A8 |
-| accent / primary button | #0068DB | #0068DB |
+| accent / primary button / checkbox on / switch on | #0068DB | #0068DB |
 | link, selection ring, step indicator | #4D9FFF | #0068DB |
 | secondary button | #393939 (white text) | #393939 (white text) |
-| warning band | rgba(239,68,68,0.12) | #FDECEC |
-| locked write button | bg rgba(239,68,68,0.16), text #FF9A9A | bg #FDECEC, text #A61B1B |
+| danger · "Write to drive" (white text) | #DC2626 | #DC2626 |
+| info band | rgba(77,159,255,0.12) | #E5F0FF |
+| warning band (red) | rgba(239,68,68,0.12) | #FDECEC |
+| amber note / band | rgba(245,158,11,0.14) | #FEF3C7 |
+| progress track (fill = accent) | #393939 | #E0E0E0 |
 
-Accent #0068DB is the OSflux brand blue (#0076F7) one step darker so white text passes 5.3:1.
+Accent #0068DB is the OSflux brand blue, the same blue as the logo; white text on it passes 5.3:1.
 
 ## Engine status
 Shown as shape + colour + label (never colour alone): Ready = filled circle ✓, Needs confirmation = filled circle i, Needs inspection = filled triangle !, Blocked = filled octagon ×. Dark uses the exact hexes (#22C55E, #0AC4FB, #F59E0B, #EF4444) with a dark glyph; light uses #15803D, #0369A1, #B45309, #B91C1C with a white glyph.
@@ -45,38 +74,75 @@ Shown as shape + colour + label (never colour alone): Ready = filled circle ✓,
 A drive with engine status `eligible` uses the Ready style (label "Ready").
 
 ## Type (IBM Plex)
-- Sans: title 28/300 · section 16/600 · body 14/400 (+0.16 px) · label/caption 12/400 (+0.32 px) · verdict title with 28 px status icon.
-- Mono: phrase 28/500 (+0.08em) · drive code boxes 28/500 · input 16 · values 13–14 · paths 12.
+- Sans: title 28/300 · section 16/600 · body 14/400 (+0.16 px) · label/caption 12/400 (+0.32 px) · verdict / result title with 28 px status icon.
+- Mono: phrase 28/500 (+0.08em) · drive code boxes 28/500 · progress values 16–20 · hashes 13 · input 16 · values 13–14 · paths 12.
 
 ## Shape
-- Radius 0 everywhere except radio buttons and status shapes. No shadows; depth comes from layer colours and 1 px rules.
-- Slint: Fluent's rounded controls won't match — build small custom components (Button, LineEdit, CodeBoxes, row, status) over Slint primitives.
+- Radius 0 everywhere except radio buttons, status shapes and the switch. No shadows; depth comes from layer colours and 1 px rules.
+- Slint: Fluent's rounded controls won't match — build small custom components (Button, LineEdit, CodeBoxes, Checkbox, Switch, PhaseProgress, row, status) over Slint primitives.
 
 ## Text overflow
-- Never cut off a value that the user needs to judge safety: sizes, device paths, identity codes, chunk sizes, engine values.
+- Never cut off a value that the user needs to judge safety: sizes, device paths, identity codes, chunk sizes, hashes, engine values.
 - Sizes always sit in their own right-aligned column, in both the eligible list and the "Not allowed" list.
 - Technical details values wrap onto a second line instead of ending in "…".
-- Only long file names in the "This session" rail and step subtitles may truncate, in the middle (ubuntu-24.04.1-…-amd64.iso), with the full name on hover.
+- Only long file names in the "This session" rail and step subtitles may truncate, in the middle at a separator (ubuntu-24.04.1-…-amd64.iso, Windows11_Client_…_9457.iso), with the full name on hover.
+
+## Image step
+- Windows 11 ISO: family "Windows installer", boot style UEFI. Write method "Windows installer: files copied to a FAT32 stick (UEFI)". Notes: "install.wim (6.2 GB) will be split into 2 parts to fit FAT32. Windows Setup reads them as normal." and (amber) "Boots on UEFI PCs only. Legacy BIOS mode is not supported."
+- Linux ISO (hybrid, e.g. Ubuntu): write method "Hybrid ISO: copied to the drive byte for byte" (engine `hybrid-iso-raw-write`). Note: "This ISO is hybrid: it already holds a partition table, so OSflux copies it byte for byte."
+- Needs inspection happens only when (a) a non-hybrid ISO's El Torito boot catalog is missing or invalid (`iso-needs-deeper-inspection`, reason "ISO boot metadata needs deeper inspection"), or (b) the image was classified by file extension only (reason "image classification used extension fallback"). There is no "run deeper inspection" action: the frame offers "Choose another image" and Next stays locked. An unknown image kind or an empty file is Blocked, not Needs inspection.
+- Every loaded image has an optional field "Expected SHA-256 (from the download page)" under the file name. The Done screen shows match or mismatch.
+
+## Windows options (Windows ISOs only, between Safety check and Confirm)
+- Banner: "These settings apply to every PC that boots from this stick."
+- Five square checkboxes, all off by default, each with a one-line explanation:
+  1. Skip the TPM 2.0, Secure Boot and 4 GB RAM checks → amber note "Microsoft doesn't support Windows 11 on PCs that fail these checks."
+  2. Use a local account instead of a Microsoft account → Username field (no password field) + "Windows Setup will ask for the password. OSflux never stores it on the stick."
+  3. Skip the privacy questions (Setup chooses the private answer to each)
+  4. Turn off automatic BitLocker drive encryption
+  5. Use this PC's region and keyboard settings
+- Selected options appear in "This session" (short labels: Skip hardware checks · Local account (name) · Skip privacy questions · No automatic BitLocker · This PC's region and keyboard) and in the Confirm summary.
+- Maps to CLI flags `--bypass-requirements`, `--local-account <NAME>`, `--skip-privacy-questions`, `--no-auto-bitlocker`, `--copy-region` (autounattend.xml at the stick root).
 
 ## Confirmation levels
-The engine always checks the full phrase `OSFLUX ERASE TARGET {index} {code}`. The UI only changes how much the person has to type; Studio passes the full phrase to the engine itself.
+The engine always checks the full phrase `OSFLUX ERASE TARGET {index} {code}`. The UI only changes how much the person has to type; Studio passes the full phrase to the engine itself. Both levels are real in the engine.
 
 | Drive's engine status | What the person types | Screen |
 |---|---|---|
-| `eligible` (blank or new removable drive) | The 4-character drive code, e.g. `7F3A` | Drive summary card + 4 square code boxes |
-| `needs-confirmation` (has partitions or files, or larger than 64 GB) | The full phrase, e.g. `OSFLUX ERASE TARGET 4 B21C` | Full-phrase screen + amber note "This drive has files on it, so OSflux asks for the full phrase." |
+| `eligible` (empty drive) | The 4-character drive code, e.g. `7F3A` | Drive summary card (with Windows options + verification) + 4 square code boxes |
+| `needs-confirmation` (has files, or larger than 64 GB) | The full phrase, e.g. `OSFLUX ERASE TARGET 4 B21C` | Full-phrase screen + amber note "This drive has files on it, so OSflux asks for the full phrase." |
 | `blocked` | Nothing — cannot be selected | Listed under "Not allowed" |
 
-- The drive code is 4 hex characters (0–9, A–F) built from the drive's model, serial and PnP ID. It changes if a different drive takes the same slot.
+- The drive code is 4 hex characters (0–9, A–F). It changes if a different drive takes the same slot.
 - Code boxes: upper-case on input, auto-advance, paste fills all four, Backspace moves back. States: empty, wrong (red border, "Code does not match this drive"), matching (green, "Matches SanDisk Ultra 64GB").
-- Copy: sidebar Confirm subtitle "Confirm the drive"; safety-check line "Everything checks out. Next, confirm the drive."
+- "Write to drive" (red, #DC2626) unlocks only on an exact match; before that it is disabled grey with a lock icon. Confirmations last 10 minutes.
 
-Engine work needed before this is real: today `classify_target` returns `needs-confirmation` for every allowed drive and never `eligible`, and the device layer does not read existing partitions. Add a partition / volume check (and the 64 GB threshold) so the engine can return `eligible` for blank drives.
+## Writing and verifying
+- Two phases in order: Writing, then Verifying ("Every byte is read back and compared"). Each phase: progress bar, MB/s, GB done of total, time left. Head shows total time left.
+- Example: Windows11_Client_x64_en-gb_26300_9457.iso, 8.41 GB at ~20 MB/s: writing about 7 min, verifying about 7 min.
+- Slow hint: "The stick sets the speed. A USB 3 stick in a USB 3 port is usually 3–4× faster."
+- Cancel (secondary) with "If you cancel, the stick will need writing again before you can use it."
+- Verification off: single Writing phase + amber band "Verification: off".
+
+## Settings
+- Writing: "Verify after writing" switch, on by default. Off shows amber "Faster, but a fake or failing stick won't be caught." When off, Confirm (action bar hint), the progress screen, the status bar and "This session" say "Verification: off".
+- Appearance: Follow Windows / Light / Dark. Audit log: Open audit log.
+
+## Done
+- "Written and verified" (green) or "Written, not verified" (amber triangle).
+- Result list: Image SHA-256 · Expected SHA-256 with Matches / Mismatch / Not entered · Verification · Time taken (with writing and verifying split) · "Recorded in the audit log".
+- Next step tile: "Next: plug the stick into the PC, open the boot menu (F12, F11 or Esc) and choose the UEFI: entry for the USB stick."
+- Buttons: Open audit log (secondary), Write another stick (primary).
+
+## Error states
+- Confirmation expired (amber band, "Confirm the drive again").
+- Drive changed or unplugged between Safety check and Confirm (red band, sidebar Drive step blocked, summary card dimmed with "No longer found", "Choose the drive again").
+- Not running as Administrator (header "Not elevated — read-only", amber band "Restart OSflux as Administrator to write", "Restart as Administrator").
+- Hash mismatch after writing (red octagon "Hash mismatch", expected vs actual hashes in full, "Download the image again before you use this stick.").
 
 ## Behaviour
 - Next locked on Needs inspection / Blocked; safety check stops at the first failure.
-- Confirm: the dry run unlocks only on an exact match (code or full phrase, per the table above). Inputs upper-case.
-- "Write to drive" stays locked in v0.1.0. Note: the engine now has a real raw-disk-image write command with read-back verify (`writing` → `verifying`), so this button can unlock first for raw images once Studio wires it up.
+- Inputs upper-case. Write unlocks only on an exact match (code or full phrase).
 
 ## Engine mapping (from the osflux-engine source)
 Use these exact values in technical panels; UI labels on the left.
@@ -91,21 +157,22 @@ Use these exact values in technical panels; UI labels on the left.
 | **Image family** | |
 | Windows installer / Linux installer / Multi-family / Raw disk / Unknown | `windows-installer` / `linux-installer` / `multi-family-image` / `raw-disk-image` / `unknown` |
 | Boot files found (kinds) | `boot-manager`, `uefi-bootloader`, `linux-kernel`, `initrd`, `grub-boot-path`, `linux-bootloader`, `live-filesystem`, `installer-image` |
-| **Planned write method** | |
-| ISO filesystem boot setup | `iso-filesystem-boot-setup` |
+| **Planned write method (image write strategy)** | |
+| ISO filesystem boot setup (Windows ISOs) | `iso-filesystem-boot-setup` |
+| Hybrid ISO: copied byte for byte (Linux ISOs) | `hybrid-iso-raw-write` (write mode selection: `raw-block-write`) |
 | Needs deeper inspection | `iso-needs-deeper-inspection` |
 | Raw block write | `raw-block-write` |
 | Family-specific setup (shown in family report) | `windows-installer-boot-setup` / `linux-installer-boot-setup` / `multi-family-boot-setup` |
 | **Drive (target) status** | |
 | Ready / Needs confirmation / Blocked | `eligible` / `needs-confirmation` / `blocked` |
 | Blocked reasons (plain-English label → engine reason) | "System drive — Windows is installed here" → `target contains the system volume` · "External SSD/HDD — usually holds data" → `target is an external hard disk or SSD` · "Size could not be read" → `target size is unknown` · "Drive identity could not be read" → `target identity could not be read` · "Reports itself as a fixed disk" → `target does not report removable media` |
-| Not elevated (privilege pill) | access `metadata-only` → "Run as Administrator before any write workflow." |
+| Not elevated (privilege pill) | access `metadata-only` → "Restart OSflux as Administrator to write" |
 | **Safety check (preflight) verdict** | |
 | Ready / Needs confirmation / Needs inspection / Blocked | `ready` / `needs-confirmation` / `needs-inspection` / `blocked` |
 | **Write mode selection** | `selected` / `needs-inspection` / `blocked` |
 | **Confirmation** | `confirmation-required` → `confirmation-missing` / `confirmation-mismatch` → match |
-| **Session** | `prepared` (dry run: `ready-dry-run`) / `blocked` |
-| **Write progress phases** | `planned` → `prepared` → `writing` → `verifying` |
+| **Session** | `prepared` / `blocked` |
+| **Write progress phases** | `planned` → `prepared` → `writing` → `verifying` (verify skipped with `--no-verify`) |
 
 ---
 
@@ -128,12 +195,11 @@ Light: bg #F4F5F9, card #FFFFFF, raised #F0F2F7, border #DDE1EA, border.strong #
 | Blocked | #EF4444 | #B91C1C | #FEE2E2 |
 
 ## Brand gradient
-#0AC4FB → #0076F7 → #7038F7 on logo, active step, progress bars; primary button uses blue → violet only. Never on destructive buttons.
+#0AC4FB → #0076F7 → #7038F7 on logo, active step, progress bars; primary button uses blue → violet only. Never on destructive buttons. (v1 still uses the old stand-in gradient mark.)
 
 ## Type and shape
 Inter + JetBrains Mono. Radius 6 / 8 / 10 / 12 / 14. One card shadow 0 8 24 rgba(0,0,0,0.35). Solid 1 px borders.
 
-## Placeholders still to fill (both versions)
-- Real OSflux logo: files exist in the repo root (`OSflux_logo.png` on black, `OSflux_logo_plain_bkg.png` on white, 1254 × 1254). Upload one to the canvas to replace the stand-in gradient mark. Tagline: "Flow. Flash. Deploy."
+## Placeholders still to fill
 - About: copyright holder, licence, website / source / report links.
-- Engine identifiers in the technical panels: now real — use the "Engine mapping" table (hyphenated, e.g. `iso-filesystem-boot-setup`, not `iso_filesystem_boot_setup`).
+- Version badge still shows v0.1.0.

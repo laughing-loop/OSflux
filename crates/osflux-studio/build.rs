@@ -9,8 +9,11 @@ use std::path::PathBuf;
 
 fn main() {
     // Fonts and images are compiled into the program, so osflux-studio.exe
-    // runs on its own.
-    slint_build::compile("ui/app.slint").expect("the Studio UI compiles");
+    // runs on its own. Debug builds also carry the element information the
+    // UI tests use to find buttons by their accessible label.
+    let debug = env::var("PROFILE").as_deref() == Ok("debug");
+    let config = slint_build::CompilerConfiguration::new().with_debug_info(debug);
+    slint_build::compile_with_config("ui/app.slint", config).expect("the Studio UI compiles");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("set by Cargo"));
     let icon = manifest_dir.join("../../assets/brand/icons/windows/osflux.ico");

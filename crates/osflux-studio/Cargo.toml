@@ -6,6 +6,14 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "osflux_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "osflux-studio"
+path = "src/main.rs"
+
 [dependencies]
 osflux-engine = { path = "../osflux-engine" }
 slint = { version = "~1.18.1", default-features = false, features = [
@@ -24,6 +32,10 @@ image = { version = "0.25", default-features = false, features = ["png"], option
 # `--preview`: shows a screen with sample data and can save it as a PNG, for
 # screenshots and design checks. Never in release builds.
 preview = ["dep:image"]
+
+[dev-dependencies]
+# Runs the UI without a window, for the tests in tests/. Must match Slint's version exactly.
+i-slint-backend-testing = "=1.18.1"
 
 [build-dependencies]
 slint-build = "~1.18.1"

@@ -70,6 +70,7 @@ pub use iso_filesystem_plan::{
     IsoFilesystemPlanError, IsoFilesystemPlanStatus, IsoFilesystemStrategy,
 };
 pub use osflux_core::device::DeviceError;
+pub use osflux_core::privilege::is_elevated;
 pub use osflux_core::region::read_region_settings;
 pub use preflight::{
     build_write_preflight, run_write_preflight, WritePreflight, WritePreflightError,

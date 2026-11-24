@@ -12,7 +12,7 @@ OSflux is a next-generation bootable media and OS deployment platform.
 - OSflux Core: low-level device access, Windows I/O bindings, and write pipeline primitives.
 - OSflux Engine: orchestration layer for image planning, write execution, and verification.
 - OSflux CLI: command-line interface for local development and operator workflows.
-- OSflux Studio: planned graphical interface built on top of the same engine.
+- OSflux Studio: the desktop app, built with Slint on the same engine. In progress: the shell, themes, Settings and About are in place; the steps are wired to the engine next.
 
 ## Current Status
 
@@ -21,6 +21,7 @@ The repository is currently a Rust workspace with the first platform crates in p
 - `crates/osflux-core`
 - `crates/osflux-engine`
 - `crates/osflux-cli`
+- `crates/osflux-studio`
 
 For a beginner-friendly explanation of the project direction, read:
 
@@ -46,6 +47,15 @@ Run the CLI:
 cargo run
 cargo run -- --version
 ```
+
+Run OSflux Studio, or preview a view with sample data (`shell`, `settings`, `about`, `licences` or `gallery`, the component sheet):
+
+```powershell
+cargo run -p osflux-studio
+cargo run -p osflux-studio --features preview -- --preview gallery --theme dark
+```
+
+Studio's design reference, the screen frames and `osflux-studio-ui-tokens.md`, is in `DOCUMENTS/studio/`. On Windows, `osflux-studio.exe` asks for Administrator when it opens. Studio itself is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
 
 Every pull request is checked on Windows and Linux: formatting, lints as errors, all tests, the Windows build, and that every dependency's licence is compatible with GPL-3.0. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and code signing. Notable changes are listed in `CHANGELOG.md`.
 

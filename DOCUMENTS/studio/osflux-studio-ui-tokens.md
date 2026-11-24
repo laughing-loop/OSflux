@@ -16,6 +16,8 @@ Update (2026-11-23): writing is real for raw disk images, Linux ISOs and Windows
 
 Update (2026-11-23, later): real OSflux logo in every v2 frame (full mark everywhere, including the header). Linux ISO write method and the Needs inspection frame corrected from the engine source (`image_plan.rs`).
 
+Update (2026-11-24): confirmation levels corrected from the engine source. There is no 64 GB rule; eligibility depends only on what the drive holds. Studio passes the engine what the person typed (code or phrase), not the full phrase in place of a code.
+
 ## Frames (v2 page)
 - Image: 01 empty · 02 Windows 11 ISO, Ready (expected SHA-256 filled) · 03 Linux ISO, Ready (hybrid, byte-for-byte copy) · 04 Needs inspection (ISO with a missing or invalid boot catalog)
 - Drive: 05 list (Not allowed open) · 06 no drives found
@@ -105,12 +107,16 @@ A drive with engine status `eligible` uses the Ready style (label "Ready").
 - Maps to CLI flags `--bypass-requirements`, `--local-account <NAME>`, `--skip-privacy-questions`, `--no-auto-bitlocker`, `--copy-region` (autounattend.xml at the stick root).
 
 ## Confirmation levels
-The engine always checks the full phrase `OSFLUX ERASE TARGET {index} {code}`. The UI only changes how much the person has to type; Studio passes the full phrase to the engine itself. Both levels are real in the engine.
+The engine decides which confirmation a drive needs and checks it. Studio passes the engine exactly what the person typed, the drive code or the full phrase, and never turns a typed code into the phrase. That way the engine applies the checks that go with the code, and the audit log records which confirmation was used.
+
+- For an `eligible` drive the engine accepts the 4-character drive code on its own. It then reads the drive again before the write and once more after locking it, and refuses the write if anything has appeared on it. The full phrase is accepted too.
+- For any other allowed drive, only the full phrase `OSFLUX ERASE TARGET {index} {code}` confirms the write.
+- The drive's size plays no part: a blank 128 GB stick is `eligible` as well (`target.rs`, `drive_contents.rs`).
 
 | Drive's engine status | What the person types | Screen |
 |---|---|---|
-| `eligible` (empty drive) | The 4-character drive code, e.g. `7F3A` | Drive summary card (with Windows options + verification) + 4 square code boxes |
-| `needs-confirmation` (has files, or larger than 64 GB) | The full phrase, e.g. `OSFLUX ERASE TARGET 4 B21C` | Full-phrase screen + amber note "This drive has files on it, so OSflux asks for the full phrase." |
+| `eligible` (empty drive: blank, or one FAT32 or exFAT partition with nothing in it) | The 4-character drive code, e.g. `7F3A` | Drive summary card (with Windows options + verification) + 4 square code boxes |
+| `needs-confirmation` (anything else: files, more partitions, another filesystem, or contents that could not be read) | The full phrase, e.g. `OSFLUX ERASE TARGET 4 B21C` | Full-phrase screen + amber note "This drive has files on it, so OSflux asks for the full phrase." When the contents could not be read: "OSflux couldn't check what's on this drive, so it asks for the full phrase." |
 | `blocked` | Nothing — cannot be selected | Listed under "Not allowed" |
 
 - The drive code is 4 hex characters (0–9, A–F). It changes if a different drive takes the same slot.

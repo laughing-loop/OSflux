@@ -1,0 +1,21 @@
+// The full text of a shortened file name, shown on hover.
+
+import { Theme } from "../theme.slint";
+
+export component Tooltip inherits Rectangle {
+    in property <string> text;
+
+    width: label.preferred-width + 16px;
+    height: label.preferred-height + 10px;
+    background: Theme.dark ? #F4F4F4 : #393939;
+    accessible-role: none;
+
+    label := Text {
+        x: 8px;
+        y: 5px;
+        text: root.text;
+        font-family: Theme.mono;
+        font-size: 12px;
+        color: Theme.dark ? #161616 : #F4F4F4;
+    }
+}

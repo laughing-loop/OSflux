@@ -6,7 +6,7 @@
 
 | Job | Runs |
 |---|---|
-| Windows | clippy with warnings as errors, all tests, and the release build of `osflux.exe`, kept as a workflow artifact for 14 days |
+| Windows | clippy with warnings as errors, all tests, and the release builds of `osflux.exe` and `osflux-studio.exe`, kept as a workflow artifact for 14 days |
 | Linux | the formatting check, clippy, all tests (with mtools, dosfstools, wimtools and xmllint installed, so the independent cross-checks run instead of being skipped), and the Windows build check from Linux |
 | Dependency licences | `cargo deny check licenses`, which fails if any crate in the build uses a licence outside the GPL-3.0-compatible allow-list in `deny.toml` |
 

@@ -35,6 +35,11 @@ The first release, 0.1.0, will contain everything below.
 - **A release workflow** that packages `osflux.exe` with checksums and signs it once a code signing certificate is set up.
 - **Licence.** OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence. CI checks that every dependency's licence is compatible with GPL-3.0.
 
+- **OSflux Studio, in progress** (`osflux-studio.exe`): the desktop app, built with Slint on the same engine, to the v2 design in `DOCUMENTS/studio/`.
+  - So far: the window shell (header with Administrator status, step rail with "This session", action bar and status bar), dark, light and follow-Windows themes, Settings (theme, verify after writing) and About with the licences.
+  - The custom components, all square, are in place for the steps that follow.
+  - IBM Plex Sans and Mono are embedded under the SIL Open Font License. `osflux-studio.exe` carries the OSflux icon and asks for Administrator when it opens.
+
 ### Changed
 
 - **The program is now `osflux`** (`osflux.exe` on Windows); it was `osflux-cli`.

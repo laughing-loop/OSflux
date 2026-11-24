@@ -1,0 +1,443 @@
+// Settings and About: 520 px square dialogs over a dimmed window, with flush
+// 64 px buttons along the bottom.
+
+import { Theme, ThemeChoice, Status } from "theme.slint";
+import { Studio } from "state.slint";
+import { Body, Label, Mono, Section, Title } from "components/text.slint";
+import { SquareButton, ButtonKind, GhostButton } from "components/button.slint";
+import { Band, BandKind } from "components/band.slint";
+import { Switch, RadioButton } from "components/inputs.slint";
+import { ScrollArea } from "components/scroll.slint";
+
+component Dialog inherits Rectangle {
+    in property <string> title;
+    in property <length> panel-width: 520px;
+    // The flush buttons: an optional secondary on the left, the primary.
+    in property <string> primary-text;
+    in property <string> secondary-text;
+    in property <image> secondary-icon;
+    in property <length> panel-height: 0;
+    callback close();
+    callback primary();
+    callback secondary();
+
+    background: Theme.scrim;
+    accessible-role: none;
+
+    // A click on the dimmed window closes the dialog; the panel keeps its own.
+    TouchArea {
+        clicked => { root.close(); }
+    }
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    panel := Rectangle {
+        width: min(root.panel-width, root.width - 48px);
+        height: root.panel-height > 0 ? min(root.panel-height, root.height - 48px)
+            : min(body.preferred-height + 64px, root.height - 48px);
+        background: Theme.dialog-bg;
+        accessible-role: groupbox;
+        accessible-label: root.title;
+
+        TouchArea { }
+
+        VerticalLayout {
+            scroll := ScrollArea {
+                vertical-stretch: 1;
+                content-height: body.preferred-height;
+                body := VerticalLayout {
+                    width: scroll.width;
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 22px;
+                    padding-bottom: 24px;
+                    spacing: 12px;
+                    @children
+                }
+            }
+            HorizontalLayout {
+                height: 64px;
+                if root.secondary-text != "": SquareButton {
+                    horizontal-stretch: 1;
+                    text: root.secondary-text;
+                    kind: ButtonKind.secondary;
+                    icon: root.secondary-icon;
+                    clicked => { root.secondary(); }
+                }
+                SquareButton {
+                    horizontal-stretch: 1;
+                    text: root.primary-text;
+                    kind: ButtonKind.primary;
+                    show-icon: false;
+                    clicked => { root.primary(); }
+                }
+            }
+        }
+
+        Rectangle {
+            x: parent.width - 44px;
+            y: 4px;
+            width: 40px;
+            height: 40px;
+            background: close-touch.has-hover ? Theme.layer-02 : transparent;
+            accessible-role: button;
+            accessible-label: "Close";
+            accessible-action-default => { root.close(); }
+            close-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.close(); }
+            }
+            Image {
+                width: 18px;
+                height: 18px;
+                source: @image-url("icons/close.svg");
+                colorize: Theme.text;
+            }
+        }
+    }
+}
+
+// A section title with the rule under it.
+component SettingsSection inherits VerticalLayout {
+    in property <string> title;
+    spacing: 8px;
+    Section {
+        text: root.title;
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+export component SettingsDialog inherits Dialog {
+    callback done();
+
+    title: "Settings";
+    primary-text: "Done";
+    close => { root.done(); }
+    primary => { root.done(); }
+
+    Title {
+        text: "Settings";
+        height: 40px;
+    }
+
+    SettingsSection {
+        title: "Writing";
+    }
+    HorizontalLayout {
+        spacing: 24px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            Body {
+                text: "Verify after writing";
+            }
+            Body {
+                text: "Reads every byte back after writing and compares it with the image. Roughly doubles the time.";
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: start;
+            padding-top: 2px;
+            Switch {
+                label: "Verify after writing";
+                checked: Studio.verify-after-writing;
+                toggled(on) => { Studio.set-verify-after-writing(on); }
+            }
+        }
+    }
+    if !Studio.verify-after-writing: Band {
+        kind: BandKind.amber;
+        compact: true;
+        body: "Faster, but a fake or failing stick won't be caught.";
+    }
+
+    SettingsSection {
+        title: "Appearance";
+    }
+    HorizontalLayout {
+        spacing: 32px;
+        alignment: start;
+        RadioButton {
+            text: "Follow Windows";
+            checked: Studio.theme-choice == ThemeChoice.system;
+            clicked => { Studio.set-theme(ThemeChoice.system); }
+        }
+        RadioButton {
+            text: "Light";
+            checked: Studio.theme-choice == ThemeChoice.light;
+            clicked => { Studio.set-theme(ThemeChoice.light); }
+        }
+        RadioButton {
+            text: "Dark";
+            checked: Studio.theme-choice == ThemeChoice.dark;
+            clicked => { Studio.set-theme(ThemeChoice.dark); }
+        }
+    }
+
+    SettingsSection {
+        title: "Audit log";
+    }
+    HorizontalLayout {
+        spacing: 24px;
+        Body {
+            text: "Every write is recorded with the image hash, the drive and the options used.";
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        VerticalLayout {
+            alignment: center;
+            GhostButton {
+                text: "Open audit log";
+                show-icon: true;
+                icon-after: true;
+                icon: @image-url("icons/log.svg");
+                clicked => { Studio.open-audit-log(); }
+            }
+        }
+    }
+}
+
+component AboutRow inherits Rectangle {
+    in property <string> key;
+    in property <string> value;
+    in property <bool> mono;
+
+    min-height: 34px;
+    HorizontalLayout {
+        padding-top: 7px;
+        padding-bottom: 7px;
+        Label {
+            width: 120px;
+            text: root.key;
+            font-size: 13px;
+            letter-spacing: Theme.body-spacing;
+        }
+        Text {
+            text: root.value;
+            font-family: root.mono ? Theme.mono : Theme.sans;
+            font-size: root.mono ? 13px : Theme.body-size;
+            color: Theme.text;
+            vertical-alignment: center;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+component LicenceBlock inherits VerticalLayout {
+    in property <string> title;
+    in property <string> body;
+    spacing: 6px;
+    Body {
+        text: root.title;
+        font-weight: 600;
+    }
+    Body {
+        text: root.body;
+        color: Theme.text-secondary;
+        wrap: word-wrap;
+    }
+}
+
+export component AboutDialog inherits Dialog {
+    callback done();
+
+    title: Studio.showing-licences ? "Licenses" : "About OSflux Studio";
+    primary-text: "Close";
+    secondary-text: Studio.showing-licences ? "Back" : "Licenses";
+    secondary-icon: @image-url("icons/log.svg");
+    panel-height: Studio.showing-licences ? 640px : 0;
+    close => { root.done(); }
+    primary => { root.done(); }
+    // Licenses replaces the About content until Back.
+    secondary => { Studio.showing-licences = !Studio.showing-licences; }
+
+    if !Studio.showing-licences: VerticalLayout {
+        spacing: 18px;
+        HorizontalLayout {
+            spacing: 18px;
+            alignment: start;
+            VerticalLayout {
+                alignment: center;
+                Image {
+                    width: 40px;
+                    height: 40px;
+                    source: Theme.dark ? @image-url("../../../assets/brand/svg/osflux-mark-white.svg")
+                        : @image-url("../../../assets/brand/svg/osflux-mark-blue.svg");
+                    accessible-role: image;
+                    accessible-label: "OSflux";
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Title {
+                    text: "OSflux Studio";
+                    height: 36px;
+                }
+                Body {
+                    text: "Flow. Flash. Deploy.";
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+        Body {
+            text: "OSflux puts operating system images on USB sticks and SD cards. It checks everything first and never erases a drive without your confirmation.";
+            wrap: word-wrap;
+        }
+        VerticalLayout {
+            AboutRow {
+                key: "Version";
+                value: "v" + Studio.version;
+                mono: true;
+            }
+            AboutRow {
+                key: "Engine";
+                value: "osflux-engine " + Studio.engine-version;
+                mono: true;
+            }
+            AboutRow {
+                key: "Platform";
+                value: Studio.platform;
+                mono: true;
+            }
+            AboutRow {
+                key: "Writes";
+                value: "Windows 11 ISOs · Linux ISOs · raw disk images";
+            }
+            AboutRow {
+                key: "Interface";
+                value: "Slint";
+            }
+        }
+        HorizontalLayout {
+            spacing: 32px;
+            alignment: start;
+            GhostButton {
+                text: "Website";
+                show-icon: true;
+                icon-after: true;
+                icon: @image-url("icons/external.svg");
+                clicked => { Studio.open-link("website"); }
+            }
+            GhostButton {
+                text: "Source code";
+                show-icon: true;
+                icon-after: true;
+                icon: @image-url("icons/code.svg");
+                clicked => { Studio.open-link("source"); }
+            }
+            GhostButton {
+                text: "Report a problem";
+                show-icon: true;
+                icon-after: true;
+                icon: @image-url("icons/comment.svg");
+                clicked => { Studio.open-link("issues"); }
+            }
+        }
+        Rectangle {
+            background: Theme.dialog-raised;
+            min-height: footer.min-height;
+            footer := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 16px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        horizontal-stretch: 1;
+                        Label {
+                            text: "Made with";
+                            font-size: 13px;
+                        }
+                        Body {
+                            text: "Slint";
+                            font-size: 18px;
+                            font-weight: 600;
+                        }
+                    }
+                    Label {
+                        text: "© 2026 HOD Technologies Limited · GPL-3.0";
+                        font-size: 13px;
+                    }
+                }
+                // The notice the GPL asks interactive programs to show.
+                Label {
+                    text: "OSflux Studio comes with ABSOLUTELY NO WARRANTY. It is free software: you can redistribute it and change it under the GNU General Public License, version 3. Licenses has the full terms.";
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    if Studio.showing-licences: VerticalLayout {
+        spacing: 18px;
+        Title {
+            text: "Licenses";
+            height: 40px;
+        }
+        LicenceBlock {
+            title: "OSflux Studio · GPL-3.0-only";
+            body: "Copyright (C) 2026 HOD Technologies Limited. OSflux Studio includes Slint, which is licensed under version 3 of the GNU GPL only, so this program as a whole is distributed under the GNU General Public License, version 3.";
+        }
+        LicenceBlock {
+            title: "osflux-engine and the osflux command-line tool · GPL-3.0-or-later";
+            body: "Copyright (C) 2026 HOD Technologies Limited. Free software under the GNU General Public License, version 3 or (at your option) any later version.";
+        }
+        LicenceBlock {
+            title: "Slint · GPL-3.0-only";
+            body: "The UI toolkit, slint.dev, used under the GNU General Public License, version 3.";
+        }
+        LicenceBlock {
+            title: "IBM Plex Sans and IBM Plex Mono · OFL-1.1";
+            body: "Copyright © 2017 IBM Corp. with Reserved Font Name \"Plex\". Used under the SIL Open Font License 1.1; the fonts are embedded unmodified.";
+        }
+        LicenceBlock {
+            title: "Name and logo";
+            body: "The OSflux name and logo are not covered by these licences. HOD Technologies Limited keeps all rights to them.";
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+        Section {
+            text: "GNU General Public License, version 3";
+            font-size: 14px;
+        }
+        Mono {
+            text: Studio.gpl-text;
+            font-size: 12px;
+            wrap: word-wrap;
+            vertical-alignment: top;
+        }
+        Section {
+            text: "SIL Open Font License, version 1.1";
+            font-size: 14px;
+        }
+        Mono {
+            text: Studio.font-licence-text;
+            font-size: 12px;
+            wrap: word-wrap;
+            vertical-alignment: top;
+        }
+    }
+}

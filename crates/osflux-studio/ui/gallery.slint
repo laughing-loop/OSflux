@@ -1,0 +1,353 @@
+// Every component in each of its states, with the design's sample values:
+// the Slint counterpart of frame 27, the component sheet. Shown by
+// `--preview gallery`; it never touches a drive.
+
+import { Theme, Status } from "theme.slint";
+import { StepState, DriveKind, MatchState } from "state.slint";
+import { Body, Label, Mono, Section, Title } from "components/text.slint";
+import { StatusIcon, StatusLabel } from "components/status.slint";
+import { SquareButton, ButtonKind, GhostButton, IconButton } from "components/button.slint";
+import { Band, BandKind, Tag } from "components/band.slint";
+import { StepItem } from "components/step.slint";
+import {
+    KeyValueRow, ResultRow, NoteRow, DriveTableHeader, DriveRow, BlockedDriveRow,
+    ChecklistRow, DetailColumn
+} from "components/rows.slint";
+import { CodeBoxes, PhraseField, OptionRow, Switch, RadioButton, TextField, MatchMessage } from "components/inputs.slint";
+import { PhaseProgress, PhaseState } from "components/progress.slint";
+import { ScrollArea } from "components/scroll.slint";
+
+component GallerySection inherits VerticalLayout {
+    in property <string> title;
+    in property <string> caption;
+    spacing: 16px;
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: root.title;
+            font-family: Theme.sans;
+            font-size: 20px;
+            font-weight: 300;
+            color: Theme.text;
+        }
+        if root.caption != "": Label {
+            text: root.caption;
+            font-size: 13px;
+            letter-spacing: Theme.body-spacing;
+            wrap: word-wrap;
+        }
+    }
+    Rectangle {
+        height: 1px;
+        background: Theme.border-strong;
+    }
+    @children
+}
+
+component StateLabel inherits Label {
+    font-size: 11px;
+    letter-spacing: 0.64px;
+}
+
+component ButtonRow inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 32px;
+    alignment: start;
+    Body {
+        width: 140px;
+        text: root.label;
+    }
+    @children
+}
+
+export component Gallery inherits Window {
+    title: "OSflux Studio components";
+    preferred-width: 1180px;
+    preferred-height: page.preferred-height;
+    background: Theme.bg;
+    default-font-family: Theme.sans;
+
+    page := VerticalLayout {
+        padding: 40px;
+        spacing: 48px;
+
+        HorizontalLayout {
+            spacing: 14px;
+            alignment: start;
+            Image {
+                width: 40px;
+                height: 40px;
+                source: Theme.dark ? @image-url("../../../assets/brand/svg/osflux-mark-white.svg")
+                    : @image-url("../../../assets/brand/svg/osflux-mark-blue.svg");
+            }
+            VerticalLayout {
+                alignment: center;
+                Title {
+                    text: "OSflux Studio v2 — components";
+                    height: 36px;
+                }
+                Label {
+                    text: "Built from Slint primitives: square, flat, IBM Plex, one accent. Sample values from the design frames.";
+                    font-size: 13px;
+                }
+            }
+        }
+
+        GallerySection {
+            title: "Buttons";
+            caption: "Square. Label left, icon right. 64 px in the action bar, 48 px inline. Write to drive is red and unlocks only when the drive is confirmed.";
+            ButtonRow {
+                label: "Primary";
+                SquareButton { width: 177px; text: "Next"; icon: @image-url("icons/arrow-right.svg"); }
+                SquareButton { width: 177px; text: "Next"; icon: @image-url("icons/arrow-right.svg"); enabled: false; }
+            }
+            ButtonRow {
+                label: "Secondary";
+                SquareButton { width: 127px; text: "Back"; kind: ButtonKind.secondary; show-icon: false; }
+                SquareButton { width: 127px; text: "Back"; kind: ButtonKind.secondary; show-icon: false; enabled: false; }
+            }
+            ButtonRow {
+                label: "Write to drive";
+                SquareButton { width: 208px; text: "Write to drive"; kind: ButtonKind.danger; icon: @image-url("icons/arrow-right.svg"); }
+                SquareButton { width: 208px; text: "Write to drive"; kind: ButtonKind.danger; icon: @image-url("icons/lock.svg"); enabled: false; }
+            }
+            ButtonRow {
+                label: "Secondary · 48";
+                SquareButton { width: 176px; button-height: 48px; text: "Browse…"; kind: ButtonKind.secondary; icon: @image-url("icons/file.svg"); }
+                Label { text: "Inline actions inside content"; }
+            }
+            ButtonRow {
+                label: "Ghost";
+                VerticalLayout { alignment: center; GhostButton { text: "Change image"; } }
+                GhostButton { text: "Change image"; enabled: false; }
+            }
+            ButtonRow {
+                label: "Header icon";
+                Rectangle {
+                    width: 97px;
+                    height: 48px;
+                    background: Theme.bg;
+                    HorizontalLayout {
+                        IconButton { icon: @image-url("icons/settings.svg"); label: "Settings"; }
+                        Rectangle { width: 1px; background: Theme.border-subtle; }
+                        IconButton { icon: @image-url("icons/info.svg"); label: "About"; }
+                    }
+                }
+                Label { text: "48 × 48, square"; }
+            }
+        }
+
+        GallerySection {
+            title: "Status, tags and bands";
+            StateLabel { text: "STATUS"; }
+            HorizontalLayout {
+                spacing: 32px;
+                alignment: start;
+                StatusLabel { status: Status.ready; text: "Ready"; }
+                StatusLabel { status: Status.needs-confirmation; text: "Needs confirmation"; }
+                StatusLabel { status: Status.needs-inspection; text: "Needs inspection"; }
+                StatusLabel { status: Status.blocked; text: "Blocked"; }
+                StatusLabel { status: Status.not-checked; text: "Not checked"; }
+            }
+            StateLabel { text: "PRIVILEGE"; }
+            HorizontalLayout {
+                spacing: 32px;
+                alignment: start;
+                StatusLabel { status: Status.ready; text: "Administrator"; icon-size: 14px; }
+                StatusLabel { status: Status.needs-inspection; text: "Not elevated — read-only"; icon-size: 14px; }
+            }
+            StateLabel { text: "TAG"; }
+            HorizontalLayout { alignment: start; Tag { text: "Will be erased"; } }
+            StateLabel { text: "INFO BAND"; }
+            Band { kind: BandKind.info; body: "These settings apply to every PC that boots from this stick."; }
+            StateLabel { text: "AMBER BAND"; }
+            Band { kind: BandKind.amber; title: "Confirmation expired"; body: "Confirmations last 10 minutes."; }
+            StateLabel { text: "RED BAND"; }
+            Band { kind: BandKind.red; title: "The drive changed after the safety check"; body: "OSflux will not write to it."; }
+        }
+
+        HorizontalLayout {
+            spacing: 40px;
+            GallerySection {
+                horizontal-stretch: 1;
+                title: "Sidebar steps";
+                caption: "Completed: outline circle + check. Blocked: red octagon, red subtitle. Current: dot, selected row, 3 px bar. Not started: grey outline.";
+                Rectangle {
+                    width: 240px;
+                    background: Theme.layer-01;
+                    height: steps.preferred-height;
+                    steps := VerticalLayout {
+                        padding-top: 16px;
+                        padding-bottom: 16px;
+                        spacing: 5px;
+                        StepItem { title: "Image"; subtitle: "Windows11_Client_…_9457.iso"; subtitle-mono: true; subtitle-full: "Windows11_Client_x64_en-gb_26300_9457.iso"; state: StepState.done; }
+                        StepItem { title: "Drive"; subtitle: "SanDisk Ultra 64GB"; state: StepState.done; }
+                        StepItem { title: "Safety check"; subtitle: "Blocked: image too large"; state: StepState.blocked; }
+                        StepItem { title: "Windows options"; subtitle: "Optional Setup changes"; state: StepState.current; }
+                        StepItem { title: "Confirm"; subtitle: "Confirm the drive"; state: StepState.pending; last: true; }
+                    }
+                }
+            }
+            GallerySection {
+                horizontal-stretch: 1;
+                title: "Windows options and Settings controls";
+                caption: "Square check boxes; the switch is the one rounded control. All Windows options are off by default.";
+                StateLabel { text: "OPTION · OFF"; }
+                OptionRow { text: "Skip the privacy questions"; description: "Setup chooses the private answer to each question."; }
+                StateLabel { text: "OPTION · ON, WITH ITS FIELD"; }
+                OptionRow {
+                    text: "Use a local account instead of a Microsoft account";
+                    description: "Setup creates this account and skips the Microsoft sign-in.";
+                    checked: true;
+                    HorizontalLayout {
+                        padding-top: 10px;
+                        spacing: 16px;
+                        Label { text: "Username"; font-size: 13px; }
+                        TextField { width: 180px; text: "alex"; mono: false; label: "Username"; }
+                    }
+                }
+                StateLabel { text: "SWITCH · VERIFY AFTER WRITING"; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    alignment: start;
+                    Switch { checked: true; label: "On"; }
+                    Label { text: "On (default)"; font-size: 13px; }
+                    Rectangle { width: 24px; }
+                    Switch { checked: false; label: "Off"; }
+                    Label { text: "Off"; font-size: 13px; }
+                }
+                Band { kind: BandKind.amber; compact: true; body: "Faster, but a fake or failing stick won't be caught."; }
+                StateLabel { text: "RADIO"; }
+                HorizontalLayout {
+                    spacing: 32px;
+                    alignment: start;
+                    RadioButton { text: "Follow Windows"; }
+                    RadioButton { text: "Light"; }
+                    RadioButton { text: "Dark"; checked: true; }
+                }
+            }
+        }
+
+        GallerySection {
+            title: "Drive rows";
+            caption: "Eligible (default, selected, needs confirmation) and not allowed. Sizes never truncate.";
+            VerticalLayout {
+                DriveTableHeader { }
+                DriveRow { model: "Kingston DataTraveler 32GB"; path: "\\\\.\\PhysicalDrive3"; size: "28.9 GB"; bus: "USB"; media: "Removable media"; kind: DriveKind.usb; status: Status.ready; status-label: "Ready"; }
+                DriveRow { model: "SanDisk Ultra 64GB"; path: "\\\\.\\PhysicalDrive2"; size: "59.6 GB"; bus: "USB"; media: "Removable media"; kind: DriveKind.usb; status: Status.ready; status-label: "Ready"; selected: true; }
+                DriveRow { model: "SD card in USB card reader"; path: "\\\\.\\PhysicalDrive4"; size: "14.8 GB"; bus: "USB"; media: "SD card"; kind: DriveKind.sd-card; status: Status.needs-confirmation; status-label: "Needs confirmation"; status-detail: "Has files on it"; }
+                Rectangle { height: 16px; }
+                StateLabel { text: "NOT ALLOWED · SIZE IN ITS OWN COLUMN, FULL DEVICE PATH, PLAIN REASON"; }
+                Rectangle { height: 8px; }
+                BlockedDriveRow { model: "Samsung SSD 980 1TB"; path: "\\\\.\\PhysicalDrive0"; size: "931.5 GB"; bus: "NVMe"; reason: "System drive — Windows is installed here"; kind: DriveKind.disk; }
+                BlockedDriveRow { model: "Samsung T7 Shield 2TB"; path: "\\\\.\\PhysicalDrive1"; size: "1.82 TB"; bus: "USB"; reason: "External SSD/HDD — usually holds data"; kind: DriveKind.disk; }
+                BlockedDriveRow { model: "Generic Flash Disk 8GB"; path: "\\\\.\\PhysicalDrive5"; size: "7.5 GB"; bus: "USB"; reason: "Reports itself as a fixed disk"; kind: DriveKind.disk; }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 40px;
+            GallerySection {
+                horizontal-stretch: 1;
+                title: "Drive code boxes";
+                caption: "Empty drives: 4 hex characters, upper-case, paste fills all four.";
+                GridLayout {
+                    spacing: 16px;
+                    Row {
+                        StateLabel { text: "EMPTY"; }
+                        StateLabel { text: "TYPING"; }
+                    }
+                    Row {
+                        CodeBoxes { characters: ["", "", "", ""]; state: MatchState.empty; }
+                        CodeBoxes { characters: ["7", "F", "", ""]; state: MatchState.typing; }
+                    }
+                    Row {
+                        MatchMessage { state: MatchState.empty; text: "Type all 4 characters to unlock Write to drive."; }
+                        MatchMessage { state: MatchState.typing; text: "Type all 4 characters to unlock Write to drive."; }
+                    }
+                    Row {
+                        StateLabel { text: "WRONG CODE"; }
+                        StateLabel { text: "MATCHING"; }
+                    }
+                    Row {
+                        CodeBoxes { characters: ["7", "F", "A", "3"]; state: MatchState.mismatch; }
+                        CodeBoxes { characters: ["7", "F", "3", "A"]; state: MatchState.match; }
+                    }
+                    Row {
+                        MatchMessage { state: MatchState.mismatch; text: "Code does not match this drive"; }
+                        MatchMessage { state: MatchState.match; text: "Matches SanDisk Ultra 64GB"; }
+                    }
+                }
+            }
+            GallerySection {
+                horizontal-stretch: 1;
+                title: "Phrase field";
+                caption: "Drives with files (engine status needs-confirmation).";
+                PhraseField { label: "Confirmation phrase"; text: "OSFLUX ERASE TARGET 4"; expected-length: 26; state: MatchState.typing; message: "Keep typing…"; }
+                PhraseField { label: "Confirmation phrase"; text: "OSFLUX ERASE TARGET 4 B12C"; expected-length: 26; state: MatchState.mismatch; message: "Does not match. Check each word and the last 4 characters."; }
+                PhraseField { label: "Confirmation phrase"; text: "OSFLUX ERASE TARGET 4 B21C"; expected-length: 26; state: MatchState.match; message: "Matches. This phrase belongs to SD card in USB card reader (B21C)."; }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 48px;
+            GallerySection {
+                title: "Checklist rows and technical details";
+                VerticalLayout {
+                    ChecklistRow { status: Status.ready; title: "Image plan trusted"; detail: "Windows installer. Boot catalog valid."; }
+                    ChecklistRow { status: Status.needs-inspection; title: "Drive has files on it"; detail: "One partition with files will be erased."; value: "14.8 GB"; }
+                    ChecklistRow { status: Status.blocked; title: "Image fits on drive"; detail: "Image is larger than the drive."; value: "8.41 GB of 7.45 GB"; }
+                    ChecklistRow { status: Status.not-checked; title: "Verification"; detail: "Not checked."; value: "–"; }
+                }
+                StateLabel { text: "TECHNICAL DETAILS · VALUES WRAP, NEVER \"…\""; }
+                Rectangle {
+                    background: Theme.layer-01;
+                    details := HorizontalLayout {
+                        padding: 16px;
+                        spacing: 24px;
+                        DetailColumn {
+                            details: [
+                                { key: "target", value: "\\\\.\\PhysicalDrive2 · usb · removable media" },
+                                { key: "target.status", value: "eligible" },
+                            ];
+                        }
+                        DetailColumn {
+                            details: [
+                                { key: "write.mode", value: "selected · windows-installer-boot-setup" },
+                                { key: "verify", value: "read-back on · every byte" },
+                            ];
+                        }
+                    }
+                }
+            }
+            GallerySection {
+                title: "Hash results";
+                caption: "Full 64-character hashes in Plex Mono 13. Never shortened.";
+                VerticalLayout {
+                    ResultRow { key: "Expected SHA-256"; key-detail: "match"; value: "2A1AB0D46D7285F738D082858925D3303F3DC430F0A4EAB5AA238325A4274906"; mono: true; status: Status.ready; status-text: "Matches"; }
+                    ResultRow { key: "Actual SHA-256"; key-detail: "mismatch"; value: "A1ACC315D73B2A9CDF67FECB16403D751C99B6E50983382663FE0745CDFCDB13"; mono: true; value-color: Theme.error-text; status: Status.blocked; status-text: "Mismatch"; }
+                    ResultRow { key: "Expected SHA-256"; key-detail: "none"; value: "Not entered"; value-color: Theme.text-secondary; }
+                }
+                StateLabel { text: "IMAGE PLAN ROWS"; }
+                VerticalLayout {
+                    KeyValueRow { key: "Boot style"; value: "UEFI"; detail: "boot catalog valid"; detail-mark: Status.ready; }
+                    KeyValueRow { key: "Write method"; value: "Needs deeper inspection"; value-mark: Status.needs-inspection; }
+                    KeyValueRow { key: "Boot files found"; value: "/bootmgr · /efi/boot/bootx64.efi"; mono: true; }
+                }
+                NoteRow { status: Status.none; text: "install.wim (6.2 GB) will be split into 2 parts to fit FAT32. Windows Setup reads them as normal."; }
+                NoteRow { status: Status.needs-inspection; text: "Boots on UEFI PCs only. Legacy BIOS mode is not supported."; }
+            }
+        }
+
+        GallerySection {
+            title: "Write progress";
+            caption: "Two phases in order: writing, then verifying. Each shows speed, amount done and time left.";
+            StateLabel { text: "WRITING · ACTIVE"; }
+            PhaseProgress { title: "Writing"; engine-phase: "writing"; state: PhaseState.active; progress: 0.46; speed: "20.1 MB/s"; done: "3.87 GB of 8.41 GB"; time: "About 4 min"; }
+            StateLabel { text: "VERIFYING · WAITING"; }
+            PhaseProgress { title: "Verifying"; engine-phase: "verifying"; description: "Every byte is read back and compared."; state: PhaseState.waiting; progress: 0; speed: "–"; done: "0 GB of 8.41 GB"; time: "About 7 min"; }
+            StateLabel { text: "WRITING · DONE"; }
+            PhaseProgress { title: "Writing"; engine-phase: "writing"; state: PhaseState.done; progress: 1; speed: "20.0 MB/s average"; done: "8.41 GB of 8.41 GB"; time-label: "Took"; time: "7 min 31 s"; }
+        }
+    }
+}

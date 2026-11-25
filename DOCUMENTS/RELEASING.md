@@ -56,22 +56,3 @@ Settings → Environments → `release` (created by the first release run, or cr
 After signing, the workflow checks the signature and its timestamp with `signtool` and fails the release if either is missing.
 
 The signing steps follow each provider's documented setup but cannot be tried until a certificate exists. The first signed release should be a hand-run test build, and its `osflux.exe` checked under Properties → Digital Signatures.
-
-### Options for a Ghana-registered company (checked November 2026)
-
-| Option | Approximate yearly cost | Eligible | Fits CI |
-|---|---|---|---|
-| **SSL.com OV certificate with eSigner cloud signing** | Certificate about $129 a year, plus eSigner about $15 a month: about $310 a year in total | Yes. SSL.com validates organisations worldwide. | Yes: the `ssl-com` route |
-| **OV certificate from Sectigo, DigiCert or GlobalSign, issued into Azure Key Vault** | Certificate about $220–$550 a year (Key Vault versions from about $400), plus Azure Key Vault Premium, a few dollars a month | Yes. These CAs validate organisations worldwide. | Yes: the `azure-key-vault` route |
-| **Microsoft Artifact Signing** (formerly Trusted Signing) | About $10 a month | **No.** Public signing is limited to organisations in the USA, Canada, the EU and the UK, with reports of a few more countries; Ghana is not among them. | Would fit, if eligibility widens |
-| EV certificate | $300–$700 a year | Yes | Same routes as OV |
-
-**Recommendation:** an OV certificate. Microsoft removed EV certificates' SmartScreen advantage in 2024, so OV and EV now build reputation the same way, as signed downloads accumulate. SSL.com with eSigner is the cheapest route that works in CI.
-
-**What a CA will typically ask a Ghanaian company for**, as part of organisation validation:
-- The legal name and registration number at the Office of the Registrar of Companies, with a certificate of incorporation.
-- A business address, and a phone number that the CA can verify in an independent directory. A D-U-N-S number from Dun & Bradstreet is the usual way. It is free, but can take a few weeks to get.
-- Where the CA cannot check those records online, a letter from a lawyer or accountant confirming them.
-- Confirmation that the person ordering may act for the company.
-
-The certificate shows the company's legal name exactly as registered. Ask the CA to confirm the documents it needs before paying.

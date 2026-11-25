@@ -206,7 +206,7 @@ mod tests {
     fn writes_one_json_object_per_line_with_escaped_values() {
         let mut event = AuditEvent::new(
             AuditEventKind::WriteFailed,
-            r#"C:\Users\creer\Downloads\"odd" name.iso"#,
+            r#"D:\Images\"odd" name.iso"#,
             3,
         )
         .with_detail("verification failed:\nbyte 17");
@@ -218,7 +218,7 @@ mod tests {
         assert!(line.starts_with(
             r#"{"time":"2026-11-18T17:13:36Z","unixSeconds":1795022016,"event":"write-failed","#
         ));
-        assert!(line.contains(r#""imagePath":"C:\\Users\\creer\\Downloads\\\"odd\" name.iso""#));
+        assert!(line.contains(r#""imagePath":"D:\\Images\\\"odd\" name.iso""#));
         assert!(line.contains(r#""detail":"verification failed:\nbyte 17""#));
         assert!(line.contains(r#""targetIndex":3,"#));
         assert!(line.contains(r#""imageSha256":null,"#));

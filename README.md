@@ -33,6 +33,8 @@ For continuous integration, releases and code signing, read:
 
 ## Development
 
+To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Requirements:
 
 - Rust, through rustup. The version is pinned in `rust-toolchain.toml`, and rustup installs it the first time `cargo` runs here.

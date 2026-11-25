@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest something new for OSflux or OSflux Studio.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that OSflux does not let you do, or makes hard?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How would you like it to work? Commands, options or screens are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you considered, or how you do it today, for example with another tool.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part of OSflux
+      options:
+        - CLI (osflux)
+        - Studio (osflux-studio)
+        - Engine (image support, write methods)
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Effect on safety
+      description: Would this change which drives OSflux writes to, what it asks before writing, or what it records? If so, how should it stay safe?
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to work on this myself.

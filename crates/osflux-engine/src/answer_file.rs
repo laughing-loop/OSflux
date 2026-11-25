@@ -114,7 +114,7 @@ impl SetupOptions {
     }
 
     /// A short list for the audit log, such as
-    /// `bypass-requirements, local-account=joly`.
+    /// `bypass-requirements, local-account=alex`.
     pub fn audit_summary(&self) -> String {
         let mut parts = Vec::new();
         if self.bypass_requirements {
@@ -416,7 +416,7 @@ mod tests {
     fn all_options() -> SetupOptions {
         SetupOptions {
             bypass_requirements: true,
-            local_account: Some("Joly".to_string()),
+            local_account: Some("alex".to_string()),
             skip_privacy_questions: true,
             disable_bitlocker_auto_encryption: true,
             region: Some(RegionSettings {
@@ -454,13 +454,13 @@ mod tests {
 
     #[test]
     fn creates_a_local_account_without_writing_a_password() {
-        let xml = only(|options| options.local_account = Some("Joly".to_string()));
+        let xml = only(|options| options.local_account = Some("alex".to_string()));
 
-        assert!(xml.contains("<Name>Joly</Name>"));
+        assert!(xml.contains("<Name>alex</Name>"));
         assert!(xml.contains("<Group>Administrators</Group>"));
         assert!(xml.contains("BypassNRO"));
         assert!(xml.contains("<HideOnlineAccountScreens>true</HideOnlineAccountScreens>"));
-        assert!(xml.contains("net user &quot;Joly&quot; /logonpasswordchg:yes"));
+        assert!(xml.contains("net user &quot;alex&quot; /logonpasswordchg:yes"));
         assert!(xml.contains("<LogonCount>1</LogonCount>"));
         // Every password in the file is empty.
         assert_eq!(xml.matches("<Password>").count(), 2);
@@ -569,8 +569,8 @@ mod tests {
     #[test]
     fn checks_local_account_names() {
         for good in [
-            "Joly",
-            "joly.doh",
+            "alex",
+            "alex.k",
             "Zoë",
             "test user",
             "a_b-c",
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(options.describe().len(), 5);
         assert_eq!(
             options.audit_summary(),
-            "bypass-requirements, local-account=Joly, skip-privacy-questions, no-bitlocker-auto-encryption, region=en-GB/en-GB/0809:00000809"
+            "bypass-requirements, local-account=alex, skip-privacy-questions, no-bitlocker-auto-encryption, region=en-GB/en-GB/0809:00000809"
         );
     }
 }

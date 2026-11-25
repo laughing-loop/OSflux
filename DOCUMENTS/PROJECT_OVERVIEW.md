@@ -171,6 +171,8 @@ cargo run -- --plan-image "C:\path\to\image.iso"
 cargo run -p osflux-studio
 ```
 
+Plain `cargo run`, with no options, runs a small demo of the engine pipeline and ends with "OSflux Core pipeline processed 8 block(s)." It touches no drive. `--blocks=<N>` and `--block-size=<N>` control how much demo data goes through it.
+
 Writing needs an Administrator PowerShell and the confirmation from `--intent`. The README shows the full sequence.
 
 ## What Comes Next

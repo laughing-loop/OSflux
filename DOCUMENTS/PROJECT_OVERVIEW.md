@@ -1,484 +1,203 @@
 # OSflux Project Overview
 
-This document explains what we have done so far, why we did it, and what comes next.
+This document explains what OSflux does today, how it is put together, and what comes next. It was last brought up to date in November 2026.
 
 ## What OSflux Is
 
-OSflux is planned as a next-generation bootable media and OS deployment platform.
+OSflux writes operating system images to USB sticks and SD cards, so a PC can start from the stick and install the system. The long-term goal is a bootable media and OS deployment platform: fast, careful with the drives it touches, and built so that every interface uses the same engine.
 
-In simple terms, OSflux will help prepare USB drives for operating system installation and deployment. The long-term goal is not just to copy files to a USB drive, but to build a fast, intelligent, extensible platform.
+Today OSflux is a command-line program, `osflux` (`osflux.exe` on Windows), that writes Windows 11 installer ISOs, Linux installer ISOs and raw disk images on Windows. OSflux Studio, the desktop app, is being built on the same engine.
 
-## Why There Is No Full UI Yet
+## What OSflux Can Do Today
 
-Right now, we are building the engine first.
+### Write three kinds of image
 
-That means we are starting with the low-level foundation that will later power every interface:
+| Image | How OSflux writes it |
+|---|---|
+| Raw disk image (`.img`, `.raw`) | Byte for byte. |
+| Hybrid ISO: most Linux installers, such as Ubuntu, Fedora, Debian, Arch and Mint | Byte for byte. The ISO already holds a partition table, so it starts from the stick as it is. |
+| Windows installer ISO | OSflux reads the ISO's UDF file tree and copies its files onto a new MBR drive with one FAT32 partition that starts in UEFI mode only. |
 
-- command-line interface
-- desktop GUI
-- automation workflows
-- future extensions
+For a Windows ISO:
+- **No temporary files.** The FAT32 stick image is generated from the ISO as it is written, so nothing is extracted to a temporary folder.
+- **Secure Boot keeps working.** Microsoft's signed boot files are copied unchanged.
+- **No accidental legacy installs.** A PC that tries the legacy BIOS entry is told to choose the `UEFI:` entry instead, so Windows is never installed in legacy mode by accident.
+- **Stick size.** Use a stick of 8 GB or more.
 
-A nice UI can come later, but it needs a reliable engine underneath it. If we build the UI first without the engine, the buttons would exist but would not have real power behind them yet.
+### Split an install.wim that is too big for FAT32
 
-## The Platform Structure
+FAT32 cannot hold a file of 4 GiB or more, and the `sources/install.wim` of most Windows 11 ISOs is larger. OSflux writes it as `install.swm`, `install2.swm` and so on, of at most 3800 MiB each.
+- **Windows Setup reads the parts** in place of `install.wim`. They are the same form `DISM /Split-Image` makes.
+- **Nothing is recompressed or extracted first.** The parts are generated as the stick is written.
+- **Refused before anything is written:**
+  - an `install.esd` or other image with solid compression, which cannot be split this way;
+  - any other file of 4 GiB or more.
+- **Fallback.** If a stick made this way ever fails to start Setup, the README shows how to split the image with DISM by hand.
 
-OSflux is structured as a platform, not as one big script.
+### Change Windows Setup, if asked
 
-## OSflux Core
+A Windows stick is a stock Microsoft installer unless you ask for more. These options add settings to an answer file, `autounattend.xml`, at the root of the stick. Windows Setup reads it by itself on any PC started from that stick. Each option is off unless given:
 
-Location:
+| Option | What it does |
+|---|---|
+| `--bypass-requirements` | Skips Windows 11's TPM 2.0, Secure Boot and 4 GB memory checks, for PCs that fail them. Microsoft does not support Windows 11 on such PCs. |
+| `--local-account <NAME>` | Creates this local administrator account instead of asking for a Microsoft account. |
+| `--skip-privacy-questions` | Answers the privacy questions with the choices that send the least data to Microsoft. |
+| `--no-auto-bitlocker` | Stops Windows from turning on BitLocker device encryption by itself. |
+| `--copy-region` | Uses this PC's formats, system locale and keyboard. |
 
-```text
-crates/osflux-core
-```
+The answer file never holds a password. The local account signs in once by itself so Setup can finish, and Windows asks for a new password at the next sign-in.
 
-This is the low-level system layer.
+### Verify every write
 
-It will handle things like:
+- **Read back.** After writing, OSflux reads every byte back and compares it, so a faulty or fake-capacity stick is caught.
+- **`--no-verify`** skips the read-back for a quicker write. The write plan warns about it, and the audit log records that the write was not verified.
+- **Checksum.** When the write finishes, OSflux prints the SHA-256 of the image, to compare with the one the image's publisher lists.
 
-- finding storage devices
-- opening physical drives safely
-- writing data in large blocks
-- using Windows I/O APIs
-- managing the write pipeline
+### Refuse to erase the wrong drive
 
-This layer is where performance matters most.
+Writing to a drive erases it, so every write goes through a safety chain:
 
-The device layer now has a shared `BlockDevice` trait. Windows has the first implementation, while Linux and macOS have placeholder modules ready for future work.
+- **Which drives can be written.** Only drives that report removable media, such as USB sticks and SD cards. OSflux blocks any drive that:
+  - holds the system volume;
+  - is an external hard disk or SSD;
+  - has a size or identity it cannot read;
+  - reports itself as a fixed disk.
+- **What has to be typed.** That depends on what the drive holds:
+  - A blank drive, or one with a single empty FAT32 or exFAT partition, is confirmed with its four-character identity code, such as `7F3A`.
+  - Any other allowed drive needs the full phrase, such as `OSFLUX ERASE TARGET 2 7F3A`.
+- **The identity code.** It is built from the drive's model, serial number and Windows device ID. If USB sticks are swapped, the code changes and an old confirmation no longer matches.
+- **What a confirmation covers.** `--intent` records it, and it covers one write, within 10 minutes, of the same image file.
+- **Writing.** `--write --execute` does the following, and only from an Administrator prompt:
+  1. Checks the drive again.
+  2. Asks you to type `yes`.
+  3. Locks and dismounts the drive's volumes. It asks before forcing a dismount, the way `chkdsk` and `format` do.
+  4. Writes in 4 MiB chunks.
+  5. Verifies, then releases the drive.
+- **Audit log.** Every confirmation and write attempt is recorded in `audit.log`, in the OSflux state folder, as one JSON object per line. If OSflux cannot record that a write is starting, it does not touch the drive.
 
-The writer layer now has a `WriteStrategy` trait. This lets Windows, Linux, and macOS use different high-performance write methods later without forcing the engine to care about operating-system details.
+### Look before writing
 
-## OSflux Engine
+Each step of the chain can also be run on its own. None of these commands writes to a drive, and each can print JSON with `--json`:
 
-Location:
+| Command | What it shows |
+|---|---|
+| `--list-devices` | Every physical drive, with its size, model, interface, and whether OSflux would write to it. |
+| `--assess-target <INDEX>` | One drive's verdict: eligible, needs confirmation, or blocked, and why. |
+| `--plan-image <PATH>` | What the image is (ISO 9660, UDF, El Torito boot catalog, MBR, GPT), how OSflux would write it, and for a Windows ISO, what its files become on a FAT32 stick. |
+| `--detect-family`, `--filesystem-plan` | Whether the image is a Windows installer, a Linux installer, both, or a raw disk image, and the boot setup that follows. |
+| `--preflight` | One verdict for an image and drive together: ready, needs confirmation, needs inspection, or blocked. |
+| `--intent` | The confirmation for that image and drive. |
+| `--write` (without `--execute`), `--session`, `--chunk-plan`, `--progress-preview`, `--select-mode` | The write that would happen, step by step, as a dry run. |
 
-```text
-crates/osflux-engine
-```
+The README lists every command with examples.
 
-This is the orchestration layer.
+## How OSflux Is Put Together
 
-It will decide what should happen and in what order.
+OSflux is a Rust workspace with four crates. The engine makes every decision about safety, and the interfaces only ask it.
 
-Example future flow:
+| Crate | What it is |
+|---|---|
+| `crates/osflux-core` | The low-level layer: listing drives, opening them, and reading and writing in large blocks with the Windows I/O APIs. Windows is implemented. The Linux and macOS modules are placeholders, so OSflux cannot list or write drives there yet. |
+| `crates/osflux-engine` | The orchestration layer. See below. |
+| `crates/osflux-cli` | The command-line program, `osflux`. |
+| `crates/osflux-studio` | OSflux Studio, the desktop app. |
 
-```text
-Input image -> Image plan -> Device preparation -> Write -> Verify
-```
+The engine's parts:
+- image planning, family detection and the ISO 9660 and UDF readers;
+- drive assessment, including what a drive holds;
+- the confirmation chain;
+- the FAT32 builder, the install.wim splitter and the answer file;
+- the write and verify path;
+- the audit log.
 
-The engine should not be tied to only one user interface. The CLI and future GUI should both call into this layer.
+## OSflux Studio (in progress)
 
-## OSflux CLI
+Studio is the desktop app. It is built with Slint and calls the engine directly, so it shows the same verdicts as the CLI and never makes a safety decision of its own.
 
-Location:
+- **Design.** It follows the v2 design in `DOCUMENTS/studio/`: the screen frames, dark and light, and `osflux-studio-ui-tokens.md`. It uses IBM Plex Sans and Mono, square custom components, and the OSflux icons.
+- **Administrator.** On Windows it asks for Administrator when it opens, as tools that write drives do.
+- **Done so far:**
+  - The window: a header with the Administrator status, the step list with "This session", the action bar and the status bar.
+  - Dark, light and follow-Windows themes.
+  - Settings: the theme, and "Verify after writing", on by default.
+  - About, with the licences.
+  - **Step 1, Image.** Choose a file with the Open dialog, or drop it onto the window. Dropping works on Windows even though Studio runs as Administrator. Studio shows the engine's image plan and notes, and takes an optional expected SHA-256 from the download page.
+  - **Step 2, Drive.** The drives the engine allows, the ones it will not erase with the reason in plain words, and Refresh.
+  - **Step 3, Safety check.** The engine's verdict and its checks in order, with the technical details. A blocked verdict offers a way back.
+  - Reading images, listing drives and the safety check run in the background, so the window never freezes.
+- **Next:**
+  - Windows options, the five Setup options above, for Windows ISOs only.
+  - Confirm: the drive code or the full phrase, as the engine requires, with the 10-minute limit.
+  - Writing and verifying, with speed, time left and Cancel.
+  - The Done screens, with whether the hash matched and a link to the audit log.
+  - The error screens.
+- **On Linux,** Studio builds and runs for development. Browse uses zenity or kdialog, but no drives are listed until the core supports Linux.
 
-```text
-crates/osflux-cli
-```
+## Licence
 
-This is the command-line interface.
+OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence.
 
-Right now it is the first user-facing entrypoint because it is faster to build, easier to test, and useful while the engine is still young.
+The Studio program is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
 
-Later commands may look like:
+## Continuous Integration and Releases
+
+Every pull request to `main`, and every push to it, runs `.github/workflows/ci.yml`:
+
+| Job | What it checks |
+|---|---|
+| Windows | Lints with warnings treated as errors, every test, and release builds of `osflux.exe` and `osflux-studio.exe`, kept as a download for 14 days. |
+| Linux | Formatting, lints, every test (with independent FAT32, WIM and XML tools installed, so the cross-checks run), and the Windows build checked from Linux. |
+| Dependency licences | That every dependency's licence is compatible with GPL-3.0 (`deny.toml`). |
+
+Rust is pinned in `rust-toolchain.toml`, so CI and every developer machine use the same compiler.
+
+Pushing a version tag, such as `v0.1.0`, runs `.github/workflows/release.yml`:
+1. It checks that the tag matches the version in `Cargo.toml`, and runs the tests.
+2. It builds `osflux.exe` and signs it, once a code signing certificate is set up. Until then it builds unsigned.
+3. It packages a zip with `SHA256SUMS.txt`.
+4. It publishes a GitHub release whose notes are the version's section of `CHANGELOG.md`.
+
+No version has been released yet; 0.1.0 will be the first. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and the code signing options.
+
+## How To Run It Locally
+
+From the project folder, in PowerShell:
 
 ```powershell
-osflux --list-devices
-osflux write --image Windows.iso --target PhysicalDrive2
-```
-
-## OSflux Studio
-
-This is the planned graphical interface.
-
-It does not exist yet. When the engine is stronger, OSflux Studio can become the visual app with buttons, progress bars, drive selection, image selection, and settings.
-
-## What We Have Done So Far
-
-We installed and verified the Rust MSVC toolchain.
-
-We fixed the first Windows API compile issues.
-
-We converted the project into a Rust workspace.
-
-We created the first platform crates:
-
-- `osflux-core`
-- `osflux-engine`
-- `osflux-cli`
-
-We pushed the first commit to GitHub:
-
-```text
-https://github.com/laughing-loop/OSflux
-```
-
-Continuous integration runs from `.github/workflows/ci.yml`; `DOCUMENTS/RELEASING.md` describes it, along with releases and code signing.
-
-We added the first read-only device command:
-
-```powershell
+cargo run -- --version
 cargo run -- --list-devices
-```
-
-This is the first step toward safe drive selection.
-
-The device scan now tries to show:
-
-- disk path
-- size
-- model
-- interface type
-- media type
-- safety label
-- system-drive warning
-
-OSflux can now assess a target drive by index:
-
-```powershell
-cargo run -- --assess-target 2
-```
-
-This is still read-only. It classifies the selected drive as blocked, needing confirmation, or eligible. Eligible means the drive is blank or holds one empty FAT32 or exFAT partition, so its four-character identity code is enough to confirm a write.
-
-OSflux can now combine image planning and target assessment into a write preflight:
-
-```powershell
-cargo run -- --preflight --image "C:\path\to\image.iso" --target 2
-```
-
-This is also read-only. It gives one verdict for the image and target pair: blocked, needs-inspection, needs-confirmation, or ready.
-
-OSflux can now create a write intent:
-
-```powershell
-cargo run -- --intent --image "C:\path\to\image.iso" --target 2
-```
-
-This is still read-only. It turns a passing preflight into a deliberate confirmation phrase, such as:
-
-```text
-OSFLUX ERASE TARGET 2 7F3A
-```
-
-That phrase is the safety gate a future write command must require before opening a target drive for write access.
-
-The last part, `7F3A` in this example, is the drive's identity code. OSflux builds it from the drive's model, serial number, and Windows device ID. If a different drive ends up at the same index, for example after USB sticks are swapped, the code changes and the old phrase no longer matches.
-
-OSflux can now write Windows installer ISOs. Their files live in a UDF filesystem rather than a hybrid partition table, so OSflux reads the UDF tree and copies it onto a new MBR drive with one FAT32 partition that starts in UEFI mode only. The FAT32 image is generated as it is written, from the ISO, and read back and compared like any other write. Most Windows 11 ISOs carry a `sources/install.wim` larger than the 4 GiB FAT32 limit; OSflux writes it as `install.swm`, `install2.swm` and so on, of at most 3800 MiB each, which Windows Setup reads in its place. `DISM /Split-Image` stays documented in the README as the fallback.
-
-OSflux can now validate a confirmed write command as a dry-run skeleton:
-
-```powershell
-cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
-```
-
-This still does not write to any drive. It checks:
-
-- the image plan
-- the target assessment
-- the write preflight
-- the write intent
-- the exact confirmation phrase
-
-If everything matches, the command reports `ready-dry-run` and keeps `write access attempted` as `no`.
-
-OSflux can now prepare a locked write session:
-
-```powershell
-cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
-```
-
-This still does not write to any drive. It turns the confirmed dry-run write command into a session record with:
-
-- a session ID
-- the locked image path
-- the locked target index and path
-- confirmation status
-- dry-run status
-- write access status
-
-For now, a prepared session means the safety chain is complete, not that OSflux is allowed to write yet.
-
-OSflux can now prepare a dry-run chunk plan:
-
-```powershell
-cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
-```
-
-The chunk plan reads the image size and calculates:
-
-- chunk size
-- chunk count
-- final chunk size
-- planned bytes
-- dry-run status
-- write access status
-
-This is the foundation for progress reporting. If an image is 10 MiB and the chunk size is 4 MiB, OSflux plans 3 chunks: 4 MiB, 4 MiB, and 2 MiB.
-
-OSflux can now preview progress events:
-
-```powershell
-cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
-```
-
-This still does not write to any drive. It turns a chunk plan into progress snapshots such as:
-
-- start
-- first completed chunk
-- midpoint checkpoint
-- final completed chunk
-
-The preview reports progress as integer basis points. In plain terms, `10000` means `100.00%`, `5000` means `50.00%`, and `4000` means `40.00%`.
-
-OSflux can now select a write mode:
-
-```powershell
-cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A"
-```
-
-This still does not write to any drive. It decides which future execution path is appropriate:
-
-- ISO filesystem boot setup when ISO boot metadata is trusted
-- raw block writing when the image is a raw disk image
-- needs-inspection when the image is recognized but not trusted enough
-- blocked when the safety chain or image plan does not pass
-
-OSflux can now detect an image family:
-
-```powershell
-cargo run -- --detect-family --image "C:\path\to\image.iso"
-```
-
-This still does not write to any drive. It uses the image planner first, then scans the early image bytes for family markers.
-
-The family detector can currently classify:
-
-- Windows installer images
-- Linux installer images
-- multi-family images
-- raw disk images
-- unknown images that need deeper inspection
-
-This matters because the future writer should not treat every image the same way. A raw disk image can follow a raw block path, while an installer ISO may need filesystem-aware boot setup.
-
-OSflux can now inspect ISO directory records:
-
-```powershell
 cargo run -- --plan-image "C:\path\to\image.iso"
+cargo run -p osflux-studio
 ```
 
-This still does not write to any drive. The image planner now reads the ISO Primary Volume Descriptor, finds the root directory record, walks real ISO directory entries with safety limits, and reports boot-related paths when they are present.
-
-The directory inspector can currently identify paths such as:
-
-- boot managers
-- UEFI bootloaders
-- installer image files
-- Linux bootloaders
-- Linux kernel files
-- initrd files
-- live filesystem images
-- GRUB boot paths
-
-This is more reliable than only scanning raw bytes because OSflux is now reading the ISO's actual filesystem records.
-
-OSflux can now build a filesystem-aware ISO plan:
-
-```powershell
-cargo run -- --filesystem-plan --image "C:\path\to\image.iso"
-```
-
-This still does not write to any drive. It combines:
-
-- image family evidence
-- ISO boot catalog validity
-- boot image range validation
-- ISO directory boot assets
-
-The result is a higher-level plan that can choose paths such as:
-
-- Windows installer boot setup
-- Linux installer boot setup
-- multi-family boot setup
-- deeper inspection
-- unsupported
-
-This matters because the future write engine needs a clean decision before it can safely choose filesystem setup behavior.
-
-We also added the first read-only image planning command:
-
-```powershell
-cargo run -- --plan-image "C:\path\to\image.iso"
-```
-
-This command classifies the image, reads its size, chooses an initial write mode, and prints notes/warnings. It reads known file signatures first, then falls back to the extension when no signature is found. It does not open or write to any drive.
-
-## GitHub Actions Status
-
-GitHub Actions is the robot that builds and checks the project on GitHub.
-
-Every pull request to `main`, and every push to it, runs `.github/workflows/ci.yml` on Windows and Linux:
-
-- check formatting
-- run clippy with warnings treated as errors
-- run every test, with the independent FAT32, WIM and XML checking tools installed on Linux
-- build `osflux.exe`, and check the Windows build from Linux too
-- check that every dependency's licence is compatible with GPL-3.0, OSflux's licence (`deny.toml`)
-
-Pushing a version tag runs `.github/workflows/release.yml`, which packages `osflux.exe` and signs it once a code signing certificate is set up. `DOCUMENTS/RELEASING.md` explains both, and what to check if runs fail before any job starts, as they once did on this repository.
-
-## How To Run The Project Locally
-
-From the project folder:
-
-```powershell
-cd C:\Users\jolyn\OSflux
-cargo run
-```
-
-Current output:
-
-```text
-OSflux CLI
-OSflux Engine starting...
-OSflux Core pipeline processed 8 block(s).
-```
-
-That output means the CLI is calling the engine, and the engine is calling the core pipeline.
+Writing needs an Administrator PowerShell and the confirmation from `--intent`. The README shows the full sequence.
 
 ## What Comes Next
 
-The next useful milestone is improving image planning.
-
-We now have this command:
-
-```powershell
-cargo run -- --plan-image "C:\path\to\image.iso"
-```
-
-The deeper image inspection milestone has started. OSflux can now detect early signatures such as ISO volume descriptors, UDF descriptors, GPT headers, and MBR boot signatures.
-
-OSflux can also inspect ISO boot metadata for an El Torito boot catalog. That is how many bootable ISO images describe their boot entries, platform, emulation mode, and boot image location.
-
-The planner now turns that catalog data into a boot style:
-
-- BIOS
-- UEFI
-- BIOS + UEFI hybrid
-- unknown or not bootable
-
-It also validates the byte range for each boot entry. In plain terms, OSflux checks whether the boot catalog points to real readable bytes inside the ISO instead of blindly trusting the catalog.
-
-OSflux now also reads ISO directory records. In plain terms, it can inspect the ISO's real file table and report boot asset paths instead of relying only on extension checks or raw marker searches.
-
-The planner now selects an initial write strategy:
-
-- ISO filesystem boot setup when boot metadata is complete and valid
-- deeper ISO inspection when boot metadata is missing, unknown, or unsafe
-- raw block writing for raw disk images
-- unknown strategy for files OSflux cannot classify yet
-
-The planner now also assigns a status:
-
-- ready: the image plan is trusted for the next safety phase
-- needs-inspection: OSflux recognizes the image, but needs stronger metadata before trusting it
-- blocked: OSflux cannot safely use the image plan yet
-
-The engine now builds a structured plan report. The CLI renders that report today, and the future Studio interface can use the same report instead of rebuilding planning logic in the GUI.
-
-The CLI can now print that plan report as JSON:
-
-```powershell
-cargo run -- --plan-image "C:\path\to\image.iso" --json
-```
-
-That gives OSflux a machine-readable output path for future automation, testing, and GUI integration.
-
-The preflight can also be printed as JSON:
-
-```powershell
-cargo run -- --preflight --image "C:\path\to\image.iso" --target 2 --json
-```
-
-The write intent can also be printed as JSON:
-
-```powershell
-cargo run -- --intent --image "C:\path\to\image.iso" --target 2 --json
-```
-
-The write command dry-run can also be printed as JSON:
-
-```powershell
-cargo run -- --write --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
-```
-
-The locked write session can also be printed as JSON:
-
-```powershell
-cargo run -- --session --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --json
-```
-
-The chunk plan can also be printed as JSON:
-
-```powershell
-cargo run -- --chunk-plan --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
-```
-
-The progress preview can also be printed as JSON:
-
-```powershell
-cargo run -- --progress-preview --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
-```
-
-The write mode selection can also be printed as JSON:
-
-```powershell
-cargo run -- --select-mode --image "C:\path\to\image.iso" --target 2 --confirm "OSFLUX ERASE TARGET 2 7F3A" --chunk-size 4194304 --json
-```
-
-The image family report can also be printed as JSON:
-
-```powershell
-cargo run -- --detect-family --image "C:\path\to\image.iso" --json
-```
-
-The filesystem-aware ISO plan can also be printed as JSON:
-
-```powershell
-cargo run -- --filesystem-plan --image "C:\path\to\image.iso" --json
-```
-
-After that, we build:
-
-- filesystem staging plan
-- real write pipeline
-- progress reporting
-- verification
-- GUI later
+- **Studio:** Windows options and Confirm, then writing, verifying, Done and the error screens. Cancel needs the engine's write path to support stopping part-way, which it does not yet.
+- **Before the first release:**
+  - package `osflux-studio.exe` in the release workflow;
+  - make its release build smaller;
+  - include the third-party licence notices;
+  - set up code signing.
+- **Later:** Linux and macOS drive access in the core, so OSflux can write drives there too.
 
 ## Development Rule
 
-We build the dangerous parts carefully.
+We build the dangerous parts carefully. Writing to a physical drive erases it, so OSflux:
 
-Writing to a physical drive can erase data. So before OSflux writes anything, it needs strong safety checks:
+- lists drives clearly, with their size, model and identity;
+- writes only to removable drives, and never to the system drive;
+- asks for a confirmation tied to that exact drive and image, which expires;
+- checks the drive again just before writing, and reads every byte back afterwards;
+- records every attempt in the audit log.
 
-- clearly list target devices
-- detect removable drives
-- show disk size and identity
-- require explicit confirmation before writing
-- avoid touching system drives by accident
+New features keep to these rules. Interfaces ask the engine, and do not repeat or skip its checks.
 
 ## Short Version
 
-We are currently building the foundation.
-
-The CLI is the first control panel.
-
-The engine will become the brain.
-
-The core will become the power layer.
-
-The GUI comes after the engine can do real work.
+- **The CLI** writes Windows 11 installers, Linux installers and raw disk images to USB sticks on Windows, and checks every byte.
+- **The engine** makes every safety decision. The CLI and Studio only ask it.
+- **Studio** is under way: choosing an image, choosing a drive and the safety check work. Confirming and writing come next.
+- **Every change** is checked on Windows and Linux. The release workflow is ready for the first version.

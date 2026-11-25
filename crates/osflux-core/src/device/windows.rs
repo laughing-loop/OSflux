@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::time::Duration;
 
@@ -15,11 +16,12 @@ use windows::Win32::System::Ioctl::{
     IOCTL_DISK_GET_DRIVE_GEOMETRY, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_DISK_UPDATE_PROPERTIES,
     IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
 };
+use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows::Win32::System::IO::DeviceIoControl;
 
+use super::disk_metadata::{parse_disk_metadata_line, DiskMetadata};
 use super::{
-    is_placeholder_serial, BlockDevice, BusyVolumes, DeviceAccess, DeviceError, DeviceRead,
-    DeviceResult, PhysicalDevice,
+    BlockDevice, BusyVolumes, DeviceAccess, DeviceError, DeviceRead, DeviceResult, PhysicalDevice,
 };
 use crate::windows_io::{control_overlapped, query_overlapped, read_overlapped, write_overlapped};
 
@@ -574,38 +576,24 @@ fn probe_physical_device(index: u32) -> Option<PhysicalDevice> {
         Ok(handle) => {
             let size_bytes = query_device_length(handle);
             close_handle(handle);
-
-            Some(PhysicalDevice {
+            Some(PhysicalDevice::found_without_metadata(
                 index,
                 path,
                 size_bytes,
-                model: None,
-                interface_type: None,
-                media_type: None,
-                pnp_device_id: None,
-                serial_number: None,
-                contains_system_volume: false,
-                access: DeviceAccess::Readable,
-                note: None,
-            })
+                DeviceAccess::Readable,
+                None,
+            ))
         }
         Err(read_error) => match open_handle(&path, 0, FILE_ATTRIBUTE_NORMAL) {
             Ok(handle) => {
                 close_handle(handle);
-
-                Some(PhysicalDevice {
+                Some(PhysicalDevice::found_without_metadata(
                     index,
                     path,
-                    size_bytes: None,
-                    model: None,
-                    interface_type: None,
-                    media_type: None,
-                    pnp_device_id: None,
-                    serial_number: None,
-                    contains_system_volume: false,
-                    access: DeviceAccess::MetadataOnly,
-                    note: Some(format!("read access unavailable: {read_error}")),
-                })
+                    None,
+                    DeviceAccess::MetadataOnly,
+                    Some(format!("read access unavailable: {read_error}")),
+                ))
             }
             Err(_) => None,
         },
@@ -638,27 +626,23 @@ fn device_from_metadata(metadata: &DiskMetadata) -> PhysicalDevice {
     }
 }
 
-#[derive(Debug, Clone)]
-struct DiskMetadata {
-    index: u32,
-    model: Option<String>,
-    interface_type: Option<String>,
-    media_type: Option<String>,
-    size_bytes: Option<u64>,
-    pnp_device_id: Option<String>,
-    serial_number: Option<String>,
-    contains_system_volume: bool,
-}
-
+/// Asks Windows, through PowerShell, about every disk. Returns nothing when
+/// PowerShell is missing, blocked or fails; the drives are then still found
+/// by opening them, but without an identity or media type, so none of them
+/// can be chosen as a target.
 fn query_disk_metadata() -> HashMap<u32, DiskMetadata> {
+    // Studio is a windowed program with no console, so Windows would give
+    // powershell.exe a console window of its own and flash it on screen.
     let output = Command::new("powershell.exe")
         .args([
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
             DISK_METADATA_SCRIPT,
         ])
+        .creation_flags(CREATE_NO_WINDOW.0)
         .output();
 
     let Ok(output) = output else {
@@ -674,39 +658,6 @@ fn query_disk_metadata() -> HashMap<u32, DiskMetadata> {
         .filter_map(parse_disk_metadata_line)
         .map(|metadata| (metadata.index, metadata))
         .collect()
-}
-
-fn parse_disk_metadata_line(line: &str) -> Option<DiskMetadata> {
-    let fields: Vec<_> = line.split('\t').collect();
-    if fields.len() < 7 {
-        return None;
-    }
-
-    let index = fields[0].trim().parse::<u32>().ok()?;
-
-    Some(DiskMetadata {
-        index,
-        model: optional_field(fields[1]),
-        interface_type: optional_field(fields[2]),
-        media_type: optional_field(fields[3]),
-        size_bytes: fields[4].trim().parse::<u64>().ok(),
-        pnp_device_id: optional_field(fields[5]),
-        contains_system_volume: fields[6].trim().eq_ignore_ascii_case("true"),
-        serial_number: fields
-            .get(7)
-            .copied()
-            .and_then(optional_field)
-            .filter(|serial| !is_placeholder_serial(serial)),
-    })
-}
-
-fn optional_field(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
-    }
 }
 
 fn open_handle(
@@ -773,17 +724,27 @@ Get-CimInstance Win32_DiskDrive | Sort-Object Index | ForEach-Object {
     $disk = $_
     $containsSystem = $false
 
-    try {
-        $partitions = Get-CimAssociatedInstance -InputObject $disk -Association Win32_DiskDriveToDiskPartition
-        foreach ($partition in $partitions) {
-            $logicalDisks = Get-CimAssociatedInstance -InputObject $partition -Association Win32_LogicalDiskToPartition
-            foreach ($logicalDisk in $logicalDisks) {
-                if ($logicalDisk.DeviceID -eq $systemDrive) {
-                    $containsSystem = $true
+    # When the check cannot run, say so: OSflux then treats the disk as the
+    # system disk rather than as safe to erase. -ErrorAction Stop makes a
+    # failed lookup reach the catch; by default it would only print a
+    # warning and leave the disk looking safe.
+    if ([string]::IsNullOrEmpty($systemDrive)) {
+        $containsSystem = "unknown"
+    } else {
+        try {
+            $partitions = Get-CimAssociatedInstance -InputObject $disk -Association Win32_DiskDriveToDiskPartition -ErrorAction Stop
+            foreach ($partition in $partitions) {
+                $logicalDisks = Get-CimAssociatedInstance -InputObject $partition -Association Win32_LogicalDiskToPartition -ErrorAction Stop
+                foreach ($logicalDisk in $logicalDisks) {
+                    if ($logicalDisk.DeviceID -eq $systemDrive) {
+                        $containsSystem = $true
+                    }
                 }
             }
+        } catch {
+            $containsSystem = "unknown"
         }
-    } catch {}
+    }
 
     [string]::Join("`t", @(
         (Clean $disk.Index),

@@ -422,6 +422,55 @@ mod tests {
         }
     }
 
+    /// When Windows' disk details cannot be read (PowerShell missing,
+    /// blocked or failing), drives are still found by opening them, with a
+    /// size but no model, serial, device ID or media type, and with
+    /// `contains_system_volume` left false because nothing checked it. Each
+    /// such drive, the system disk included, must be refused: by its
+    /// assessment, after its contents are read, and by the safety check.
+    #[test]
+    fn a_drive_windows_said_nothing_about_is_refused_at_every_step() {
+        use crate::drive_contents::{DriveContents, DriveContentsState};
+        use crate::target::{assess_target_device, with_drive_contents};
+        use osflux_core::device::PhysicalDevice;
+
+        for access in [DeviceAccess::Readable, DeviceAccess::MetadataOnly] {
+            // The system disk, as listed when the PowerShell query fails.
+            let system_disk = PhysicalDevice::found_without_metadata(
+                0,
+                r"\\.\PhysicalDrive0".to_string(),
+                Some(1_000_204_886_016),
+                access,
+                None,
+            );
+            assert!(
+                !system_disk.contains_system_volume,
+                "the check that would say so did not run"
+            );
+
+            let assessment = assess_target_device(&system_disk);
+            assert_eq!(assessment.status, TargetAssessmentStatus::Blocked);
+            assert!(!assessment.requires_confirmation);
+            assert_eq!(assessment.identity_code, None);
+
+            // Even a drive that reads as blank stays blocked.
+            let blank = DriveContents {
+                state: DriveContentsState::Blank,
+                reason: "the first and last MiB are empty".to_string(),
+                partition_scheme: None,
+                partitions: Vec::new(),
+            };
+            let assessment = with_drive_contents(assessment, blank);
+            assert_eq!(assessment.status, TargetAssessmentStatus::Blocked);
+
+            let check =
+                build_safety_check(image(ImagePlanStatus::Ready, 8 * MIB), assessment, false);
+            assert_eq!(check.preflight.status, WritePreflightStatus::Blocked);
+            assert_eq!(check.checks[1].kind, SafetyCheckKind::TargetAllowed);
+            assert_eq!(check.checks[1].state, SafetyCheckState::Failed);
+        }
+    }
+
     fn image(status: ImagePlanStatus, size_bytes: u64) -> ImagePlan {
         ImagePlan {
             source: "C:\\images\\sample.iso".into(),

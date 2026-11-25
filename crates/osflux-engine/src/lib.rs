@@ -1,5 +1,6 @@
 pub mod answer_file;
 pub mod audit;
+pub mod checksum;
 pub mod chunk_plan;
 pub mod clock;
 mod crc;
@@ -17,6 +18,7 @@ mod json;
 pub mod preflight;
 pub mod progress;
 pub mod raw_write;
+pub mod safety_check;
 pub mod target;
 #[cfg(test)]
 mod test_support;
@@ -35,6 +37,7 @@ pub use answer_file::{
     validate_account_name, Architecture, RegionSettings, SetupOptions, ANSWER_FILE_NAME,
 };
 pub use audit::{AuditEvent, AuditEventKind, AuditLog};
+pub use checksum::{Sha256Hex, Sha256ParseError};
 pub use chunk_plan::{
     build_chunk_plan, plan_write_chunks, ChunkPlan, ChunkPlanError, ChunkPlanStatus,
     DEFAULT_CHUNK_SIZE_BYTES,
@@ -49,8 +52,9 @@ pub use file_copy::{
     UefiFat32Layout,
 };
 pub use image_family::{
-    build_image_family_report, detect_image_family, FamilyEvidence, ImageFamily, ImageFamilyError,
-    ImageFamilyReport, ImageFamilyStatus, DEFAULT_FAMILY_SCAN_LIMIT_BYTES,
+    build_image_family_report, detect_image_family, detect_plan_family, FamilyEvidence,
+    ImageFamily, ImageFamilyError, ImageFamilyReport, ImageFamilyStatus,
+    DEFAULT_FAMILY_SCAN_LIMIT_BYTES,
 };
 pub use image_plan::{
     plan_image, DetectionMethod, ImageKind, ImagePlan, ImagePlanError, ImagePlanStatus,
@@ -69,7 +73,7 @@ pub use iso_filesystem_plan::{
     build_iso_filesystem_plan, plan_iso_filesystem, IsoFilesystemCapabilities, IsoFilesystemPlan,
     IsoFilesystemPlanError, IsoFilesystemPlanStatus, IsoFilesystemStrategy,
 };
-pub use osflux_core::device::DeviceError;
+pub use osflux_core::device::{DeviceAccess, DeviceError};
 pub use osflux_core::privilege::is_elevated;
 pub use osflux_core::region::read_region_settings;
 pub use preflight::{
@@ -85,8 +89,12 @@ pub use raw_write::{
     RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, Verification,
     WriteLayout, MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
+pub use safety_check::{
+    build_safety_check, run_safety_check, SafetyCheck, SafetyCheckError, SafetyCheckItem,
+    SafetyCheckKind, SafetyCheckState,
+};
 pub use target::{
-    assess_target, assess_target_device, with_drive_contents, TargetAssessment,
+    assess_all_targets, assess_target, assess_target_device, with_drive_contents, TargetAssessment,
     TargetAssessmentError, TargetAssessmentStatus,
 };
 pub use write_authorization::{

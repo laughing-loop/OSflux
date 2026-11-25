@@ -192,6 +192,9 @@ export component TextField inherits Rectangle {
     in property <bool> mono: true;
     in property <bool> error;
     in property <int> max-length: 0;
+    // Space before and after the text.
+    in property <length> inset: 20px;
+    in property <length> font-size: mono ? 13px : Theme.body-size;
     callback edited(string);
 
     height: 44px;
@@ -206,24 +209,24 @@ export component TextField inherits Rectangle {
         clicked => { field.focus(); }
     }
     if root.text == "": Text {
-        x: 20px;
-        width: parent.width - 40px;
+        x: root.inset;
+        width: parent.width - 2 * root.inset;
         text: root.placeholder;
         font-family: root.mono ? Theme.mono : Theme.sans;
-        font-size: root.mono ? 13px : Theme.body-size;
+        font-size: root.font-size;
         color: Theme.text-disabled;
         vertical-alignment: center;
         overflow: elide;
     }
     field := TextInput {
-        x: 20px;
-        width: parent.width - 40px;
+        x: root.inset;
+        width: parent.width - 2 * root.inset;
         height: parent.height;
         text <=> root.text;
         single-line: true;
         vertical-alignment: center;
         font-family: root.mono ? Theme.mono : Theme.sans;
-        font-size: root.mono ? 13px : Theme.body-size;
+        font-size: root.font-size;
         color: Theme.text;
         selection-background-color: Theme.link.with-alpha(0.35);
         selection-foreground-color: Theme.text;

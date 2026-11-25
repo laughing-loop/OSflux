@@ -23,10 +23,28 @@ slint = { version = "~1.18.1", default-features = false, features = [
     "renderer-femtovg",
     "renderer-software",
     "accessibility",
+    "raw-window-handle-06",
 ] }
 
 # Saves preview snapshots as PNG; already in Slint's dependency tree.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# The Open dialog, dropped files and the local time.
+windows = { workspace = true, features = [
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# The window's Win32 handle, through Slint's raw-window-handle-06 feature.
+raw-window-handle = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+# The local time for the status bar.
+libc = "0.2"
 
 [features]
 # `--preview`: shows a screen with sample data and can save it as a PNG, for

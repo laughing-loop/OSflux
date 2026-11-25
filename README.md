@@ -12,7 +12,7 @@ OSflux is a next-generation bootable media and OS deployment platform.
 - OSflux Core: low-level device access, Windows I/O bindings, and write pipeline primitives.
 - OSflux Engine: orchestration layer for image planning, write execution, and verification.
 - OSflux CLI: command-line interface for local development and operator workflows.
-- OSflux Studio: the desktop app, built with Slint on the same engine. In progress: the shell, themes, Settings and About are in place; the steps are wired to the engine next.
+- OSflux Studio: the desktop app, built with Slint on the same engine. In progress: choosing an image, choosing a drive and the safety check run on the engine; Windows options, confirming and writing come next.
 
 ## Current Status
 
@@ -48,14 +48,15 @@ cargo run
 cargo run -- --version
 ```
 
-Run OSflux Studio, or preview a view with sample data (`shell`, `settings`, `about`, `licences` or `gallery`, the component sheet):
+Run OSflux Studio, or preview a view. The views are `shell`, `settings`, `about`, `licences` and `gallery` (the component sheet), plus the steps: `image`, `drives`, `drives-none`, `safety` and `safety-blocked`. The steps read the image given with `--image` through the real engine; the drives in a preview are samples, so none is read or written.
 
 ```powershell
 cargo run -p osflux-studio
 cargo run -p osflux-studio --features preview -- --preview gallery --theme dark
+cargo run -p osflux-studio --features preview -- --preview safety --image D:\Images\Win11.iso
 ```
 
-On Linux, building Studio needs fontconfig's development files (`sudo apt install libfontconfig-dev` on Debian and Ubuntu). Studio's design reference, the screen frames and `osflux-studio-ui-tokens.md`, is in `DOCUMENTS/studio/`. On Windows, `osflux-studio.exe` asks for Administrator when it opens. Studio itself is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
+On Linux, building Studio needs fontconfig's development files (`sudo apt install libfontconfig-dev` on Debian and Ubuntu). Studio's design reference, the screen frames and `osflux-studio-ui-tokens.md`, is in `DOCUMENTS/studio/`. On Windows, `osflux-studio.exe` asks for Administrator when it opens. On Linux, Browse uses zenity or kdialog, and dropping files onto the window is not supported yet. Studio itself is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
 
 Every pull request is checked on Windows and Linux: formatting, lints as errors, all tests, the Windows build, and that every dependency's licence is compatible with GPL-3.0. `DOCUMENTS/RELEASING.md` explains CI, how to cut a release, and code signing. Notable changes are listed in `CHANGELOG.md`.
 

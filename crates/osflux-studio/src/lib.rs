@@ -7,7 +7,12 @@
 slint::include_modules!();
 
 pub mod about;
+pub mod drive_step;
 pub mod format;
+pub mod image_step;
+pub mod platform;
+pub mod safety_step;
+pub mod session;
 pub mod settings;
 pub mod shell;
 pub mod steps;

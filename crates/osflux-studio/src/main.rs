@@ -20,11 +20,14 @@ fn main() -> Result<(), slint::PlatformError> {
         .unwrap_or_default();
 
     let window = AppWindow::new()?;
-    let _shell = Shell::install(
+    let shell = Shell::install(
         &window,
         settings,
         settings_path,
         osflux_engine::is_elevated(),
     );
-    window.run()
+    window.show()?;
+    shell.borrow().accept_dropped_files(&window);
+    slint::run_event_loop()?;
+    window.hide()
 }

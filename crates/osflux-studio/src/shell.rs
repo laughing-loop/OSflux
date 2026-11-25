@@ -1,40 +1,86 @@
 //! Connects the window to Studio's state: settings, the header's privilege
-//! status, the step rail, "This session", About, and the actions the shell
-//! offers. The step screens build on this.
+//! status, About, and the step actions, which the session carries out.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, VecModel};
 
 use crate::about;
+use crate::platform;
+use crate::safety_step::Fix;
+use crate::session::{self, Engine, Jobs, LiveEngine, Session};
 use crate::settings::{Settings, ThemeSetting};
-use crate::steps::{self, Flow, StepId, StepState as RailState, StepView};
+use crate::steps::{StepState as RailState, StepView};
 use crate::system;
-use crate::{
-    AppWindow, HintIcon, Screen, StepData, StepState, Studio, SummaryData, Theme, ThemeChoice,
-};
+use crate::{AppWindow, StepData, StepState, Studio, Theme, ThemeChoice};
 
 /// Where Studio's own state lives while the window is open.
 pub struct Shell {
     settings: Settings,
     /// Where settings are saved; `None` keeps them in memory (previews, tests).
     settings_path: Option<PathBuf>,
+    session: Rc<RefCell<Session>>,
+}
+
+/// How a shell talks to the engine: the real one on worker threads, or a
+/// stand-in straight away for tests and previews.
+pub struct EngineSetup {
+    pub engine: Arc<dyn Engine>,
+    pub jobs: Jobs,
+    /// The local time, as `HH:MM`, for "Drives scanned".
+    pub clock: fn() -> String,
+}
+
+impl EngineSetup {
+    pub fn live() -> Self {
+        Self {
+            engine: Arc::new(LiveEngine),
+            jobs: Jobs::Background,
+            clock: platform::clock::local_time_of_day,
+        }
+    }
 }
 
 impl Shell {
-    /// Fills the window and connects its actions. The returned handle keeps
-    /// the state alive for as long as the window runs.
+    /// Fills the window, connects its actions to the real engine and starts
+    /// looking for drives. The returned handle keeps the state alive for as
+    /// long as the window runs.
     pub fn install(
         window: &AppWindow,
         settings: Settings,
         settings_path: Option<PathBuf>,
         administrator: bool,
     ) -> Rc<RefCell<Shell>> {
+        Self::install_with(
+            window,
+            settings,
+            settings_path,
+            administrator,
+            EngineSetup::live(),
+        )
+    }
+
+    pub fn install_with(
+        window: &AppWindow,
+        settings: Settings,
+        settings_path: Option<PathBuf>,
+        administrator: bool,
+        setup: EngineSetup,
+    ) -> Rc<RefCell<Shell>> {
+        let session = Session::new(
+            window,
+            setup.engine,
+            setup.jobs,
+            setup.clock,
+            settings.verify_after_writing,
+        );
         let shell = Rc::new(RefCell::new(Shell {
             settings,
             settings_path,
+            session: Rc::clone(&session),
         }));
 
         let studio = window.global::<Studio>();
@@ -46,13 +92,31 @@ impl Shell {
         studio.set_font_licence_text(about::FONT_LICENCE_TEXT.into());
 
         apply_settings(window, settings);
-        show_image_empty(window);
-        connect(window, &shell);
+        connect(window, &shell, &session);
+        session.borrow_mut().start();
         shell
     }
 
     pub fn settings(&self) -> Settings {
         self.settings
+    }
+
+    pub fn session(&self) -> Rc<RefCell<Session>> {
+        Rc::clone(&self.session)
+    }
+
+    /// Lets image files be dropped onto the window. Call once it is shown.
+    pub fn accept_dropped_files(&self, window: &AppWindow) {
+        let Some(handle) = platform::native_handle(window.window()) else {
+            return;
+        };
+        let session = Rc::downgrade(&self.session);
+        let handler = Box::new(move |path: PathBuf| {
+            session::open_dropped_image(session.clone(), path);
+        });
+        if let Err(error) = platform::drop::accept_dropped_files(handle, handler) {
+            eprintln!("dropping files onto the window will not work: {error}");
+        }
     }
 
     fn update_settings(&mut self, settings: Settings) {
@@ -65,8 +129,53 @@ impl Shell {
     }
 }
 
-fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>) {
+fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>, session: &Rc<RefCell<Session>>) {
     let studio = window.global::<Studio>();
+
+    let weak = window.as_weak();
+    let state = Rc::clone(session);
+    studio.on_choose_image(move || {
+        if let Some(window) = weak.upgrade() {
+            session::choose_image(&window, &state);
+        }
+    });
+
+    let state = Rc::clone(session);
+    studio.on_expected_sha_edited(move |text| state.borrow_mut().expected_sha_edited(&text));
+
+    let state = Rc::clone(session);
+    studio.on_next(move || state.borrow_mut().next());
+
+    let state = Rc::clone(session);
+    studio.on_back(move || state.borrow_mut().back());
+
+    let state = Rc::clone(session);
+    studio.on_go_to_step(move |index| {
+        if let Ok(index) = usize::try_from(index) {
+            state.borrow_mut().go_to_step(index);
+        }
+    });
+
+    let state = Rc::clone(session);
+    studio.on_select_drive(move |position| {
+        if let Ok(position) = usize::try_from(position) {
+            state.borrow_mut().select_drive(position);
+        }
+    });
+
+    let state = Rc::clone(session);
+    studio.on_refresh(move || state.borrow_mut().refresh());
+
+    let weak = window.as_weak();
+    let state = Rc::clone(session);
+    studio.on_fix(move || {
+        let fix = state.borrow_mut().fix();
+        if fix == Some(Fix::ChooseImage) {
+            if let Some(window) = weak.upgrade() {
+                session::choose_image(&window, &state);
+            }
+        }
+    });
 
     let weak = window.as_weak();
     let state = Rc::clone(shell);
@@ -92,6 +201,7 @@ fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>) {
         };
         shell.update_settings(settings);
         apply_settings(&window, settings);
+        shell.session.borrow_mut().set_verify(on);
     });
 
     studio.on_open_audit_log(|| match osflux_engine::AuditLog::default_location() {
@@ -122,36 +232,6 @@ pub fn apply_settings(window: &AppWindow, settings: Settings) {
     let studio = window.global::<Studio>();
     studio.set_theme_choice(choice);
     studio.set_verify_after_writing(settings.verify_after_writing);
-}
-
-/// Step 1 before an image is chosen (frame 01).
-pub fn show_image_empty(window: &AppWindow) {
-    let studio = window.global::<Studio>();
-    studio.set_screen(Screen::Image);
-    studio.set_steps(rail_model(steps::build_rail(
-        Flow::Undecided,
-        StepId::Image,
-        None,
-        &[],
-    )));
-    studio.set_step_label(steps::step_label(Flow::Undecided, StepId::Image).into());
-    studio.set_title("Choose an image".into());
-    studio.set_description(
-        "Pick the operating system image to put on a USB stick or SD card. OSflux reads it and explains what it found."
-            .into(),
-    );
-    studio.set_hint("Choose an image to continue.".into());
-    studio.set_hint_icon(HintIcon::None);
-    studio.set_can_go_back(false);
-    studio.set_can_go_next(false);
-    studio.set_summary(SummaryData {
-        image: "Not chosen yet".into(),
-        image_full: SharedString::new(),
-        image_chosen: false,
-        drive: "Not chosen yet".into(),
-        show_windows_options: false,
-        windows_options: SharedString::new(),
-    });
 }
 
 pub fn rail_model(steps: Vec<StepView>) -> ModelRc<StepData> {

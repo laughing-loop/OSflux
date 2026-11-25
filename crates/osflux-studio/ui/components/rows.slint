@@ -3,7 +3,7 @@
 // codes, hashes and engine values are never cut off.
 
 import { Theme, Status } from "../theme.slint";
-import { DriveKind } from "../state.slint";
+import { DriveKind, DetailData, DetailRowData } from "../state.slint";
 import { Body, Label, Mono, Section } from "text.slint";
 import { StatusIcon, StatusLabel } from "status.slint";
 
@@ -505,7 +505,7 @@ export component ChecklistRow inherits Rectangle {
 // Technical details: engine keys and values in Plex Mono, values wrapping
 // onto a second line rather than ending in "…".
 export component DetailColumn inherits VerticalLayout {
-    in property <[{key: string, value: string}]> details;
+    in property <[DetailData]> details;
 
     horizontal-stretch: 1;
     alignment: start;
@@ -523,6 +523,52 @@ export component DetailColumn inherits VerticalLayout {
             wrap: word-wrap;
             vertical-alignment: top;
             horizontal-stretch: 1;
+        }
+    }
+}
+
+// Technical details in two columns whose lines stay level: each line is as
+// tall as the longer of its two values.
+export component DetailGrid inherits VerticalLayout {
+    in property <[DetailRowData]> rows;
+
+    property <length> half: (root.width - 24px) / 2;
+
+    alignment: start;
+    spacing: 10px;
+    for row in root.rows: HorizontalLayout {
+        spacing: 24px;
+        HorizontalLayout {
+            width: root.half;
+            spacing: 16px;
+            Mono {
+                width: 112px;
+                text: row.left-key;
+                color: Theme.text-secondary;
+                vertical-alignment: top;
+            }
+            Mono {
+                text: row.left-value;
+                wrap: word-wrap;
+                vertical-alignment: top;
+                horizontal-stretch: 1;
+            }
+        }
+        HorizontalLayout {
+            width: root.half;
+            spacing: 16px;
+            Mono {
+                width: 112px;
+                text: row.right-key;
+                color: Theme.text-secondary;
+                vertical-alignment: top;
+            }
+            Mono {
+                text: row.right-value;
+                wrap: word-wrap;
+                vertical-alignment: top;
+                horizontal-stretch: 1;
+            }
         }
     }
 }

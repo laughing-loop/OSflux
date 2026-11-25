@@ -3226,9 +3226,12 @@ version = "0.1.0"
 dependencies = [
  "i-slint-backend-testing",
  "image",
+ "libc",
  "osflux-engine",
+ "raw-window-handle",
  "slint",
  "slint-build",
+ "windows 0.56.0",
  "winresource",
 ]
 
@@ -4055,6 +4058,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pin-weak",
+ "raw-window-handle",
  "slint-macros",
  "unicode-segmentation",
  "vtable",

@@ -102,7 +102,8 @@ export component StepItem inherits Rectangle {
         height: 18px;
         text: root.subtitle;
         font-family: root.subtitle-mono ? Theme.mono : Theme.sans;
-        font-size: 12px;
+        // File names: 27 characters of Plex Mono fill the column.
+        font-size: root.subtitle-mono ? 11px : 12px;
         letter-spacing: root.subtitle-mono ? 0 : Theme.label-spacing;
         color: root.state == StepState.blocked ? Theme.error-text : Theme.text-secondary;
         vertical-alignment: center;

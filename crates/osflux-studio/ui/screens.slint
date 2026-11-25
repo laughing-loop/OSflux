@@ -2,9 +2,16 @@
 
 import { Theme, Status } from "theme.slint";
 import { Studio, Screen } from "state.slint";
-import { Body, Label, Mono, Title } from "components/text.slint";
-import { StatusIcon } from "components/status.slint";
-import { SquareButton, ButtonKind } from "components/button.slint";
+import { Body, Label, Mono, Section, Title } from "components/text.slint";
+import { StatusIcon, StatusLabel } from "components/status.slint";
+import { SquareButton, ButtonKind, GhostButton } from "components/button.slint";
+import { Band, BandKind } from "components/band.slint";
+import { TextField } from "components/inputs.slint";
+import { Tooltip } from "components/tooltip.slint";
+import {
+    SectionHeader, KeyValueRow, NoteRow, DriveTableHeader, DriveRow, BlockedDriveRow,
+    ChecklistRow, DetailGrid
+} from "components/rows.slint";
 
 // "Step 1 of 4", the title (with a status icon for verdicts and results),
 // the description, and anything passed as children on the right.
@@ -150,13 +157,20 @@ export component ImageEmptyScreen inherits VerticalLayout {
                 SquareButton {
                     width: 176px;
                     button-height: 48px;
-                    text: "Browse…";
+                    text: Studio.image-busy ? "Reading…" : "Browse…";
                     kind: ButtonKind.secondary;
+                    enabled: !Studio.image-busy;
                     icon: @image-url("icons/file.svg");
                     clicked => { Studio.choose-image(); }
                 }
             }
         }
+    }
+
+    if Studio.image-error != "": Band {
+        kind: BandKind.red;
+        compact: true;
+        body: Studio.image-error;
     }
 
     HorizontalLayout {
@@ -175,6 +189,350 @@ export component ImageEmptyScreen inherits VerticalLayout {
             text: "At this step OSflux only reads the file. Nothing is changed or written.";
             color: Theme.text-secondary;
             font-size: 13px;
+        }
+    }
+}
+
+// The chosen file: name, full path, size and Change image, with the
+// optional expected SHA-256 underneath.
+component ImageCard inherits Rectangle {
+    background: Theme.layer-01;
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 64px;
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 12px;
+            VerticalLayout {
+                alignment: center;
+                Image {
+                    width: 18px;
+                    height: 18px;
+                    source: @image-url("icons/disc.svg");
+                    colorize: Theme.text-secondary;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                spacing: 1px;
+                Body {
+                    text: Studio.image-name;
+                    font-size: 15px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                path-text := Mono {
+                    text: Studio.image-path;
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    overflow: elide;
+                    path-touch := TouchArea { }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                Mono {
+                    text: Studio.image-size;
+                    font-size: 15px;
+                }
+            }
+            Rectangle {
+                width: 6px;
+            }
+            VerticalLayout {
+                alignment: center;
+                GhostButton {
+                    text: "Change image";
+                    clicked => { Studio.choose-image(); }
+                }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 24px;
+            VerticalLayout {
+                width: 228px;
+                alignment: center;
+                Body {
+                    text: "Expected SHA-256";
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                Label {
+                    text: "From the download page · optional";
+                    font-size: 13px;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                spacing: 6px;
+                TextField {
+                    height: 36px;
+                    inset: 12px;
+                    font-size: 12px;
+                    label: "Expected SHA-256";
+                    placeholder: "Paste the SHA-256 shown on the download page";
+                    text <=> Studio.expected-sha;
+                    error: Studio.sha-error != "";
+                    edited(text) => { Studio.expected-sha-edited(text); }
+                }
+                if Studio.sha-error != "": Body {
+                    text: Studio.sha-error;
+                    font-size: 13px;
+                    color: Theme.error-text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    if path-touch.has-hover && path-text.preferred-width > path-text.width: Tooltip {
+        x: 46px;
+        y: 50px;
+        text: Studio.image-path;
+    }
+}
+
+// Step 1 once an image is chosen (frames 02–04).
+export component ImageCheckedScreen inherits VerticalLayout {
+    spacing: 0;
+
+    ImageCard { }
+    Rectangle {
+        height: 18px;
+    }
+    SectionHeader {
+        title: "Image plan";
+        caption: "Reported by the OSflux engine";
+        HorizontalLayout {
+            horizontal-stretch: 0;
+            spacing: 14px;
+            Label {
+                text: "Plan status";
+                font-size: 13px;
+            }
+            StatusLabel {
+                status: Studio.plan-status;
+                text: Studio.plan-status-label;
+                icon-size: 18px;
+            }
+        }
+    }
+    for row in Studio.plan-rows: KeyValueRow {
+        key: row.key;
+        value: row.value;
+        mono: row.mono;
+        value-mark: row.value-mark;
+        detail: row.detail;
+        detail-mark: row.detail-mark;
+        secondary: row.secondary;
+    }
+    Rectangle {
+        height: 14px;
+    }
+    VerticalLayout {
+        spacing: 8px;
+        for note in Studio.plan-notes: NoteRow {
+            status: note.status;
+            text: note.text;
+        }
+    }
+}
+
+// A heading that opens and closes the section under it.
+component Disclosure inherits Rectangle {
+    in-out property <bool> open;
+    in property <string> title;
+    in property <string> caption;
+    // The strong rule underneath, as under "Not allowed".
+    in property <bool> rule;
+
+    height: 44px;
+    accessible-role: button;
+    accessible-label: title;
+    accessible-expandable: true;
+    accessible-expanded: open;
+    accessible-action-default => { open = !open; }
+    accessible-action-expand => { open = !open; }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open = !root.open; }
+    }
+    HorizontalLayout {
+        padding-left: 18px;
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                width: 14px;
+                height: 14px;
+                source: root.open ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
+                colorize: Theme.text-secondary;
+            }
+        }
+        Body {
+            text: root.title;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Label {
+            text: root.caption;
+            font-size: 13px;
+            letter-spacing: Theme.body-spacing;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+    if root.rule: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-strong;
+    }
+}
+
+// Step 2 (frames 05–06).
+export component DriveScreen inherits VerticalLayout {
+    spacing: 0;
+
+    if Studio.drives.length > 0: VerticalLayout {
+        DriveTableHeader { }
+        for drive[index] in Studio.drives: DriveRow {
+            model: drive.model;
+            path: drive.path;
+            size: drive.size;
+            bus: drive.bus;
+            media: drive.media;
+            kind: drive.kind;
+            status: drive.status;
+            status-label: drive.status-label;
+            status-detail: drive.status-detail;
+            selected: drive.selected;
+            clicked => { Studio.select-drive(index); }
+        }
+    }
+
+    if Studio.drives.length == 0: Rectangle {
+        height: 357px;
+        background: Theme.layer-01;
+        accessible-role: groupbox;
+        accessible-label: Studio.drives-listed ? "No removable drives found" : "Looking for drives";
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 0;
+            HorizontalLayout {
+                alignment: center;
+                Image {
+                    width: 28px;
+                    height: 28px;
+                    source: @image-url("icons/usb.svg");
+                    colorize: Theme.text-secondary;
+                }
+            }
+            Rectangle {
+                height: 18px;
+            }
+            Body {
+                text: Studio.drives-listed ? "No removable drives found" : "Looking for drives…";
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Rectangle {
+                height: 6px;
+            }
+            Body {
+                text: Studio.drives-listed ? "Plug in a USB stick or SD card, then click Refresh."
+                    : "OSflux is asking Windows which drives are connected.";
+                color: Theme.text-secondary;
+                horizontal-alignment: center;
+            }
+            Rectangle {
+                height: 18px;
+            }
+            HorizontalLayout {
+                alignment: center;
+                SquareButton {
+                    width: 176px;
+                    button-height: 48px;
+                    text: "Refresh";
+                    kind: ButtonKind.secondary;
+                    enabled: !Studio.drives-busy;
+                    icon: @image-url("icons/refresh.svg");
+                    clicked => { Studio.refresh(); }
+                }
+            }
+        }
+    }
+
+    if Studio.blocked-drives.length > 0: VerticalLayout {
+        if Studio.drives.length == 0: Rectangle {
+            height: 24px;
+        }
+        Disclosure {
+            open <=> Studio.blocked-open;
+            rule: true;
+            title: "Not allowed (" + Studio.blocked-drives.length + ")";
+            caption: Studio.drives.length == 0 ? "OSflux found these drives but will not erase them."
+                : "OSflux will not erase these drives.";
+        }
+        if Studio.blocked-open: VerticalLayout {
+            for drive in Studio.blocked-drives: BlockedDriveRow {
+                model: drive.model;
+                path: drive.path;
+                size: drive.size;
+                bus: drive.bus;
+                reason: drive.reason;
+                kind: drive.kind;
+            }
+        }
+    }
+}
+
+// Step 3 (frames 07–08).
+export component SafetyScreen inherits VerticalLayout {
+    spacing: 0;
+
+    if Studio.checks.length > 0: VerticalLayout {
+        Rectangle {
+            height: 1px;
+            background: Theme.border-strong;
+        }
+        for check in Studio.checks: ChecklistRow {
+            status: check.status;
+            title: check.title;
+            detail: check.detail;
+            value: check.value;
+        }
+        Rectangle {
+            height: 20px;
+        }
+        Disclosure {
+            open <=> Studio.details-open;
+            title: "Technical details";
+            caption: "Engine values, in full";
+        }
+        if Studio.details-open: Rectangle {
+            background: Theme.layer-01;
+            VerticalLayout {
+                padding: 16px;
+                padding-top: 14px;
+                padding-bottom: 18px;
+                DetailGrid {
+                    rows: Studio.details;
+                }
+            }
         }
     }
 }

@@ -1,0 +1,123 @@
+// One step in the left rail (64 px rows). Completed: outline circle with a
+// check and a blue connector. Blocked: red octagon and red subtitle.
+// Current: dot, selected row, 3 px accent bar. Not started: grey outline.
+
+import { Theme, Status } from "../theme.slint";
+import { StepState } from "../state.slint";
+import { Body } from "text.slint";
+import { StatusIcon } from "status.slint";
+import { Tooltip } from "tooltip.slint";
+
+export component StepItem inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> subtitle-mono;
+    // The untruncated subtitle, shown on hover when `subtitle` is shortened.
+    in property <string> subtitle-full;
+    in property <StepState> state;
+    in property <bool> last;
+    // Done steps can be clicked to go back to them.
+    in property <bool> clickable;
+    callback clicked;
+
+    height: 64px;
+    background: state == StepState.current ? Theme.selected
+        : touch.has-hover && clickable ? Theme.layer-02 : transparent;
+    accessible-role: list-item;
+    accessible-label: title + ", " + (state == StepState.done ? "done"
+        : state == StepState.current ? "current step"
+        : state == StepState.blocked ? "blocked" : "not reached yet");
+    accessible-description: subtitle-full != "" ? subtitle-full : subtitle;
+
+    touch := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    if root.state == StepState.current: Rectangle {
+        x: 0;
+        width: 3px;
+        height: parent.height;
+        background: Theme.accent;
+    }
+
+    // The connector down to the next step's indicator, across the 6 px gap
+    // between rows.
+    if !root.last: Rectangle {
+        x: 24.25px;
+        y: 36px;
+        width: 1.5px;
+        height: root.height + 6px + 15px - 4px - 36px;
+        background: root.state == StepState.done ? Theme.link : Theme.border-strong;
+    }
+
+    if root.state != StepState.blocked: Rectangle {
+        x: 17px;
+        y: 15px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        border-width: 1.5px;
+        border-color: root.state == StepState.pending ? Theme.text-secondary : Theme.link;
+
+        if root.state == StepState.current: Rectangle {
+            width: 7px;
+            height: 7px;
+            border-radius: 3.5px;
+            background: Theme.link;
+        }
+        if root.state == StepState.done: Path {
+            width: 100%;
+            height: 100%;
+            viewbox-width: 16;
+            viewbox-height: 16;
+            commands: "M 4.6 8.2 L 7 10.5 L 11.4 5.9";
+            stroke: Theme.link;
+            stroke-width: 1.5px;
+        }
+    }
+    if root.state == StepState.blocked: StatusIcon {
+        x: 17px;
+        y: 15px;
+        status: Status.blocked;
+        size: 16px;
+    }
+
+    Body {
+        x: 46px;
+        y: 14px;
+        width: root.width - 46px - 4px;
+        height: 20px;
+        text: root.title;
+        font-weight: root.state == StepState.current ? 600 : 400;
+        color: root.state == StepState.pending ? Theme.text-secondary : Theme.text;
+        overflow: elide;
+    }
+
+    subtitle-text := Text {
+        x: 46px;
+        y: 35px;
+        width: root.width - 46px;
+        height: 18px;
+        text: root.subtitle;
+        font-family: root.subtitle-mono ? Theme.mono : Theme.sans;
+        font-size: 12px;
+        letter-spacing: root.subtitle-mono ? 0 : Theme.label-spacing;
+        color: root.state == StepState.blocked ? Theme.error-text : Theme.text-secondary;
+        vertical-alignment: center;
+        overflow: elide;
+
+        hover := TouchArea {
+            enabled: root.clickable;
+            mouse-cursor: root.clickable ? pointer : default;
+            clicked => { root.clicked(); }
+        }
+    }
+
+    if root.subtitle-full != "" && root.subtitle-full != root.subtitle && hover.has-hover: Tooltip {
+        x: 46px;
+        y: root.height - 6px;
+        text: root.subtitle-full;
+    }
+}

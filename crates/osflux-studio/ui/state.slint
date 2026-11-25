@@ -1,0 +1,85 @@
+// The state the shell and screens read, filled in by the Rust side, and the
+// actions they send back. Studio decides nothing about safety here:
+// statuses, codes and phrases come from the engine.
+
+import { ThemeChoice } from "theme.slint";
+
+export enum Screen { image, drive, safety, windows-options, confirm, writing, done }
+
+export enum StepState { pending, current, done, blocked }
+
+export struct StepData {
+    title: string,
+    subtitle: string,
+    // File names are shown in Plex Mono.
+    subtitle-mono: bool,
+    // The untruncated subtitle, shown on hover when `subtitle` is shortened.
+    subtitle-full: string,
+    state: StepState,
+    // Done steps can be clicked to go back to them.
+    clickable: bool,
+}
+
+// "This session" at the bottom of the rail.
+export struct SummaryData {
+    image: string,
+    image-full: string,
+    image-chosen: bool,
+    drive: string,
+    // Windows options are listed only for Windows images.
+    show-windows-options: bool,
+    windows-options: string,
+}
+
+export enum DriveKind { usb, sd-card, disk }
+
+export enum MatchState { empty, typing, mismatch, match }
+
+// The icon before the action bar's hint.
+export enum HintIcon { none, shield, lock, warning, info, log }
+
+export global Studio {
+    // Header and status bar
+    in property <string> version: "0.1.0";
+    in property <string> engine-version: "0.1.0";
+    in property <bool> administrator: true;
+    in property <bool> writing;
+    in property <string> drives-scanned;
+
+    // Rail
+    in property <[StepData]> steps;
+    in property <SummaryData> summary;
+
+    // The current screen's title block and action bar
+    in property <Screen> screen: Screen.image;
+    in property <string> step-label;
+    in property <string> title;
+    in property <string> description;
+    in property <string> hint;
+    in property <HintIcon> hint-icon: HintIcon.none;
+    in property <bool> can-go-back;
+    in property <bool> can-go-next;
+
+    // Settings
+    in-out property <bool> settings-open;
+    in-out property <bool> about-open;
+    in-out property <bool> showing-licences;
+    in property <ThemeChoice> theme-choice: ThemeChoice.system;
+    in property <bool> verify-after-writing: true;
+
+    // About
+    in property <string> platform;
+    in property <string> gpl-text;
+    in property <string> font-licence-text;
+
+    callback next();
+    callback back();
+    callback go-to-step(int);
+    callback choose-image();
+    callback refresh();
+    callback set-theme(ThemeChoice);
+    callback set-verify-after-writing(bool);
+    callback open-audit-log();
+    // "website", "source" or "issues".
+    callback open-link(string);
+}

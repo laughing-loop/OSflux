@@ -1,0 +1,46 @@
+// A vertical scroll area with a thin square scroll bar, instead of the
+// style's rounded one. The wheel and touch scroll the content; pressing or
+// dragging on the bar's track moves to that point.
+
+import { Theme } from "../theme.slint";
+
+export component ScrollArea inherits Rectangle {
+    in property <length> content-height;
+
+    flick := Flickable {
+        width: root.width;
+        height: root.height;
+        content-width: root.width;
+        content-height: max(root.height, root.content-height);
+        @children
+    }
+
+    property <bool> overflows: root.content-height > root.height + 1px;
+    property <length> range: max(1px, root.content-height - root.height);
+    property <length> thumb-height: max(32px, root.height * root.height / max(1px, root.content-height));
+    property <length> travel: max(1px, root.height - root.thumb-height);
+
+    function scroll-to(mouse-y: length) {
+        flick.content-y = clamp(-(mouse-y - root.thumb-height / 2) * root.range / root.travel, -root.range, 0px);
+    }
+
+    if root.overflows: Rectangle {
+        x: root.width - 6px;
+        y: -flick.content-y * root.travel / root.range;
+        width: 4px;
+        height: root.thumb-height;
+        background: track.has-hover || track.pressed ? Theme.text-secondary : Theme.border-strong;
+    }
+    track := TouchArea {
+        x: root.width - 10px;
+        width: 10px;
+        height: root.height;
+        enabled: root.overflows;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.scroll-to(self.mouse-y);
+            }
+        }
+        moved => { root.scroll-to(self.mouse-y); }
+    }
+}

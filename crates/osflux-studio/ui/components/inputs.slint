@@ -1,0 +1,433 @@
+// Inputs from the component sheet: drive-code boxes, the phrase field, a
+// text field, Windows option rows (square check boxes), the switch (the one
+// rounded control) and radio buttons.
+
+import { Theme, Status } from "../theme.slint";
+import { MatchState } from "../state.slint";
+import { Body, Label, Mono } from "text.slint";
+import { StatusIcon } from "status.slint";
+import { RadioMark } from "rows.slint";
+
+// What was typed against the code or phrase: "Keep typing…", "Does not
+// match…" in red, or "Matches…" with a green check.
+export component MatchMessage inherits HorizontalLayout {
+    in property <MatchState> state;
+    in property <string> text;
+    // Show the information icon while typing (the phrase field does).
+    in property <bool> info-while-typing;
+
+    spacing: 10px;
+    alignment: start;
+    min-height: 22px;
+    if root.state == MatchState.mismatch || root.state == MatchState.match
+            || (root.state == MatchState.typing && root.info-while-typing): VerticalLayout {
+        alignment: center;
+        StatusIcon {
+            status: root.state == MatchState.match ? Status.ready
+                : root.state == MatchState.mismatch ? Status.blocked : Status.none;
+            size: 16px;
+        }
+    }
+    Body {
+        text: root.text;
+        color: root.state == MatchState.mismatch ? Theme.error-text
+            : root.state == MatchState.match ? Theme.text : Theme.text-secondary;
+    }
+}
+
+// Four square boxes for the drive code. One hidden text input takes the
+// typing, so paste, Backspace and moving to the next box come for free; the
+// Rust side upper-cases what is typed and keeps it to four characters.
+export component CodeBoxes inherits Rectangle {
+    in-out property <string> text;
+    // One character per box, split by the Rust side.
+    in property <[string]> characters;
+    in property <MatchState> state;
+    in property <int> length: 4;
+    callback edited(string);
+
+    property <length> box-width: 52px;
+    property <length> box-height: 60px;
+    property <length> box-gap: 7px;
+    property <color> state-color: state == MatchState.match ? Theme.status-ready : Theme.status-blocked;
+    property <bool> judged: state == MatchState.match || state == MatchState.mismatch;
+
+    width: length * box-width + (length - 1) * box-gap;
+    height: box-height;
+    accessible-role: text-input;
+    accessible-label: "Drive code";
+    accessible-value: text;
+
+    input := TextInput {
+        width: 0;
+        height: 0;
+        text <=> root.text;
+        single-line: true;
+        color: transparent;
+        text-cursor-width: 0;
+        selection-background-color: transparent;
+        edited => { root.edited(self.text); }
+    }
+
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+
+    for i in root.length: Rectangle {
+        x: i * (root.box-width + root.box-gap);
+        width: root.box-width;
+        height: root.height;
+        background: Theme.layer-01;
+
+        property <bool> next: input.has-focus && root.characters[i] == ""
+            && (i == 0 || root.characters[i - 1] != "");
+
+        Mono {
+            text: root.characters[i];
+            font-size: 28px;
+            font-weight: 500;
+            horizontal-alignment: center;
+        }
+        // Empty or typing: a rule underneath, the link colour on the box
+        // that takes the next character. Judged: a 2 px border.
+        if !root.judged: Rectangle {
+            y: parent.height - (parent.next ? 2px : 1px);
+            height: parent.next ? 2px : 1px;
+            background: parent.next ? Theme.link : Theme.border-strong;
+        }
+        if root.judged: Rectangle {
+            border-width: 2px;
+            border-color: root.state-color;
+        }
+    }
+
+    public function focus-input() {
+        input.focus();
+    }
+}
+
+// The full-phrase field: a label with a character count, the input in Plex
+// Mono with a rule underneath, and a 2 px red or green border once judged.
+export component PhraseField inherits VerticalLayout {
+    in-out property <string> text;
+    in property <string> label;
+    in property <int> expected-length;
+    in property <MatchState> state;
+    in property <string> message;
+    callback edited(string);
+
+    property <bool> judged: state == MatchState.match || state == MatchState.mismatch;
+
+    spacing: 10px;
+
+    HorizontalLayout {
+        Label {
+            text: root.label;
+            font-size: 13px;
+            horizontal-stretch: 1;
+        }
+        Mono {
+            text: root.text.character-count + " / " + root.expected-length;
+            font-size: 12px;
+            color: Theme.text-secondary;
+        }
+    }
+
+    Rectangle {
+        height: 48px;
+        background: Theme.layer-01;
+        accessible-role: text-input;
+        accessible-label: root.label;
+        accessible-value: root.text;
+
+        TouchArea {
+            mouse-cursor: MouseCursor.text;
+            clicked => { input.focus(); }
+        }
+        input := TextInput {
+            x: 16px;
+            width: parent.width - 32px;
+            height: parent.height;
+            text <=> root.text;
+            single-line: true;
+            vertical-alignment: center;
+            font-family: Theme.mono;
+            font-size: 16px;
+            letter-spacing: 1.6px;
+            color: Theme.text;
+            selection-background-color: Theme.link.with-alpha(0.35);
+            selection-foreground-color: Theme.text;
+            edited => { root.edited(self.text); }
+        }
+        if root.judged: Rectangle {
+            border-width: 2px;
+            border-color: root.state == MatchState.match ? Theme.status-ready : Theme.status-blocked;
+        }
+        if !root.judged: Rectangle {
+            y: parent.height - (input.has-focus ? 2px : 1px);
+            height: input.has-focus ? 2px : 1px;
+            background: input.has-focus ? Theme.link : Theme.border-strong;
+        }
+    }
+
+    MatchMessage {
+        state: root.state;
+        text: root.message;
+        info-while-typing: true;
+    }
+
+    public function focus-input() {
+        input.focus();
+    }
+}
+
+// A single-line field with a rule underneath, for the expected SHA-256 and
+// the Windows account name. It sits on a layer-01 card, so its own
+// background is the page colour.
+export component TextField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> mono: true;
+    in property <bool> error;
+    in property <int> max-length: 0;
+    callback edited(string);
+
+    height: 44px;
+    background: Theme.bg;
+    accessible-role: text-input;
+    accessible-label: label;
+    accessible-value: text;
+    accessible-placeholder-text: placeholder;
+
+    TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { field.focus(); }
+    }
+    if root.text == "": Text {
+        x: 20px;
+        width: parent.width - 40px;
+        text: root.placeholder;
+        font-family: root.mono ? Theme.mono : Theme.sans;
+        font-size: root.mono ? 13px : Theme.body-size;
+        color: Theme.text-disabled;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    field := TextInput {
+        x: 20px;
+        width: parent.width - 40px;
+        height: parent.height;
+        text <=> root.text;
+        single-line: true;
+        vertical-alignment: center;
+        font-family: root.mono ? Theme.mono : Theme.sans;
+        font-size: root.mono ? 13px : Theme.body-size;
+        color: Theme.text;
+        selection-background-color: Theme.link.with-alpha(0.35);
+        selection-foreground-color: Theme.text;
+        edited => { root.edited(self.text); }
+    }
+    Rectangle {
+        y: parent.height - (field.has-focus || root.error ? 2px : 1px);
+        height: field.has-focus || root.error ? 2px : 1px;
+        background: root.error ? Theme.status-blocked : field.has-focus ? Theme.link : Theme.border-strong;
+    }
+
+    public function focus-input() {
+        field.focus();
+    }
+}
+
+// The square check box itself: accent fill with a white check when on.
+export component CheckMark inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    width: 18px;
+    height: 18px;
+    background: checked ? (enabled ? Theme.accent : Theme.text-disabled) : transparent;
+    border-width: checked ? 0 : 1.5px;
+    border-color: enabled ? Theme.text-secondary : Theme.text-disabled;
+    if root.checked: Path {
+        width: 100%;
+        height: 100%;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M 3.8 8.2 L 6.6 11 L 12.2 5.2";
+        stroke: #FFFFFF;
+        stroke-width: 1.8px;
+    }
+}
+
+// A Windows option: check box, bold title, one-line explanation, and any
+// children (the amber note, the username field) under it when on.
+export component OptionRow inherits Rectangle {
+    in property <string> text;
+    in property <string> description;
+    in property <bool> checked;
+    callback toggled(bool);
+
+    background: Theme.layer-01;
+    min-height: layout.min-height;
+    accessible-role: checkbox;
+    accessible-checked: checked;
+    accessible-label: text;
+    accessible-description: description;
+    accessible-action-default => { toggled(!checked); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            focus.focus();
+            root.toggled(!root.checked);
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " ") {
+                root.toggled(!root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    layout := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 14px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 1px;
+            CheckMark {
+                checked: root.checked;
+            }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            horizontal-stretch: 1;
+            Body {
+                text: root.text;
+                font-weight: 600;
+            }
+            Body {
+                text: root.description;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            @children
+        }
+    }
+    if focus.has-focus: Rectangle {
+        border-width: 2px;
+        border-color: Theme.link;
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// The switch: 44 × 24, accent when on. The one rounded control.
+export component Switch inherits Rectangle {
+    in property <bool> checked;
+    in property <string> label;
+    callback toggled(bool);
+
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: checked ? Theme.accent : (Theme.dark ? #6F6F6F : #8D8D8D);
+    accessible-role: switch;
+    accessible-checked: checked;
+    accessible-label: label;
+    accessible-action-default => { toggled(!checked); }
+
+    animate background { duration: 120ms; }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            focus.focus();
+            root.toggled(!root.checked);
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.toggled(!root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    Rectangle {
+        x: root.checked ? root.width - self.width - 3px : 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: #FFFFFF;
+        animate x { duration: 120ms; }
+    }
+    if focus.has-focus: Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-radius: 15px;
+        border-width: 2px;
+        border-color: Theme.link;
+    }
+}
+
+// A radio button with its label, for a row of choices.
+export component RadioButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback clicked;
+
+    min-width: row.min-width;
+    min-height: 32px;
+    accessible-role: radio-button;
+    accessible-checked: checked;
+    accessible-label: text;
+    accessible-action-default => { clicked(); }
+
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            focus.focus();
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    row := HorizontalLayout {
+        spacing: 12px;
+        VerticalLayout {
+            alignment: center;
+            RadioMark {
+                checked: root.checked;
+            }
+        }
+        Body {
+            text: root.text;
+        }
+    }
+    if focus.has-focus: Rectangle {
+        x: -4px;
+        width: root.width + 8px;
+        border-width: 2px;
+        border-color: Theme.link;
+    }
+}

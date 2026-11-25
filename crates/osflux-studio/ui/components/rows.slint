@@ -1,0 +1,528 @@
+// Rows used on the screens: section headers, image-plan and result rows,
+// notes, drive rows, checklist rows and technical details. Sizes, paths,
+// codes, hashes and engine values are never cut off.
+
+import { Theme, Status } from "../theme.slint";
+import { DriveKind } from "../state.slint";
+import { Body, Label, Mono, Section } from "text.slint";
+import { StatusIcon, StatusLabel } from "status.slint";
+
+// "Image plan  Reported by the OSflux engine", anything passed as children
+// on the right, and the strong rule underneath.
+export component SectionHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> caption;
+
+    height: 44px;
+    HorizontalLayout {
+        spacing: 12px;
+        padding-bottom: 4px;
+        Section {
+            text: root.title;
+        }
+        Label {
+            text: root.caption;
+            font-size: 13px;
+            horizontal-stretch: 1;
+        }
+        @children
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-strong;
+    }
+}
+
+// A small inline mark before a value: a green check or an amber triangle.
+export component InlineMark inherits Rectangle {
+    in property <Status> status;
+    width: 18px;
+    height: 18px;
+    if root.status == Status.ready: Image {
+        width: 16px;
+        height: 16px;
+        source: @image-url("../icons/check.svg");
+        colorize: Theme.status-ready;
+    }
+    if root.status != Status.ready && root.status != Status.none: StatusIcon {
+        status: root.status;
+        size: 16px;
+    }
+}
+
+// One line of the image plan: label, value, and an optional detail. The
+// mark sits before the value (warning) or before the detail (check).
+export component KeyValueRow inherits Rectangle {
+    in property <string> key;
+    in property <string> value;
+    in property <bool> mono;
+    in property <Status> value-mark: Status.none;
+    in property <string> detail;
+    in property <Status> detail-mark: Status.none;
+    in property <bool> secondary;
+    in property <length> key-width: 172px;
+
+    min-height: 36px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: key + ": " + value + " " + detail;
+
+    HorizontalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        Label {
+            width: root.key-width;
+            text: root.key;
+            font-size: 13px;
+            vertical-alignment: top;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            if root.value-mark != Status.none: VerticalLayout {
+                alignment: start;
+                padding-top: 1px;
+                InlineMark {
+                    status: root.value-mark;
+                }
+            }
+            Text {
+                text: root.value;
+                font-family: root.mono ? Theme.mono : Theme.sans;
+                font-size: root.mono ? 13px : Theme.body-size;
+                letter-spacing: root.mono ? 0 : Theme.body-spacing;
+                color: root.secondary ? Theme.text-secondary : Theme.text;
+                vertical-alignment: top;
+                wrap: word-wrap;
+            }
+            if root.detail-mark != Status.none: VerticalLayout {
+                alignment: start;
+                padding-top: 1px;
+                InlineMark {
+                    status: root.detail-mark;
+                }
+            }
+            if root.detail != "": Body {
+                text: root.detail-mark == Status.none ? "· " + root.detail : root.detail;
+                color: Theme.text-secondary;
+                vertical-alignment: top;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// A line in a result list: a label (with an optional second line), a value
+// in Plex Mono or Sans, and an optional status line under it.
+export component ResultRow inherits Rectangle {
+    in property <string> key;
+    in property <string> key-detail;
+    in property <string> value;
+    in property <bool> mono;
+    in property <color> value-color: Theme.text;
+    in property <Status> status: Status.none;
+    in property <string> status-text;
+    in property <string> detail;
+
+    min-height: 40px;
+    accessible-role: AccessibleRole.text;
+    accessible-label: key + ": " + value + " " + status-text + " " + detail;
+
+    HorizontalLayout {
+        padding-top: 9px;
+        padding-bottom: 9px;
+        VerticalLayout {
+            width: 192px;
+            alignment: center;
+            Label {
+                text: root.key;
+                font-size: 13px;
+            }
+            if root.key-detail != "": Label {
+                text: root.key-detail;
+                font-size: 13px;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 1;
+            if root.value != "": Text {
+                text: root.value;
+                font-family: root.mono ? Theme.mono : Theme.sans;
+                font-size: root.mono ? 13px : Theme.body-size;
+                letter-spacing: root.mono ? 0 : Theme.body-spacing;
+                color: root.value-color;
+                wrap: word-wrap;
+            }
+            if root.status != Status.none: HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                VerticalLayout {
+                    alignment: center;
+                    StatusIcon {
+                        status: root.status;
+                        size: 16px;
+                    }
+                }
+                Body {
+                    text: root.status-text;
+                }
+                if root.detail != "": Body {
+                    text: "· " + root.detail;
+                    color: Theme.text;
+                }
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+export component NoteRow inherits HorizontalLayout {
+    in property <Status> status;
+    in property <string> text;
+
+    spacing: 12px;
+    VerticalLayout {
+        alignment: start;
+        padding-top: 2px;
+        StatusIcon {
+            status: root.status;
+            size: 16px;
+        }
+    }
+    Body {
+        text: root.text;
+        wrap: word-wrap;
+        vertical-alignment: top;
+        horizontal-stretch: 1;
+    }
+}
+
+export component DriveIcon inherits Image {
+    in property <DriveKind> kind;
+    in property <color> tint: Theme.text-secondary;
+    width: 18px;
+    height: 18px;
+    source: kind == DriveKind.usb ? @image-url("../icons/usb.svg")
+        : kind == DriveKind.sd-card ? @image-url("../icons/sdcard.svg")
+        : @image-url("../icons/hdd.svg");
+    colorize: tint;
+}
+
+// Column positions shared by the drive table's header and rows, from the
+// left of the table (the design's 776 px content width).
+export global DriveColumns {
+    out property <length> name-x: 80px;
+    out property <length> size-right: 399px;
+    out property <length> bus-x: 411px;
+    out property <length> media-x: 475px;
+    out property <length> safety-x: 595px;
+}
+
+export component DriveTableHeader inherits Rectangle {
+    height: 34px;
+    Label {
+        x: DriveColumns.name-x;
+        text: "Drive";
+        font-size: 13px;
+    }
+    Label {
+        x: DriveColumns.size-right - self.width;
+        text: "Size";
+        font-size: 13px;
+    }
+    Label {
+        x: DriveColumns.bus-x;
+        text: "Bus";
+        font-size: 13px;
+    }
+    Label {
+        x: DriveColumns.media-x;
+        text: "Media";
+        font-size: 13px;
+    }
+    Label {
+        x: DriveColumns.safety-x;
+        text: "Safety";
+        font-size: 13px;
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-strong;
+    }
+}
+
+export component RadioMark inherits Rectangle {
+    in property <bool> checked;
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border-width: checked ? 1.5px : 1.5px;
+    border-color: checked ? Theme.link : Theme.text-secondary;
+    if root.checked: Rectangle {
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: Theme.link;
+    }
+}
+
+// A drive the engine allows: default, selected, or needing confirmation.
+export component DriveRow inherits Rectangle {
+    in property <string> model;
+    in property <string> path;
+    in property <string> size;
+    in property <string> bus;
+    in property <string> media;
+    in property <DriveKind> kind;
+    in property <Status> status;
+    in property <string> status-label;
+    in property <string> status-detail;
+    in property <bool> selected;
+    callback clicked;
+
+    height: 56px;
+    background: selected ? Theme.selected : touch.has-hover ? Theme.layer-02 : Theme.layer-01;
+    accessible-role: radio-button;
+    accessible-checked: selected;
+    accessible-label: model + ", " + size + ", " + status-label;
+    accessible-action-default => { clicked(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    RadioMark {
+        x: 26px - self.width / 2;
+        checked: root.selected;
+    }
+    DriveIcon {
+        x: 57px - self.width / 2;
+        kind: root.kind;
+    }
+    Body {
+        x: DriveColumns.name-x;
+        y: 8px;
+        width: DriveColumns.size-right - DriveColumns.name-x - 80px;
+        height: 22px;
+        text: root.model;
+        overflow: elide;
+    }
+    Mono {
+        x: DriveColumns.name-x;
+        y: 29px;
+        height: 18px;
+        text: root.path;
+        font-size: 12px;
+        color: Theme.text-secondary;
+    }
+    Mono {
+        x: DriveColumns.size-right - self.width;
+        text: root.size;
+        font-size: 14px;
+    }
+    Label {
+        x: DriveColumns.bus-x;
+        text: root.bus;
+        font-size: 12px;
+    }
+    Label {
+        x: DriveColumns.media-x;
+        text: root.media;
+        font-size: 13px;
+        letter-spacing: Theme.body-spacing;
+    }
+    VerticalLayout {
+        x: DriveColumns.safety-x;
+        width: root.width - DriveColumns.safety-x - 12px;
+        alignment: center;
+        spacing: 2px;
+        StatusLabel {
+            status: root.status;
+            text: root.status-label;
+        }
+        if root.status-detail != "": HorizontalLayout {
+            padding-left: 26px;
+            Label {
+                text: root.status-detail;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// A drive OSflux will not erase: size in its own column, the full device
+// path, and the engine's reason in plain words under "Blocked".
+export component BlockedDriveRow inherits Rectangle {
+    in property <string> model;
+    in property <string> path;
+    in property <string> size;
+    in property <string> bus;
+    in property <string> reason;
+    in property <DriveKind> kind;
+
+    height: 56px;
+    accessible-role: list-item;
+    accessible-label: model + ", " + size + ", blocked: " + reason;
+
+    Image {
+        x: 26px - self.width / 2;
+        width: 16px;
+        height: 16px;
+        source: @image-url("../icons/lock.svg");
+        colorize: Theme.text-disabled;
+    }
+    DriveIcon {
+        x: 57px - self.width / 2;
+        kind: root.kind;
+        tint: Theme.text-disabled;
+    }
+    Body {
+        x: DriveColumns.name-x;
+        y: 8px;
+        width: DriveColumns.size-right - DriveColumns.name-x - 80px;
+        height: 22px;
+        text: root.model;
+        color: Theme.text-secondary;
+        overflow: elide;
+    }
+    Mono {
+        x: DriveColumns.name-x;
+        y: 29px;
+        height: 18px;
+        text: root.path;
+        font-size: 12px;
+        color: Theme.text-secondary;
+    }
+    Mono {
+        x: DriveColumns.size-right - self.width;
+        text: root.size;
+        font-size: 14px;
+        color: Theme.text-secondary;
+    }
+    Label {
+        x: DriveColumns.bus-x;
+        text: root.bus;
+        font-size: 12px;
+    }
+    VerticalLayout {
+        x: DriveColumns.media-x + 8px;
+        width: root.width - DriveColumns.media-x - 20px;
+        alignment: center;
+        spacing: 2px;
+        StatusLabel {
+            status: Status.blocked;
+            text: "Blocked";
+        }
+        HorizontalLayout {
+            padding-left: 26px;
+            Body {
+                text: root.reason;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// One line of the safety check: status, title, the engine's detail, and a
+// value that is never cut off (red when the check failed).
+export component ChecklistRow inherits Rectangle {
+    in property <Status> status;
+    in property <string> title;
+    in property <string> detail;
+    in property <string> value;
+
+    property <bool> reached: status != Status.not-checked;
+
+    min-height: 44px;
+    background: Theme.layer-01;
+    accessible-role: list-item;
+    accessible-label: title + ". " + detail + " " + value;
+
+    HorizontalLayout {
+        padding-left: 17px;
+        padding-right: 16px;
+        padding-top: 11px;
+        padding-bottom: 11px;
+        spacing: 17px;
+        VerticalLayout {
+            alignment: center;
+            StatusIcon {
+                status: root.status;
+                size: 16px;
+            }
+        }
+        Body {
+            width: 179px;
+            text: root.title;
+            font-weight: 600;
+            color: root.reached ? Theme.text : Theme.text-secondary;
+        }
+        Body {
+            text: root.detail;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+        if root.value != "": Mono {
+            text: root.value;
+            font-size: 14px;
+            horizontal-alignment: right;
+            color: root.status == Status.blocked ? Theme.error-text
+                : root.reached ? Theme.text : Theme.text-secondary;
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// Technical details: engine keys and values in Plex Mono, values wrapping
+// onto a second line rather than ending in "…".
+export component DetailColumn inherits VerticalLayout {
+    in property <[{key: string, value: string}]> details;
+
+    horizontal-stretch: 1;
+    alignment: start;
+    spacing: 10px;
+    for detail in root.details: HorizontalLayout {
+        spacing: 16px;
+        Mono {
+            width: 112px;
+            text: detail.key;
+            color: Theme.text-secondary;
+            vertical-alignment: top;
+        }
+        Mono {
+            text: detail.value;
+            wrap: word-wrap;
+            vertical-alignment: top;
+            horizontal-stretch: 1;
+        }
+    }
+}

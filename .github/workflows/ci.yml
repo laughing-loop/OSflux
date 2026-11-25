@@ -43,19 +43,21 @@ jobs:
           restore-keys: windows-cargo-
 
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
 
-      - name: Build osflux.exe
-        run: cargo build --release --locked -p osflux-cli
+      - name: Build osflux.exe and osflux-studio.exe
+        run: cargo build --release --locked -p osflux-cli -p osflux-studio
 
-      - name: Keep osflux.exe for testing
+      - name: Keep the programs for testing
         uses: actions/upload-artifact@v6
         with:
           name: osflux-windows-x64-${{ github.sha }}
-          path: target/release/osflux.exe
+          path: |
+            target/release/osflux.exe
+            target/release/osflux-studio.exe
           retention-days: 14
 
   linux:
@@ -68,13 +70,17 @@ jobs:
 
       # mtools, dosfstools, wimtools and libxml2-utils let the tests check
       # OSflux's FAT32 volumes, WIM splits and answer files with independent
-      # tools. The Windows check embeds the icon with mingw-w64's windres,
-      # which runs mingw-w64's gcc to preprocess the resource script.
+      # tools. The Windows check embeds the icons and Studio's Administrator
+      # manifest with mingw-w64's windres, which runs mingw-w64's gcc to
+      # preprocess the resource script. Slint finds system fonts through
+      # fontconfig, whose headers it builds against on Linux. Studio's UI
+      # tests need no display: they use Slint's testing backend.
       - name: Install test tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mtools dosfstools wimtools libxml2-utils gcc-mingw-w64-x86-64
+            mtools dosfstools wimtools libxml2-utils gcc-mingw-w64-x86-64 \
+            libfontconfig-dev
 
       - name: Install Rust
         run: |
@@ -96,13 +102,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
 
       - name: Check the Windows build
-        run: cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
+        run: cargo check --workspace --all-targets --all-features --locked --target x86_64-pc-windows-gnu
 
   licences:
     name: Dependency licences

@@ -1,0 +1,87 @@
+// OSflux Studio's window: header, rail, the current step's screen with its
+// action bar, the status bar, and the Settings and About dialogs.
+
+import { Theme, ThemeChoice, Status } from "theme.slint";
+import { Studio, Screen, StepState, StepData, SummaryData, HintIcon } from "state.slint";
+import { SquareButton, ButtonKind } from "components/button.slint";
+import { ScrollArea } from "components/scroll.slint";
+import { Header, Rail, ActionBar, StatusBar } from "shell.slint";
+import { TitleBlock, ImageEmptyScreen } from "screens.slint";
+import { SettingsDialog, AboutDialog } from "dialogs.slint";
+import { Gallery } from "gallery.slint";
+
+export { Theme, ThemeChoice, Status, Studio, Screen, StepState, StepData, SummaryData, HintIcon, Gallery }
+
+export component AppWindow inherits Window {
+    title: "OSflux Studio";
+    icon: @image-url("../../../assets/brand/icons/windows/osflux-256.png");
+    preferred-width: 1080px;
+    preferred-height: 720px;
+    min-width: 960px;
+    min-height: 640px;
+    background: Theme.bg;
+    default-font-family: Theme.sans;
+    default-font-size: Theme.body-size;
+
+    VerticalLayout {
+        Header { }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            Rail { }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                scroll := ScrollArea {
+                    vertical-stretch: 1;
+                    content-height: page.preferred-height;
+                    page := VerticalLayout {
+                        width: scroll.width;
+                        // Before an image is chosen the drop zone fills the
+                        // page, as in frame 01.
+                        min-height: scroll.height;
+                        padding-left: Theme.content-padding-x;
+                        padding-right: Theme.content-padding-x;
+                        padding-top: Theme.content-padding-top;
+                        padding-bottom: 24px;
+                        spacing: 24px;
+
+                        TitleBlock { }
+                        if Studio.screen == Screen.image: ImageEmptyScreen {
+                            vertical-stretch: 1;
+                        }
+                    }
+                }
+                ActionBar {
+                    hint: Studio.hint;
+                    icon: Studio.hint-icon;
+                    SquareButton {
+                        width: 127px;
+                        text: "Back";
+                        kind: ButtonKind.secondary;
+                        enabled: Studio.can-go-back;
+                        show-icon: false;
+                        clicked => { Studio.back(); }
+                    }
+                    SquareButton {
+                        width: 177px;
+                        text: "Next";
+                        kind: ButtonKind.primary;
+                        enabled: Studio.can-go-next;
+                        icon: @image-url("icons/arrow-right.svg");
+                        clicked => { Studio.next(); }
+                    }
+                }
+            }
+        }
+        StatusBar { }
+    }
+
+    if Studio.settings-open: SettingsDialog {
+        done => { Studio.settings-open = false; }
+    }
+    if Studio.about-open: AboutDialog {
+        done => {
+            Studio.about-open = false;
+            Studio.showing-licences = false;
+        }
+    }
+}

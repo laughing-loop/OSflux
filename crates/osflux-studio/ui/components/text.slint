@@ -1,0 +1,44 @@
+// Text styles from the type scale. Sans: title 28/300, section 16/600,
+// body 14/400 (+0.16 px), label 12/400 (+0.32 px). Mono for values, paths,
+// codes and phrases.
+
+import { Theme } from "../theme.slint";
+
+export component Body inherits Text {
+    font-family: Theme.sans;
+    font-size: Theme.body-size;
+    letter-spacing: Theme.body-spacing;
+    color: Theme.text;
+    vertical-alignment: center;
+}
+
+export component Label inherits Text {
+    font-family: Theme.sans;
+    font-size: Theme.label-size;
+    letter-spacing: Theme.label-spacing;
+    color: Theme.text-secondary;
+    vertical-alignment: center;
+}
+
+export component Section inherits Text {
+    font-family: Theme.sans;
+    font-size: Theme.section-size;
+    font-weight: 600;
+    color: Theme.text;
+    vertical-alignment: center;
+}
+
+export component Title inherits Text {
+    font-family: Theme.sans;
+    font-size: Theme.title-size;
+    font-weight: 300;
+    color: Theme.text;
+    vertical-alignment: center;
+}
+
+export component Mono inherits Text {
+    font-family: Theme.mono;
+    font-size: 13px;
+    color: Theme.text;
+    vertical-alignment: center;
+}

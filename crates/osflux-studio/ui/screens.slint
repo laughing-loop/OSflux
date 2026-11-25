@@ -1,0 +1,180 @@
+// The step screens. Each reads the Studio global.
+
+import { Theme, Status } from "theme.slint";
+import { Studio, Screen } from "state.slint";
+import { Body, Label, Mono, Title } from "components/text.slint";
+import { StatusIcon } from "components/status.slint";
+import { SquareButton, ButtonKind } from "components/button.slint";
+
+// "Step 1 of 4", the title (with a status icon for verdicts and results),
+// the description, and anything passed as children on the right.
+export component TitleBlock inherits VerticalLayout {
+    in property <Status> status: Status.none;
+
+    spacing: 4px;
+    Label {
+        text: Studio.step-label;
+        font-size: 13px;
+        letter-spacing: Theme.body-spacing;
+    }
+    HorizontalLayout {
+        spacing: 24px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: start;
+                if root.status != Status.none: VerticalLayout {
+                    alignment: center;
+                    StatusIcon {
+                        status: root.status;
+                        size: 28px;
+                    }
+                }
+                Title {
+                    text: Studio.title;
+                    height: 34px;
+                }
+            }
+            Body {
+                text: Studio.description;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+        }
+        @children
+    }
+}
+
+// Step 1 before an image is chosen: the drop zone with Browse.
+export component ImageEmptyScreen inherits VerticalLayout {
+    spacing: 24px;
+
+    Rectangle {
+        min-height: 360px;
+        vertical-stretch: 1;
+        background: Theme.layer-01;
+        border-width: 1px;
+        border-color: Theme.border-strong;
+        accessible-role: groupbox;
+        accessible-label: "Drop an image file here, or browse for one";
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 0;
+            HorizontalLayout {
+                alignment: center;
+                Image {
+                    width: 28px;
+                    height: 28px;
+                    source: @image-url("icons/upload.svg");
+                    colorize: Theme.text-secondary;
+                }
+            }
+            Rectangle {
+                height: 19px;
+            }
+            Body {
+                text: "Drop an image file here";
+                font-size: 16px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Rectangle {
+                height: 8px;
+            }
+            HorizontalLayout {
+                alignment: center;
+                Body {
+                    text: "Windows 11 and Linux ISO images (";
+                    color: Theme.text-secondary;
+                }
+                Mono {
+                    text: ".iso";
+                    font-size: 14px;
+                }
+                Body {
+                    text: ") and raw disk images (";
+                    color: Theme.text-secondary;
+                }
+                Mono {
+                    text: ".img";
+                    font-size: 14px;
+                }
+                Body {
+                    text: ", ";
+                    color: Theme.text-secondary;
+                }
+                Mono {
+                    text: ".raw";
+                    font-size: 14px;
+                }
+                Body {
+                    text: ")";
+                    color: Theme.text-secondary;
+                }
+            }
+            Rectangle {
+                height: 14px;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 12px;
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 56px;
+                        height: 1px;
+                        background: Theme.border-strong;
+                    }
+                }
+                Label {
+                    text: "or";
+                    font-size: 13px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 56px;
+                        height: 1px;
+                        background: Theme.border-strong;
+                    }
+                }
+            }
+            Rectangle {
+                height: 16px;
+            }
+            HorizontalLayout {
+                alignment: center;
+                SquareButton {
+                    width: 176px;
+                    button-height: 48px;
+                    text: "Browse…";
+                    kind: ButtonKind.secondary;
+                    icon: @image-url("icons/file.svg");
+                    clicked => { Studio.choose-image(); }
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 10px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Image {
+                width: 16px;
+                height: 16px;
+                source: @image-url("icons/info.svg");
+                colorize: Theme.text-secondary;
+            }
+        }
+        Body {
+            text: "At this step OSflux only reads the file. Nothing is changed or written.";
+            color: Theme.text-secondary;
+            font-size: 13px;
+        }
+    }
+}

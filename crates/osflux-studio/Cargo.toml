@@ -1,0 +1,44 @@
+[package]
+name = "osflux-studio"
+description = "OSflux Studio: the desktop app for writing bootable USB drives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "osflux_studio"
+path = "src/lib.rs"
+
+[[bin]]
+name = "osflux-studio"
+path = "src/main.rs"
+
+[dependencies]
+osflux-engine = { path = "../osflux-engine" }
+slint = { version = "~1.18.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg",
+    "renderer-software",
+    "accessibility",
+] }
+
+# Saves preview snapshots as PNG; already in Slint's dependency tree.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[features]
+# `--preview`: shows a screen with sample data and can save it as a PNG, for
+# screenshots and design checks. Never in release builds.
+preview = ["dep:image"]
+
+[dev-dependencies]
+# Runs the UI without a window, for the tests in tests/. Must match Slint's version exactly.
+i-slint-backend-testing = "=1.18.1"
+
+[build-dependencies]
+slint-build = "~1.18.1"
+# Embeds the Windows icon, version details and Administrator manifest. The toml feature,
+# which reads settings from Cargo.toml, is not needed.
+winresource = { version = "0.1.34", default-features = false }

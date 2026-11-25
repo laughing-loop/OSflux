@@ -1,0 +1,98 @@
+// Design tokens from DOCUMENTS/studio/osflux-studio-ui-tokens.md (v2 · Minimal).
+// Radius 0 everywhere except radio buttons and status shapes; no shadows.
+
+import { Palette } from "std-widgets.slint";
+
+import "fonts/IBMPlexSans-Light.ttf";
+import "fonts/IBMPlexSans-Regular.ttf";
+import "fonts/IBMPlexSans-SemiBold.ttf";
+import "fonts/IBMPlexMono-Regular.ttf";
+import "fonts/IBMPlexMono-Medium.ttf";
+
+export enum ThemeChoice { system, dark, light }
+
+// What the engine reports, shown as shape + colour + label, never colour alone.
+// not-checked is a check the engine did not reach (it stops at the first
+// failure); none shows the information icon.
+export enum Status { none, ready, needs-confirmation, needs-inspection, blocked, not-checked }
+
+export global Theme {
+    // Set from Settings. "system" follows Windows' app mode.
+    in-out property <ThemeChoice> choice: ThemeChoice.system;
+    out property <bool> dark: choice == ThemeChoice.system
+        ? Palette.color-scheme == ColorScheme.dark
+        : choice == ThemeChoice.dark;
+
+    // Colour
+    out property <color> bg: dark ? #141414 : #FFFFFF;
+    out property <color> layer-01: dark ? #1E1E1E : #F4F4F4;
+    out property <color> layer-02: dark ? #2A2A2A : #E8E8E8;
+    out property <color> selected: dark ? #333333 : #E0E0E0;
+    out property <color> border-subtle: dark ? #2E2E2E : #E0E0E0;
+    out property <color> border-strong: dark ? #5A5A5A : #8C8C8C;
+    out property <color> text: dark ? #F2F2F2 : #161616;
+    out property <color> text-secondary: dark ? #A8A8A8 : #525252;
+    out property <color> text-disabled: dark ? #6B6B6B : #A8A8A8;
+    out property <color> accent: #0068DB;
+    out property <color> on-accent: #FFFFFF;
+    out property <color> link: dark ? #4D9FFF : #0068DB;
+    out property <color> secondary-button: #393939;
+    out property <color> on-secondary: #FFFFFF;
+    out property <color> danger: #DC2626;
+    out property <color> on-danger: #FFFFFF;
+    out property <color> info-band: dark ? rgba(77, 159, 255, 0.12) : #E5F0FF;
+    out property <color> warning-band: dark ? rgba(239, 68, 68, 0.12) : #FDECEC;
+    out property <color> amber-band: dark ? rgba(245, 158, 11, 0.14) : #FEF3C7;
+    out property <color> progress-track: dark ? #393939 : #E0E0E0;
+    // Settings and About: layer-01 in dark, white in light, over a scrim.
+    out property <color> dialog-bg: dark ? #1E1E1E : #FFFFFF;
+    out property <color> dialog-raised: dark ? #2A2A2A : #F4F4F4;
+    out property <color> scrim: dark ? rgba(0, 0, 0, 0.65) : rgba(22, 22, 22, 0.5);
+    // The "Will be erased" tag: red text on a red tint.
+    out property <color> tag-bg: dark ? rgba(239, 68, 68, 0.16) : #FDECEC;
+    out property <color> tag-text: dark ? #FF8389 : #A61B1B;
+
+    // Engine status colours: exact hexes with a dark glyph in dark, deeper
+    // shades with a white glyph in light.
+    out property <color> status-ready: dark ? #22C55E : #15803D;
+    out property <color> status-confirm: dark ? #0AC4FB : #0369A1;
+    out property <color> status-inspect: dark ? #F59E0B : #B45309;
+    out property <color> status-blocked: dark ? #EF4444 : #B91C1C;
+    out property <color> status-glyph: dark ? #141414 : #FFFFFF;
+    // Red text that stays readable on bg, for "does not match" messages.
+    out property <color> error-text: dark ? #EF4444 : #B91C1C;
+
+    // Type (IBM Plex)
+    out property <string> sans: "IBM Plex Sans";
+    out property <string> mono: "IBM Plex Mono";
+    out property <length> title-size: 28px;
+    out property <length> section-size: 16px;
+    out property <length> body-size: 14px;
+    out property <length> label-size: 12px;
+    out property <length> body-spacing: 0.16px;
+    out property <length> label-spacing: 0.32px;
+
+    // Layout
+    out property <length> header-height: 48px;
+    out property <length> rail-width: 240px;
+    out property <length> action-bar-height: 64px;
+    out property <length> status-bar-height: 28px;
+    out property <length> content-padding-top: 24px;
+    out property <length> content-padding-x: 32px;
+
+    public pure function status-color(status: Status) -> color {
+        if (status == Status.ready) {
+            return status-ready;
+        }
+        if (status == Status.needs-confirmation) {
+            return status-confirm;
+        }
+        if (status == Status.needs-inspection) {
+            return status-inspect;
+        }
+        if (status == Status.blocked) {
+            return status-blocked;
+        }
+        return text-secondary;
+    }
+}

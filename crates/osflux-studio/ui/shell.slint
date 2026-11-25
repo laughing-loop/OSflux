@@ -1,0 +1,348 @@
+// The frame around every screen: header, left rail with the steps and
+// "This session", the action bar and the status bar.
+
+import { Theme, Status } from "theme.slint";
+import { Studio, HintIcon } from "state.slint";
+import { Body, Label, Mono } from "components/text.slint";
+import { StatusIcon } from "components/status.slint";
+import { IconButton, GhostButton } from "components/button.slint";
+import { StepItem } from "components/step.slint";
+import { Tooltip } from "components/tooltip.slint";
+
+component VerticalRule inherits Rectangle {
+    width: 1px;
+    background: Theme.border-subtle;
+}
+
+// The full OSflux mark: white on dark, brand blue on light.
+export component Logo inherits Image {
+    width: 24px;
+    height: 24px;
+    source: Theme.dark ? @image-url("../../../assets/brand/svg/osflux-mark-white.svg")
+        : @image-url("../../../assets/brand/svg/osflux-mark-blue.svg");
+    accessible-role: image;
+    accessible-label: "OSflux";
+}
+
+export component Header inherits Rectangle {
+    height: Theme.header-height;
+    background: Theme.bg;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 0;
+
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Logo { }
+            }
+            Body {
+                text: "OSflux Studio";
+                font-weight: 600;
+                font-size: 15px;
+                letter-spacing: 0;
+            }
+            Mono {
+                text: "v" + Studio.version;
+                font-size: 12px;
+                color: Theme.text-secondary;
+            }
+        }
+
+        VerticalRule { }
+        Rectangle {
+            width: privilege.preferred-width;
+            accessible-role: AccessibleRole.text;
+            accessible-label: Studio.administrator ? "Running as Administrator" : "Not elevated, read-only";
+            privilege := HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 10px;
+                VerticalLayout {
+                    alignment: center;
+                    StatusIcon {
+                        status: Studio.administrator ? Status.ready : Status.needs-inspection;
+                        size: 14px;
+                    }
+                }
+                Label {
+                    text: Studio.administrator ? "Administrator" : "Not elevated — read-only";
+                    color: Theme.text;
+                }
+            }
+        }
+        VerticalRule { }
+        IconButton {
+            icon: @image-url("icons/settings.svg");
+            label: "Settings";
+            clicked => { Studio.settings-open = true; }
+        }
+        IconButton {
+            icon: @image-url("icons/info.svg");
+            label: "About OSflux Studio";
+            clicked => { Studio.about-open = true; }
+        }
+    }
+
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+component SummaryValue inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <string> full;
+    in property <bool> mono;
+    in property <bool> warning;
+
+    spacing: 2px;
+    Label {
+        text: root.label;
+    }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        if root.warning: VerticalLayout {
+            alignment: center;
+            StatusIcon {
+                status: Status.needs-inspection;
+                size: 14px;
+            }
+        }
+        value-text := Text {
+            text: root.value;
+            font-family: root.mono ? Theme.mono : Theme.sans;
+            font-size: 13px;
+            letter-spacing: root.mono ? 0 : Theme.body-spacing;
+            color: Theme.text;
+            wrap: root.mono ? no-wrap : word-wrap;
+            overflow: elide;
+
+            hover := TouchArea { }
+            if root.full != "" && root.full != root.value && hover.has-hover: Tooltip {
+                y: -self.height - 4px;
+                text: root.full;
+            }
+        }
+    }
+}
+
+export component Rail inherits Rectangle {
+    width: Theme.rail-width;
+    background: Theme.layer-01;
+
+    VerticalLayout {
+        padding-top: 16px;
+        spacing: 0;
+
+        VerticalLayout {
+            spacing: 6px;
+            accessible-role: list;
+            accessible-label: "Steps";
+            for step[index] in Studio.steps: StepItem {
+                title: step.title;
+                subtitle: step.subtitle;
+                subtitle-mono: step.subtitle-mono;
+                subtitle-full: step.subtitle-full;
+                state: step.state;
+                clickable: step.clickable;
+                last: index == Studio.steps.length - 1;
+                clicked => { Studio.go-to-step(index); }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border-subtle;
+        }
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 16px;
+            padding-bottom: 17px;
+            spacing: 9px;
+            Label {
+                text: "This session";
+                font-weight: 600;
+                font-size: 13px;
+            }
+            SummaryValue {
+                label: "Image";
+                value: Studio.summary.image;
+                full: Studio.summary.image-full;
+                mono: Studio.summary.image-chosen;
+            }
+            SummaryValue {
+                label: "Drive";
+                value: Studio.summary.drive;
+            }
+            if Studio.summary.show-windows-options: SummaryValue {
+                label: "Windows options";
+                value: Studio.summary.windows-options;
+            }
+            SummaryValue {
+                label: "Verify after writing";
+                value: Studio.verify-after-writing ? "On" : "Off";
+                warning: !Studio.verify-after-writing;
+            }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+// Hint text on the left, square buttons flush right.
+export component ActionBar inherits Rectangle {
+    in property <string> hint;
+    in property <HintIcon> icon: HintIcon.none;
+
+    height: Theme.action-bar-height;
+    background: Theme.bg;
+
+    HorizontalLayout {
+        padding-left: Theme.content-padding-x;
+        spacing: 0;
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+            horizontal-stretch: 1;
+            padding-right: 16px;
+            if root.icon == HintIcon.warning: VerticalLayout {
+                alignment: center;
+                StatusIcon {
+                    status: Status.needs-inspection;
+                    size: 16px;
+                }
+            }
+            if root.icon != HintIcon.none && root.icon != HintIcon.warning: VerticalLayout {
+                alignment: center;
+                Image {
+                    width: 16px;
+                    height: 16px;
+                    source: root.icon == HintIcon.shield ? @image-url("icons/shield.svg")
+                        : root.icon == HintIcon.lock ? @image-url("icons/lock.svg")
+                        : root.icon == HintIcon.log ? @image-url("icons/log.svg")
+                        : @image-url("icons/info.svg");
+                    colorize: Theme.text-secondary;
+                }
+            }
+            Body {
+                text: root.hint;
+                color: Theme.text-secondary;
+                overflow: elide;
+            }
+        }
+        @children
+    }
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}
+
+export component StatusBar inherits Rectangle {
+    height: Theme.status-bar-height;
+    background: Theme.layer-01;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        spacing: 24px;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            property <bool> warn: Studio.writing || !Studio.verify-after-writing;
+            VerticalLayout {
+                alignment: center;
+                if parent.warn: StatusIcon {
+                    status: Status.needs-inspection;
+                    size: 14px;
+                }
+                if !parent.warn: Image {
+                    width: 14px;
+                    height: 14px;
+                    source: @image-url("icons/shield.svg");
+                    colorize: Theme.text-secondary;
+                }
+            }
+            Label {
+                text: Studio.writing ? "Writing — keep the stick plugged in"
+                    : Studio.verify-after-writing ? "Verify after writing: On" : "Verify after writing: Off";
+                color: Theme.text;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    background: Theme.status-ready;
+                }
+            }
+            Label {
+                text: Studio.writing ? "Engine writing" : "Engine ready";
+            }
+            Mono {
+                text: "osflux-engine " + Studio.engine-version;
+                font-size: 12px;
+                color: Theme.text-secondary;
+            }
+        }
+        if Studio.drives-scanned != "": HorizontalLayout {
+            spacing: 8px;
+            padding-right: 4px;
+            Label {
+                text: "Drives scanned";
+            }
+            Mono {
+                text: Studio.drives-scanned;
+                font-size: 13px;
+            }
+        }
+        Rectangle {
+            width: refresh-row.preferred-width;
+            Rectangle {
+                x: 0;
+                width: 1px;
+                background: Theme.border-subtle;
+            }
+            refresh-row := HorizontalLayout {
+                padding-left: 24px;
+                padding-right: 17px;
+                GhostButton {
+                    text: "Refresh";
+                    font-size: 12px;
+                    show-icon: true;
+                    icon: @image-url("icons/refresh.svg");
+                    clicked => { Studio.refresh(); }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+}

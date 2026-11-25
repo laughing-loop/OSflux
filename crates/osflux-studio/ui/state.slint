@@ -2,7 +2,7 @@
 // actions they send back. Studio decides nothing about safety here:
 // statuses, codes and phrases come from the engine.
 
-import { ThemeChoice } from "theme.slint";
+import { ThemeChoice, Status } from "theme.slint";
 
 export enum Screen { image, drive, safety, windows-options, confirm, writing, done }
 
@@ -38,6 +38,72 @@ export enum MatchState { empty, typing, mismatch, match }
 // The icon before the action bar's hint.
 export enum HintIcon { none, shield, lock, warning, info, log }
 
+// One line of the image plan (frames 02–04).
+export struct PlanRowData {
+    key: string,
+    value: string,
+    mono: bool,
+    value-mark: Status,
+    detail: string,
+    detail-mark: Status,
+    secondary: bool,
+}
+
+// A note under the image plan; `none` shows the information icon.
+export struct NoteData {
+    status: Status,
+    text: string,
+}
+
+// A drive the engine allows (frame 05).
+export struct DriveData {
+    model: string,
+    path: string,
+    size: string,
+    bus: string,
+    media: string,
+    kind: DriveKind,
+    status: Status,
+    status-label: string,
+    status-detail: string,
+    selected: bool,
+}
+
+// A drive OSflux will not erase, with the engine's reason in plain words.
+export struct BlockedDriveData {
+    model: string,
+    path: string,
+    size: string,
+    bus: string,
+    reason: string,
+    kind: DriveKind,
+}
+
+// One line of the safety check (frames 07–08).
+export struct CheckData {
+    status: Status,
+    title: string,
+    detail: string,
+    value: string,
+}
+
+// An engine key and its value, for technical details.
+export struct DetailData {
+    key: string,
+    value: string,
+}
+
+// One line of technical details: two keys side by side, so a value that
+// wraps keeps both columns in step.
+export struct DetailRowData {
+    left-key: string,
+    left-value: string,
+    right-key: string,
+    right-value: string,
+    // A long value, such as every boot file, across the whole panel.
+    wide: bool,
+}
+
 export global Studio {
     // Header and status bar
     in property <string> version: "0.1.0";
@@ -59,6 +125,42 @@ export global Studio {
     in property <HintIcon> hint-icon: HintIcon.none;
     in property <bool> can-go-back;
     in property <bool> can-go-next;
+    // "Choose another image" in the action bar, when the image can't be written.
+    in property <bool> offer-another-image;
+
+    // Step 1 once an image is chosen
+    in property <bool> image-chosen;
+    // The engine is reading the image.
+    in property <bool> image-busy;
+    in property <string> image-error;
+    in property <string> image-name;
+    in property <string> image-path;
+    in property <string> image-size;
+    in property <Status> plan-status: Status.none;
+    in property <string> plan-status-label;
+    in property <[PlanRowData]> plan-rows;
+    in property <[NoteData]> plan-notes;
+    in-out property <string> expected-sha;
+    in property <string> sha-error;
+
+    // Step 2
+    in property <bool> drives-busy;
+    // At least one scan has finished.
+    in property <bool> drives-listed;
+    in property <[DriveData]> drives;
+    in property <[BlockedDriveData]> blocked-drives;
+    in-out property <bool> blocked-open;
+    in property <string> image-needs;
+
+    // Step 3
+    in property <bool> safety-busy;
+    in property <Status> verdict: Status.none;
+    in property <string> checks-passed;
+    // "Choose another drive" or "Choose another image" next to a blocked verdict.
+    in property <string> fix-label;
+    in property <[CheckData]> checks;
+    in property <[DetailRowData]> details;
+    in-out property <bool> details-open: true;
 
     // Settings
     in-out property <bool> settings-open;
@@ -76,6 +178,9 @@ export global Studio {
     callback back();
     callback go-to-step(int);
     callback choose-image();
+    callback expected-sha-edited(string);
+    callback select-drive(int);
+    callback fix();
     callback refresh();
     callback set-theme(ThemeChoice);
     callback set-verify-after-writing(bool);

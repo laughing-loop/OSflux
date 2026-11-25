@@ -119,7 +119,7 @@ component SummaryValue inherits VerticalLayout {
         value-text := Text {
             text: root.value;
             font-family: root.mono ? Theme.mono : Theme.sans;
-            font-size: 13px;
+            font-size: root.mono ? 12px : 13px;
             letter-spacing: root.mono ? 0 : Theme.body-spacing;
             color: Theme.text;
             wrap: root.mono ? no-wrap : word-wrap;
@@ -308,7 +308,13 @@ export component StatusBar inherits Rectangle {
                 color: Theme.text-secondary;
             }
         }
-        if Studio.drives-scanned != "": HorizontalLayout {
+        if Studio.drives-busy: HorizontalLayout {
+            padding-right: 4px;
+            Label {
+                text: "Looking for drives…";
+            }
+        }
+        if !Studio.drives-busy && Studio.drives-scanned != "": HorizontalLayout {
             spacing: 8px;
             padding-right: 4px;
             Label {

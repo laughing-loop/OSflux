@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
+mod disk_metadata;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

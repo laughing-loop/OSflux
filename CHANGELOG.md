@@ -36,8 +36,17 @@ The first release, 0.1.0, will contain everything below.
 - **Licence.** OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence. CI checks that every dependency's licence is compatible with GPL-3.0.
 
 - **OSflux Studio, in progress** (`osflux-studio.exe`): the desktop app, built with Slint on the same engine, to the v2 design in `DOCUMENTS/studio/`.
-  - So far: the window shell (header with Administrator status, step rail with "This session", action bar and status bar), dark, light and follow-Windows themes, Settings (theme, verify after writing) and About with the licences.
-  - The custom components, all square, are in place for the steps that follow.
+  - The window shell (header with Administrator status, step rail with "This session", action bar and status bar), dark, light and follow-Windows themes, Settings (theme, verify after writing) and About with the licences.
+  - Steps 1 to 3 run on the engine:
+    - **Image:** choose a file with the Open dialog, or drop it onto the window. Dropping works on Windows even though Studio runs as Administrator. Studio shows the engine's image plan, the notes that go with it, and an optional expected SHA-256.
+    - **Drive:** the drives the engine allows, the ones it won't erase with the reason in plain words, and Refresh.
+    - **Safety check:** the engine's verdict and its checks in order, plus Verification, with the technical details. A blocked verdict offers a way back.
+  - Reading images, listing drives and the safety check run off the UI thread.
+- **Engine additions for Studio:**
+  - `assess_all_targets` assesses every drive in one call.
+  - `run_safety_check` splits the preflight verdict into its checks, in the same order and with the same outcome. It also notices when a different drive has taken the chosen drive's place.
+  - `Sha256Hex` parses an expected SHA-256.
+  - `detect_plan_family` detects an already-planned image's family without reading the image again.
   - IBM Plex Sans and Mono are embedded under the SIL Open Font License. `osflux-studio.exe` carries the OSflux icon and asks for Administrator when it opens.
 
 ### Changed

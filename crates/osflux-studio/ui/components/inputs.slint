@@ -7,6 +7,7 @@ import { MatchState } from "../state.slint";
 import { Body, Label, Mono } from "text.slint";
 import { StatusIcon } from "status.slint";
 import { RadioMark } from "rows.slint";
+import { KeyFocus } from "focus.slint";
 
 // What was typed against the code or phrase: "Keep typing…", "Does not
 // match…" in red, or "Matches…" with a green check.
@@ -192,6 +193,9 @@ export component TextField inherits Rectangle {
     in property <bool> mono: true;
     in property <bool> error;
     in property <int> max-length: 0;
+    // Space before and after the text.
+    in property <length> inset: 20px;
+    in property <length> font-size: mono ? 13px : Theme.body-size;
     callback edited(string);
 
     height: 44px;
@@ -206,24 +210,24 @@ export component TextField inherits Rectangle {
         clicked => { field.focus(); }
     }
     if root.text == "": Text {
-        x: 20px;
-        width: parent.width - 40px;
+        x: root.inset;
+        width: parent.width - 2 * root.inset;
         text: root.placeholder;
         font-family: root.mono ? Theme.mono : Theme.sans;
-        font-size: root.mono ? 13px : Theme.body-size;
+        font-size: root.font-size;
         color: Theme.text-disabled;
         vertical-alignment: center;
         overflow: elide;
     }
     field := TextInput {
-        x: 20px;
-        width: parent.width - 40px;
+        x: root.inset;
+        width: parent.width - 2 * root.inset;
         height: parent.height;
         text <=> root.text;
         single-line: true;
         vertical-alignment: center;
         font-family: root.mono ? Theme.mono : Theme.sans;
-        font-size: root.mono ? 13px : Theme.body-size;
+        font-size: root.font-size;
         color: Theme.text;
         selection-background-color: Theme.link.with-alpha(0.35);
         selection-foreground-color: Theme.text;
@@ -283,7 +287,7 @@ export component OptionRow inherits Rectangle {
             root.toggled(!root.checked);
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == " ") {
                 root.toggled(!root.checked);
@@ -320,7 +324,7 @@ export component OptionRow inherits Rectangle {
             @children
         }
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         border-width: 2px;
         border-color: Theme.link;
     }
@@ -355,7 +359,7 @@ export component Switch inherits Rectangle {
             root.toggled(!root.checked);
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
                 root.toggled(!root.checked);
@@ -372,7 +376,7 @@ export component Switch inherits Rectangle {
         background: #FFFFFF;
         animate x { duration: 120ms; }
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         x: -3px;
         y: -3px;
         width: root.width + 6px;
@@ -403,7 +407,7 @@ export component RadioButton inherits Rectangle {
             root.clicked();
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
                 root.clicked();
@@ -424,7 +428,7 @@ export component RadioButton inherits Rectangle {
             text: root.text;
         }
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         x: -4px;
         width: root.width + 8px;
         border-width: 2px;

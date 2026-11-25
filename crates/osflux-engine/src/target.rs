@@ -118,16 +118,26 @@ pub fn assess_target(index: u32) -> Result<TargetAssessment, TargetAssessmentErr
         return Err(TargetAssessmentError::NotFound { index });
     };
 
-    let assessment = assess_target_device(&device);
+    Ok(assess_with_contents(&device))
+}
+
+/// Every drive OSflux can see, each assessed as [`assess_target`] would, in
+/// index order. Allowed drives are read to see whether they are empty;
+/// blocked drives are not read at all.
+pub fn assess_all_targets() -> Vec<TargetAssessment> {
+    let mut devices = device::list_physical_devices();
+    devices.sort_by_key(|device| device.index);
+    devices.iter().map(assess_with_contents).collect()
+}
+
+fn assess_with_contents(device: &PhysicalDevice) -> TargetAssessment {
+    let assessment = assess_target_device(device);
     // A blocked drive is never written, so there is no reason to read it.
     if assessment.status == TargetAssessmentStatus::Blocked {
-        return Ok(assessment);
+        return assessment;
     }
 
-    Ok(with_drive_contents(
-        assessment,
-        inspect_device_contents(&device),
-    ))
+    with_drive_contents(assessment, inspect_device_contents(device))
 }
 
 /// Adds what the drive holds to an assessment. A drive that would otherwise

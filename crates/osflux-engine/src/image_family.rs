@@ -156,6 +156,13 @@ pub struct FamilyMarkerScan {
 
 pub fn detect_image_family(path: impl AsRef<Path>) -> Result<ImageFamilyReport, ImageFamilyError> {
     let image_plan = plan_image(path.as_ref()).map_err(ImageFamilyError::Image)?;
+    detect_plan_family(&image_plan)
+}
+
+/// Detects the family of an image that has already been planned, so a
+/// caller that needs both the plan and the family reads the image's
+/// structures once.
+pub fn detect_plan_family(image_plan: &ImagePlan) -> Result<ImageFamilyReport, ImageFamilyError> {
     let scan = if image_plan.kind == ImageKind::Iso && image_plan.size_bytes > 0 {
         scan_family_markers(&image_plan.source, DEFAULT_FAMILY_SCAN_LIMIT_BYTES).map_err(
             |error| ImageFamilyError::Scan {
@@ -171,7 +178,7 @@ pub fn detect_image_family(path: impl AsRef<Path>) -> Result<ImageFamilyReport, 
         }
     };
 
-    Ok(build_image_family_report(&image_plan, scan))
+    Ok(build_image_family_report(image_plan, scan))
 }
 
 pub fn build_image_family_report(

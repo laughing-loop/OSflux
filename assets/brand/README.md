@@ -12,8 +12,9 @@ Flat, geometric version of the OSflux ring-and-streaks mark. Built from exact sh
 | Single-colour print, stamps, engraving | `svg/osflux-lockup-black.svg`, `svg/osflux-mark-black.svg` |
 | Marketing only (large sizes, 48 px and up) | `svg/osflux-lockup-two-tone.svg`, `svg/osflux-mark-two-tone.svg` |
 | Mark on its own, 32 px and up | `svg/osflux-mark-blue.svg` |
-| Mark at 16–24 px (favicons, tray, small UI) | `svg/osflux-mark-small-blue.svg` (two thicker bars) |
-| Windows app / .exe icon | `icons/windows/osflux.ico` (16, 20, 24, 32, 40, 48, 64, 96, 128, 256) |
+| Mark at 16–24 px (favicons, tray, small UI) | `svg/osflux-mark-small3-16.svg`, `-20.svg`, `-24.svg`: three pixel-aligned bars, one file per size |
+| Alternative small mark, 16–24 px | `svg/osflux-mark-small-blue.svg` (two thicker bars), with `-black` and `-white` versions |
+| Windows app / .exe icon | `icons/windows/osflux.ico` (16, 20, 24, 32, 40, 48, 64, 96, 128, 256; 16–24 use the three-bar small mark) |
 | macOS app icon | `icons/macos/osflux.icns`, PNGs 16–1024 |
 | Avatars, social, store tiles | `icons/tile/osflux-tile-512.png` / `-1024.png`, `svg/osflux-tile.svg` |
 
@@ -53,7 +54,8 @@ Suggested location: `assets/brand/`.
 ## Geometry (for anyone redrawing or extending it)
 
 - Full mark on a 32-unit grid (1 unit = 1 px at 32 px): ring outer radius 12, inner radius 8; three bars 2 units thick with 2-unit gaps; the ring opens on the left where the bars enter. Bars run from x −15 to 2, −18 to 0 and −15 to −2 (ring centre at 0, 0), so their right ends step back as they go down.
-- Small mark on a 16 px grid: two 2 px bars, heavier ring, 1 px gaps. A 20 px version uses 3 px bars. Every edge lands on a whole pixel at 16, 20, 24, 32, 48, 64, 96, 128 and 256 px.
+- Small mark, 16–24 px: three bars, like the full mark, each drawn for its size so every bar edge lands on a whole pixel. The bars are 1 px thick with 1 px gaps at 16 px, and 2 px thick with 1 px gaps at 20 and 24 px. The Windows icon's 16, 20 and 24 px frames and `icons/windows/osflux-16.png`, `-20.png` and `-24.png` use it.
+- Alternative small mark, on a 16 px grid: two 2 px bars, heavier ring, 1 px gaps. A 20 px version uses 3 px bars. Every edge lands on a whole pixel at 16, 20, 24, 32, 48, 64, 96, 128 and 256 px.
 - `source/` contains the scripts that generate the whole pack (needs Python with fontTools and uharfbuzz, IBM Plex Sans TTFs and `rsvg-convert`).
 
 Wordmark font: IBM Plex Sans, SIL Open Font License 1.1.

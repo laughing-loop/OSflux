@@ -750,7 +750,11 @@ impl Session {
             detail: row.detail.clone().into(),
             value: row.value.clone().into(),
         })));
-        studio.set_details(details(&view.details_left, &view.details_right));
+        studio.set_details(details(
+            &view.details_left,
+            &view.details_right,
+            &view.details_wide,
+        ));
         studio.set_hint(view.hint.into());
         studio.set_can_go_next(view.can_continue);
     }
@@ -845,11 +849,12 @@ fn model<T: Clone + 'static>(items: impl Iterator<Item = T>) -> ModelRc<T> {
     ModelRc::new(VecModel::from(items.collect::<Vec<T>>()))
 }
 
-/// Pairs the two columns line by line.
-fn details(left: &[Detail], right: &[Detail]) -> ModelRc<DetailRowData> {
+/// Pairs the two columns line by line; wide values follow on lines of
+/// their own.
+fn details(left: &[Detail], right: &[Detail], wide: &[Detail]) -> ModelRc<DetailRowData> {
     let empty = (String::new(), String::new());
     let lines = left.len().max(right.len());
-    model((0..lines).map(|line| {
+    let columns = (0..lines).map(|line| {
         let (left_key, left_value) = left.get(line).unwrap_or(&empty);
         let (right_key, right_value) = right.get(line).unwrap_or(&empty);
         DetailRowData {
@@ -857,6 +862,15 @@ fn details(left: &[Detail], right: &[Detail]) -> ModelRc<DetailRowData> {
             left_value: left_value.clone().into(),
             right_key: right_key.clone().into(),
             right_value: right_value.clone().into(),
+            wide: false,
         }
-    }))
+    });
+    let wide = wide.iter().map(|(key, value)| DetailRowData {
+        left_key: key.clone().into(),
+        left_value: value.clone().into(),
+        right_key: SharedString::new(),
+        right_value: SharedString::new(),
+        wide: true,
+    });
+    model(columns.chain(wide))
 }

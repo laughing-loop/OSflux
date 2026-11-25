@@ -355,34 +355,52 @@ fn write_method_row(analysis: &ImageAnalysis) -> PlanRow {
     }
 }
 
-/// The ISO paths of the boot files the engine recognised.
-fn boot_files_row(plan: &ImagePlan) -> PlanRow {
-    let paths: Vec<String> = plan
+/// How many boot files the plan names before "+N more". The rest are in
+/// the safety check's technical details.
+pub const BOOT_FILES_SHOWN: usize = 3;
+
+/// The boot files the engine recognised in the ISO, as ISO paths. A folder
+/// it recognised, such as /efi/microsoft/boot, is left out when a file
+/// inside it is listed too.
+pub fn boot_file_paths(plan: &ImagePlan) -> Vec<String> {
+    let Some(directory) = plan
         .boot_metadata
         .as_ref()
         .and_then(|metadata| metadata.directory.as_ref())
-        .map(|directory| {
-            let paths: Vec<String> = directory
-                .boot_assets
-                .iter()
-                .map(|asset| display_iso_path(&asset.path))
-                .collect();
-            // A folder the engine recognised, such as /efi/microsoft/boot,
-            // adds nothing when a file inside it is listed too.
-            paths
-                .iter()
-                .filter(|path| {
-                    let folder = format!("{path}/");
-                    !paths.iter().any(|other| other.starts_with(&folder))
-                })
-                .cloned()
-                .collect()
+    else {
+        return Vec::new();
+    };
+    let paths: Vec<String> = directory
+        .boot_assets
+        .iter()
+        .map(|asset| display_iso_path(&asset.path))
+        .collect();
+    paths
+        .iter()
+        .filter(|path| {
+            let folder = format!("{path}/");
+            !paths.iter().any(|other| other.starts_with(&folder))
         })
-        .unwrap_or_default();
+        .cloned()
+        .collect()
+}
+
+/// The first three boot files and "+5 more", so the row stays on one line.
+fn boot_files_row(plan: &ImagePlan) -> PlanRow {
+    let paths = boot_file_paths(plan);
     if paths.is_empty() {
         return PlanRow::new("Boot files found", "None the engine recognises").secondary();
     }
-    PlanRow::new("Boot files found", paths.join(" · ")).mono()
+    let mut value = paths
+        .iter()
+        .take(BOOT_FILES_SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if paths.len() > BOOT_FILES_SHOWN {
+        value.push_str(&format!(" · +{} more", paths.len() - BOOT_FILES_SHOWN));
+    }
+    PlanRow::new("Boot files found", value).mono()
 }
 
 /// `SOURCES/INSTALL.WIM;1` as `/sources/install.wim`. Plain ISO 9660 names
@@ -735,6 +753,30 @@ mod tests {
             "Raw disk image: copied to the drive byte for byte"
         );
         assert_eq!(analysis.flow(), Flow::Other);
+    }
+
+    #[test]
+    fn more_than_three_boot_files_end_in_a_count() {
+        let mut analysis = hybrid_linux_iso();
+        analysis.plan.boot_metadata = Some(IsoBootMetadata {
+            el_torito: Some(el_torito(BootStyle::Hybrid)),
+            directory: Some(assets(&[
+                ("CASPER/INITRD", IsoBootAssetKind::Initrd),
+                ("CASPER/VMLINUZ", IsoBootAssetKind::LinuxKernel),
+                ("ISOLINUX/BOOT.CAT", IsoBootAssetKind::LinuxBootloader),
+                ("ISOLINUX/ISOLINUX.BIN", IsoBootAssetKind::LinuxBootloader),
+                ("ISOLINUX/LDLINUX.C32", IsoBootAssetKind::LinuxBootloader),
+                ("BOOT/GRUB/EFI.IMG", IsoBootAssetKind::GrubBootPath),
+                ("BOOT/GRUB/GRUB.CFG", IsoBootAssetKind::GrubBootPath),
+                ("EFI/BOOT/BOOTX64.EFI", IsoBootAssetKind::UefiBootloader),
+            ])),
+        });
+        let view = image_view(&analysis);
+        assert_eq!(
+            view.rows[4].value,
+            "/casper/initrd · /casper/vmlinuz · /isolinux/boot.cat · +5 more"
+        );
+        assert_eq!(super::boot_file_paths(&analysis.plan).len(), 8);
     }
 
     #[test]

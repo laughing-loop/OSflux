@@ -539,7 +539,7 @@ export component DetailGrid inherits VerticalLayout {
     for row in root.rows: HorizontalLayout {
         spacing: 24px;
         HorizontalLayout {
-            width: root.half;
+            width: row.wide ? root.width : root.half;
             spacing: 16px;
             Mono {
                 width: 112px;
@@ -554,7 +554,7 @@ export component DetailGrid inherits VerticalLayout {
                 horizontal-stretch: 1;
             }
         }
-        HorizontalLayout {
+        if !row.wide: HorizontalLayout {
             width: root.half;
             spacing: 16px;
             Mono {

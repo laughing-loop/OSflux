@@ -9,7 +9,7 @@ use osflux_engine::{
 
 use crate::drive_step::blocked_reason;
 use crate::format::{bytes_exact, size_short};
-use crate::image_step::{boot_catalog_valid, family_label};
+use crate::image_step::{boot_catalog_valid, boot_file_paths, family_label};
 use crate::steps::Flow;
 use crate::{DriveKind, Status};
 
@@ -48,6 +48,8 @@ pub struct SafetyView {
     pub rows: Vec<CheckRow>,
     pub details_left: Vec<Detail>,
     pub details_right: Vec<Detail>,
+    /// Long values that take the panel's whole width, under the columns.
+    pub details_wide: Vec<Detail>,
     pub rail_subtitle: String,
     pub rail_blocked: bool,
     pub hint: &'static str,
@@ -145,6 +147,12 @@ pub fn safety_view(check: &SafetyCheck, context: Context) -> SafetyView {
         WritePreflightStatus::Ready | WritePreflightStatus::NeedsConfirmation
     );
     let (details_left, details_right) = details(check, context, &rows);
+    let boot_files = boot_file_paths(&check.image);
+    let details_wide = if boot_files.is_empty() {
+        Vec::new()
+    } else {
+        vec![("boot.files".to_string(), boot_files.join(" · "))]
+    };
 
     SafetyView {
         status,
@@ -159,6 +167,7 @@ pub fn safety_view(check: &SafetyCheck, context: Context) -> SafetyView {
         rows,
         details_left,
         details_right,
+        details_wide,
         rail_subtitle,
         rail_blocked: check.preflight.status == WritePreflightStatus::Blocked,
         hint,
@@ -418,6 +427,7 @@ pub fn failure_view(failure: &SafetyFailure) -> SafetyView {
         rows: Vec::new(),
         details_left: Vec::new(),
         details_right: Vec::new(),
+        details_wide: Vec::new(),
         rail_subtitle: format!("Blocked: {short}"),
         rail_blocked: true,
         hint: "Fix the failed check to continue.",
@@ -656,6 +666,54 @@ mod tests {
         );
         assert_eq!(view.rows[4].detail, "Not checked.");
         assert_eq!(view.rows[4].value, "–");
+    }
+
+    #[test]
+    fn the_full_list_of_boot_files_is_in_the_technical_details() {
+        use osflux_engine::{
+            IsoBootAsset, IsoBootAssetKind, IsoBootMetadata, IsoDirectoryMetadata,
+        };
+        let mut plan = windows_plan(1 << 30);
+        let paths = [
+            "BOOTMGR",
+            "SOURCES/INSTALL.WIM",
+            "EFI/BOOT/BOOTX64.EFI",
+            "EFI/MICROSOFT/BOOT",
+            "EFI/MICROSOFT/BOOT/EFISYS.BIN",
+        ];
+        plan.boot_metadata = Some(IsoBootMetadata {
+            el_torito: None,
+            directory: Some(IsoDirectoryMetadata {
+                root_extent_lba: 18,
+                root_data_length: 2048,
+                scanned_directories: 3,
+                entries: Vec::new(),
+                boot_assets: paths
+                    .iter()
+                    .map(|path| IsoBootAsset {
+                        kind: IsoBootAssetKind::UefiBootloader,
+                        path: path.to_string(),
+                    })
+                    .collect(),
+                truncated: false,
+            }),
+        });
+        let target = assessment(
+            2,
+            "SanDisk",
+            64_023_511_040,
+            TargetAssessmentStatus::Eligible,
+            "",
+        );
+        let view = safety_view(&build_safety_check(plan, target, false), context(true));
+        assert_eq!(
+            view.details_wide,
+            [(
+                "boot.files".to_string(),
+                "/bootmgr · /sources/install.wim · /efi/boot/bootx64.efi · /efi/microsoft/boot/efisys.bin"
+                    .to_string()
+            )]
+        );
     }
 
     #[test]

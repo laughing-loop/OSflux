@@ -10,6 +10,7 @@ pub mod about;
 pub mod drive_step;
 pub mod format;
 pub mod image_step;
+pub mod log;
 pub mod platform;
 pub mod safety_step;
 pub mod session;

@@ -50,26 +50,60 @@ mod imp {
             return Err("dropped files are already accepted".to_string());
         }
         HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+        crate::log!("drop: setting up on window {hwnd:#x}");
         let hwnd = HWND(hwnd);
         // SAFETY: `hwnd` is the live window of this thread. The new window
         // procedure handles WM_DROPFILES and passes everything else to the
         // previous one, which is stored before any message can reach it.
         unsafe {
             // Removing winit's OLE target routes drops to WM_DROPFILES.
-            let _ = RevokeDragDrop(hwnd);
-            for message in [WM_DROPFILES, WM_COPYDATA, WM_COPYGLOBALDATA] {
-                ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None).map_err(
-                    |error| format!("could not allow dropped files: {}", error.message()),
-                )?;
+            match RevokeDragDrop(hwnd) {
+                Ok(()) => crate::log!("drop: RevokeDragDrop: removed winit's OLE drop target"),
+                Err(error) => crate::log!(
+                    "drop: RevokeDragDrop: {:#010x} {}",
+                    error.code().0,
+                    error.message()
+                ),
+            }
+            let mut allowed = true;
+            for (name, message) in [
+                ("WM_DROPFILES", WM_DROPFILES),
+                ("WM_COPYDATA", WM_COPYDATA),
+                ("WM_COPYGLOBALDATA", WM_COPYGLOBALDATA),
+            ] {
+                match ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, None) {
+                    Ok(()) => crate::log!("drop: ChangeWindowMessageFilterEx {name}: allowed"),
+                    Err(error) => {
+                        allowed = false;
+                        crate::log!(
+                            "drop: ChangeWindowMessageFilterEx {name}: {:#010x} {}",
+                            error.code().0,
+                            error.message()
+                        );
+                    }
+                }
+            }
+            if !allowed {
+                return Err("Windows would not let dropped files through".to_string());
             }
             let procedure: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
                 window_proc;
             let previous = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, procedure as usize as isize);
             if previous == 0 {
+                let error = windows::core::Error::from_win32();
+                crate::log!(
+                    "drop: SetWindowLongPtrW: failed, {:#010x} {}",
+                    error.code().0,
+                    error.message()
+                );
                 return Err("could not receive dropped files".to_string());
             }
+            crate::log!(
+                "drop: SetWindowLongPtrW: window procedure wrapped (previous {previous:#x})"
+            );
             PREVIOUS.store(previous, Ordering::SeqCst);
             DragAcceptFiles(hwnd, TRUE);
+            crate::log!("drop: DragAcceptFiles: on; ready for dropped files");
         }
         Ok(())
     }
@@ -88,6 +122,7 @@ mod imp {
         }
         let drop = HDROP(wparam.0 as isize);
         let count = DragQueryFileW(drop, u32::MAX, None);
+        crate::log!("drop: WM_DROPFILES received, {count} file(s)");
         let first = (count > 0).then(|| {
             let length = DragQueryFileW(drop, 0, None) as usize;
             let mut buffer = vec![0u16; length + 1];
@@ -96,6 +131,7 @@ mod imp {
         });
         DragFinish(drop);
         if let Some(path) = first {
+            crate::log!("drop: opening {}", path.display());
             HANDLER.with(|slot| {
                 if let Some(handler) = slot.borrow().as_ref() {
                     handler(path);

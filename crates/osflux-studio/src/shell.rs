@@ -3,8 +3,9 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
+use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
@@ -105,27 +106,61 @@ impl Shell {
         Rc::clone(&self.session)
     }
 
-    /// Lets image files be dropped onto the window. Call once it is shown.
+    /// Lets image files be dropped onto the window. Call before the event
+    /// loop runs: the native window only exists once it does, so the setup
+    /// waits for it from inside the loop, checking every 50 ms for up to
+    /// 10 seconds. Each step is written to Studio's log.
     pub fn accept_dropped_files(&self, window: &AppWindow) {
-        let Some(handle) = platform::native_handle(window.window()) else {
+        if !cfg!(windows) {
+            crate::log!("drop: not supported on this platform; Browse works");
             return;
-        };
-        let session = Rc::downgrade(&self.session);
-        let handler = Box::new(move |path: PathBuf| {
-            session::open_dropped_image(session.clone(), path);
-        });
-        if let Err(error) = platform::drop::accept_dropped_files(handle, handler) {
-            eprintln!("dropping files onto the window will not work: {error}");
         }
+        let window = window.as_weak();
+        let session = Rc::downgrade(&self.session);
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            set_up_drop(window, session, 0);
+        });
     }
 
     fn update_settings(&mut self, settings: Settings) {
         self.settings = settings;
         if let Some(path) = &self.settings_path {
             if let Err(error) = settings.save(path) {
-                eprintln!("could not save settings to {}: {error}", path.display());
+                crate::log!("could not save settings to {}: {error}", path.display());
             }
         }
+    }
+}
+
+const DROP_SETUP_ATTEMPTS: u32 = 200;
+const DROP_SETUP_INTERVAL: Duration = Duration::from_millis(50);
+
+fn set_up_drop(window: slint::Weak<AppWindow>, session: Weak<RefCell<Session>>, attempt: u32) {
+    let Some(app) = window.upgrade() else {
+        return;
+    };
+    let Some(handle) = platform::native_handle(app.window()) else {
+        if attempt == 0 {
+            crate::log!("drop: waiting for the native window");
+        }
+        if attempt + 1 >= DROP_SETUP_ATTEMPTS {
+            crate::log!(
+                "drop: no native window after {} ms; dropping files will not work",
+                DROP_SETUP_ATTEMPTS as u64 * DROP_SETUP_INTERVAL.as_millis() as u64
+            );
+            return;
+        }
+        slint::Timer::single_shot(DROP_SETUP_INTERVAL, move || {
+            set_up_drop(window, session, attempt + 1);
+        });
+        return;
+    };
+    crate::log!("drop: native window handle {handle:#x} found after {attempt} retries");
+    let handler = Box::new(move |path: PathBuf| {
+        session::open_dropped_image(session.clone(), path);
+    });
+    if let Err(error) = platform::drop::accept_dropped_files(handle, handler) {
+        crate::log!("drop: dropping files onto the window will not work: {error}");
     }
 }
 
@@ -207,19 +242,19 @@ fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>, session: &Rc<RefCell<
     studio.on_open_audit_log(|| match osflux_engine::AuditLog::default_location() {
         Some(log) => {
             if let Err(error) = system::show_file(log.path()) {
-                eprintln!(
+                crate::log!(
                     "could not open the audit log {}: {error}",
                     log.path().display()
                 );
             }
         }
-        None => eprintln!("OSflux could not find where its audit log is kept"),
+        None => crate::log!("OSflux could not find where its audit log is kept"),
     });
 
     studio.on_open_link(|id| {
         if let Some(url) = about::link(id.as_str()) {
             if let Err(error) = system::open_url(url) {
-                eprintln!("could not open {url}: {error}");
+                crate::log!("could not open {url}: {error}");
             }
         }
     });

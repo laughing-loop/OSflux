@@ -12,6 +12,7 @@ pub mod format;
 pub mod image_step;
 pub mod log;
 pub mod platform;
+pub mod renderer;
 pub mod safety_step;
 pub mod session;
 pub mod settings;

@@ -30,6 +30,7 @@ fn install(
         EngineSetup {
             engine: Arc::new(FakeEngine {
                 drives: Mutex::new(frame_05_drives()),
+                now: Mutex::new(support::START_TIME),
             }),
             jobs: Jobs::Inline,
             clock: || "13:28".to_string(),

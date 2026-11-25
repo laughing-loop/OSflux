@@ -17,11 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use osflux_engine::{
-    build_safety_check, plan_image, DeviceAccess, DriveContents, DriveContentsState, SafetyCheck,
-    TargetAssessment, TargetAssessmentStatus,
+    build_safety_check, build_write_intent, build_write_preflight, plan_image, DeviceAccess,
+    DriveContents, DriveContentsState, DrivePartition, FilesystemKind, SafetyCheck,
+    TargetAssessment, TargetAssessmentStatus, WriteIntentStatus,
 };
 use slint::ComponentHandle;
 
+use crate::confirm_step::{ConfirmFailure, Confirmation};
 use crate::drive_step::ChosenDrive;
 use crate::image_step::{analyze_image, ImageAnalysis};
 use crate::safety_step::SafetyFailure;
@@ -50,6 +52,21 @@ pub enum View {
     Safety,
     /// Frame 08: an 8 GB stick.
     SafetyBlocked,
+    /// Frame 09: Windows options, all off.
+    WindowsOptions,
+    /// Frame 10: three Windows options on, local account "alex".
+    WindowsOptionsSet,
+    /// Frame 11: the drive code, nothing typed yet.
+    ConfirmCode,
+    /// Frame 12: a wrong code.
+    ConfirmCodeWrong,
+    /// Frame 13: the matching code.
+    ConfirmCodeMatch,
+    /// Frame 14: the full phrase for an SD card with files (use a Linux
+    /// image and --verify-off).
+    ConfirmPhrase,
+    /// Frame 21: the confirmation has expired.
+    ConfirmExpired,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +104,13 @@ impl Options {
                 "drives-none" => options.view = View::DrivesNone,
                 "safety" => options.view = View::Safety,
                 "safety-blocked" => options.view = View::SafetyBlocked,
+                "windows-options" => options.view = View::WindowsOptions,
+                "windows-options-set" => options.view = View::WindowsOptionsSet,
+                "confirm-code" => options.view = View::ConfirmCode,
+                "confirm-code-wrong" => options.view = View::ConfirmCodeWrong,
+                "confirm-code-match" => options.view = View::ConfirmCodeMatch,
+                "confirm-phrase" => options.view = View::ConfirmPhrase,
+                "confirm-expired" => options.view = View::ConfirmExpired,
                 "--image" => options.image = args.next().map(PathBuf::from),
                 "--theme" => match args.next().as_deref() {
                     Some("dark") => options.settings.theme = ThemeSetting::Dark,
@@ -128,7 +152,10 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
         None,
         options.administrator,
         EngineSetup {
-            engine: Arc::new(SampleEngine { drives }),
+            engine: Arc::new(SampleEngine {
+                drives,
+                expired: options.view == View::ConfirmExpired,
+            }),
             jobs: Jobs::Inline,
             clock: || "13:28".to_string(),
         },
@@ -161,6 +188,44 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
                 _ => {}
             }
         }
+        View::WindowsOptions
+        | View::WindowsOptionsSet
+        | View::ConfirmCode
+        | View::ConfirmCodeWrong
+        | View::ConfirmCodeMatch
+        | View::ConfirmExpired => {
+            let mut session = session.borrow_mut();
+            session.next();
+            session.select_drive(0);
+            session.next();
+            session.next();
+            if options.view != View::WindowsOptions {
+                for option in 0..3 {
+                    session.set_option(option, true);
+                }
+                studio.set_account_name("alex".into());
+                session.account_name_edited("alex");
+            }
+            if !matches!(options.view, View::WindowsOptions | View::WindowsOptionsSet) {
+                session.next();
+            }
+            let typed = match options.view {
+                View::ConfirmCodeWrong => "7F3B",
+                View::ConfirmCodeMatch => "7F3A",
+                _ => "",
+            };
+            studio.set_typed(typed.into());
+            session.typed_edited(typed);
+        }
+        View::ConfirmPhrase => {
+            let mut session = session.borrow_mut();
+            session.next();
+            session.select_drive(2);
+            session.next();
+            session.next();
+            studio.set_typed("OSFLUX ERASE TARGET 4 ".into());
+            session.typed_edited("OSFLUX ERASE TARGET 4 ");
+        }
         View::Shell | View::Gallery | View::Image => {}
     }
     present(window, options.snapshot)
@@ -169,7 +234,11 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
 /// Reads images with the real engine; the drives are the samples below.
 struct SampleEngine {
     drives: Vec<TargetAssessment>,
+    /// Confirmations are made already expired, for frame 21.
+    expired: bool,
 }
+
+const PREVIEW_TIME: u64 = 1_800_000_000;
 
 impl Engine for SampleEngine {
     fn analyze_image(&self, path: &Path) -> Result<ImageAnalysis, String> {
@@ -193,6 +262,33 @@ impl Engine for SampleEngine {
             .cloned()
             .ok_or(SafetyFailure::DriveGone)?;
         Ok(build_safety_check(plan, target, false))
+    }
+
+    /// The engine's own intent for a sample drive. Nothing is recorded.
+    fn confirm(&self, image: &Path, drive: &ChosenDrive) -> Result<Confirmation, ConfirmFailure> {
+        let plan = plan_image(image).map_err(|error| ConfirmFailure::Failed(error.to_string()))?;
+        let target = self
+            .drives
+            .iter()
+            .find(|target| target.index == drive.index)
+            .cloned()
+            .ok_or(ConfirmFailure::DriveChanged)?;
+        let intent = build_write_intent(&build_write_preflight(&plan, &target));
+        if intent.status != WriteIntentStatus::ConfirmationRequired {
+            return Err(ConfirmFailure::NotAllowed(intent.reason.clone()));
+        }
+        Ok(Confirmation {
+            intent,
+            expires_at_unix_seconds: if self.expired {
+                PREVIEW_TIME
+            } else {
+                PREVIEW_TIME + 600
+            },
+        })
+    }
+
+    fn now_unix_seconds(&self) -> u64 {
+        PREVIEW_TIME
     }
 }
 
@@ -244,7 +340,14 @@ fn sample_drives() -> Vec<TargetAssessment> {
         state: DriveContentsState::HasData,
         reason: "one FAT32 partition with files".to_string(),
         partition_scheme: None,
-        partitions: Vec::new(),
+        partitions: vec![DrivePartition {
+            number: 1,
+            start_bytes: 1 << 20,
+            size_bytes: 15_930_490_880,
+            filesystem: Some(FilesystemKind::Fat32),
+            label: Some("CARD".to_string()),
+            used_bytes: Some(3_221_225_472),
+        }],
     });
     vec![
         sample_drive(

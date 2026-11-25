@@ -37,11 +37,20 @@ The first release, 0.1.0, will contain everything below.
 
 - **OSflux Studio, in progress** (`osflux-studio.exe`): the desktop app, built with Slint on the same engine, to the v2 design in `DOCUMENTS/studio/`.
   - The window shell (header with Administrator status, step rail with "This session", action bar and status bar), dark, light and follow-Windows themes, Settings (theme, verify after writing) and About with the licences.
-  - Steps 1 to 3 run on the engine:
+  - The steps run on the engine:
     - **Image:** choose a file with the Open dialog, or drop it onto the window. Dropping works on Windows even though Studio runs as Administrator. Studio shows the engine's image plan, the notes that go with it, and an optional expected SHA-256.
     - **Drive:** the drives the engine allows, the ones it won't erase with the reason in plain words, and Refresh.
     - **Safety check:** the engine's verdict and its checks in order, plus Verification, with the technical details. A blocked verdict offers a way back.
-  - Reading images, listing drives and the safety check run off the UI thread.
+    - **Windows options,** for Windows installers only: the five Setup options, all off by default, with a username field for the local account and no password field. The name is checked by the engine's rules.
+    - **Confirm:**
+      - An empty drive is confirmed with its four-character code, typed into four boxes. Any other drive needs the full phrase.
+      - The engine records a one-time confirmation that lasts 10 minutes, as `--intent` does. When it expires, writing locks until the drive is confirmed again.
+      - Studio keeps exactly what was typed for the engine.
+      - "Write to drive" unlocks only on a match. Writing itself comes next.
+  - Reading images, listing drives, the safety check and the confirmation run off the UI thread.
+  - Studio keeps a log, `studio.log` in OSflux's state folder, with startup times, the renderer and each step of setting up dropped files.
+  - On Windows Studio draws with Slint's software renderer, which opens the window in about 0.2 s instead of about 1.2 s with OpenGL. `SLINT_BACKEND=winit-femtovg` selects OpenGL.
+  - `osflux-studio` is licensed GPL-3.0-only in its package metadata, as it includes Slint under that licence.
 - **Engine additions for Studio:**
   - `assess_all_targets` assesses every drive in one call.
   - `run_safety_check` splits the preflight verdict into its checks, in the same order and with the same outcome. It also notices when a different drive has taken the chosen drive's place.

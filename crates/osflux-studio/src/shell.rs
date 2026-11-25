@@ -201,6 +201,25 @@ fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>, session: &Rc<RefCell<
     let state = Rc::clone(session);
     studio.on_refresh(move || state.borrow_mut().refresh());
 
+    let state = Rc::clone(session);
+    studio.on_set_option(move |index, on| {
+        if let Ok(index) = usize::try_from(index) {
+            state.borrow_mut().set_option(index, on);
+        }
+    });
+
+    let state = Rc::clone(session);
+    studio.on_account_name_edited(move |text| state.borrow_mut().account_name_edited(&text));
+
+    let state = Rc::clone(session);
+    studio.on_typed_edited(move |text| state.borrow_mut().typed_edited(&text));
+
+    let state = Rc::clone(session);
+    studio.on_confirm_again(move || state.borrow_mut().confirm_again());
+
+    let state = Rc::clone(session);
+    studio.on_write(move || state.borrow_mut().write());
+
     let weak = window.as_weak();
     let state = Rc::clone(session);
     studio.on_fix(move || {

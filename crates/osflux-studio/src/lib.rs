@@ -7,6 +7,7 @@
 slint::include_modules!();
 
 pub mod about;
+pub mod confirm_step;
 pub mod drive_step;
 pub mod format;
 pub mod image_step;
@@ -19,6 +20,7 @@ pub mod settings;
 pub mod shell;
 pub mod steps;
 pub mod system;
+pub mod windows_options;
 
 #[cfg(feature = "preview")]
 pub mod preview;

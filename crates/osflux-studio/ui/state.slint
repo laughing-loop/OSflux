@@ -87,6 +87,18 @@ export struct CheckData {
     value: string,
 }
 
+// The chosen drive on the Confirm card (frames 11–13).
+export struct ConfirmDriveData {
+    model: string,
+    path: string,
+    size: string,
+    bus: string,
+    media: string,
+    kind: DriveKind,
+    status: Status,
+    status-label: string,
+}
+
 // An engine key and its value, for technical details.
 export struct DetailData {
     key: string,
@@ -162,6 +174,37 @@ export global Studio {
     in property <[DetailRowData]> details;
     in-out property <bool> details-open: true;
 
+    // Step 4, Windows options (frames 09–10)
+    in property <bool> option-bypass;
+    in property <bool> option-local-account;
+    in property <bool> option-privacy;
+    in property <bool> option-bitlocker;
+    in property <bool> option-region;
+    in-out property <string> account-name;
+    in property <string> account-error;
+
+    // Confirm (frames 11–14, 21)
+    in property <bool> confirm-busy;
+    // Why no confirmation could be offered, such as a changed drive.
+    in property <string> confirm-error;
+    // The drive code confirms (an empty drive), not the full phrase.
+    in property <bool> confirm-short;
+    in property <ConfirmDriveData> confirm-drive;
+    in property <string> confirm-options;
+    in property <string> confirm-verify;
+    in property <string> drive-code;
+    in property <string> phrase-head;
+    in property <string> phrase-code;
+    in property <string> contents-note;
+    in property <string> erase-title;
+    in property <string> erase-body;
+    in-out property <string> typed;
+    in property <[string]> typed-characters: ["", "", "", ""];
+    in property <MatchState> match-state: MatchState.empty;
+    in property <string> match-message;
+    in property <bool> confirm-expired;
+    in property <bool> can-write;
+
     // Settings
     in-out property <bool> settings-open;
     in-out property <bool> about-open;
@@ -181,6 +224,12 @@ export global Studio {
     callback expected-sha-edited(string);
     callback select-drive(int);
     callback fix();
+    // Windows option 0–4 ticked or cleared.
+    callback set-option(int, bool);
+    callback account-name-edited(string);
+    callback typed-edited(string);
+    callback confirm-again();
+    callback write();
     callback refresh();
     callback set-theme(ThemeChoice);
     callback set-verify-after-writing(bool);

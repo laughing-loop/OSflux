@@ -24,11 +24,16 @@ component Dialog inherits Rectangle {
     background: Theme.scrim;
     accessible-role: none;
 
+    init => { escape.focus(); }
+
     // A click on the dimmed window closes the dialog; the panel keeps its own.
     TouchArea {
         clicked => { root.close(); }
     }
-    FocusScope {
+    // Escape closes the dialog. It takes focus when the dialog opens, and
+    // never takes a mouse press, which the backdrop needs to close it.
+    escape := FocusScope {
+        focus-on-click: false;
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.close();

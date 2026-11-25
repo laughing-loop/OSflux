@@ -1,0 +1,23 @@
+// Keyboard focus for the custom controls.
+//
+// A FocusScope that takes focus on click also accepts that press, so the
+// TouchArea under it never sees it and the control needs a second click.
+// KeyFocus never takes a mouse press: controls call `focus()` from their
+// TouchArea where they want focus. It also tells keyboard focus from focus
+// a click gave, so the focus ring shows only when Tab put it there.
+
+export component KeyFocus inherits FocusScope {
+    // True while focus came from the keyboard (Tab).
+    out property <bool> keyboard;
+
+    focus-on-click: false;
+
+    focus-changed-event(reason) => {
+        if (reason == FocusReason.tab-navigation) {
+            root.keyboard = true;
+        } else if (reason == FocusReason.programmatic || reason == FocusReason.pointer-click) {
+            root.keyboard = false;
+        }
+        // Leaving and coming back to the window keeps how focus was given.
+    }
+}

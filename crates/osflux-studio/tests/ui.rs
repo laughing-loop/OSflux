@@ -183,3 +183,124 @@ fn the_settings_and_about_buttons_open_their_dialogs() {
     about.invoke_accessible_default_action();
     assert!(studio.get_about_open());
 }
+
+// ---- Real pointer clicks -------------------------------------------------
+//
+// These press and release the mouse over an element through the window's own
+// event path, as Windows does, rather than calling the callback. A control
+// that swallows the first press (as a FocusScope does when it takes focus on
+// click) fails here.
+
+mod clicks {
+    use super::support::{studio, WINDOWS_ISO};
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+    use osflux_studio::{Screen, ThemeChoice};
+    use slint::platform::PointerEventButton;
+    use slint::ComponentHandle;
+
+    /// Shows the window at the design's size, so every element has a place.
+    fn shown(app: &super::support::Studio) {
+        app.window
+            .window()
+            .set_size(slint::LogicalSize::new(1080.0, 720.0));
+        app.window.show().expect("the window shows");
+    }
+
+    /// Clicks the control labelled `label`, not a text that reads the same.
+    fn click(app: &super::support::Studio, label: &str) {
+        let element = ElementHandle::find_by_accessible_label(&app.window, label)
+            .find(|element| element.accessible_role() != Some(AccessibleRole::Text))
+            .unwrap_or_else(|| panic!("a control labelled {label:?}"));
+        element.mock_single_click(PointerEventButton::Left);
+    }
+
+    #[test]
+    fn one_click_opens_settings_and_about() {
+        let app = studio();
+        shown(&app);
+        let studio = app.studio();
+
+        click(&app, "Settings");
+        assert!(studio.get_settings_open(), "one click opens Settings");
+        click(&app, "Done");
+        assert!(!studio.get_settings_open(), "one click closes it");
+
+        click(&app, "About OSflux Studio");
+        assert!(studio.get_about_open(), "one click opens About");
+    }
+
+    #[test]
+    fn one_click_moves_between_steps() {
+        let app = studio();
+        shown(&app);
+        app.open(WINDOWS_ISO);
+        let studio = app.studio();
+
+        click(&app, "Next");
+        assert_eq!(studio.get_screen(), Screen::Drive, "one click on Next");
+        click(&app, "Back");
+        assert_eq!(studio.get_screen(), Screen::Image, "one click on Back");
+    }
+
+    #[test]
+    fn one_click_works_on_the_status_bar_link_and_settings_controls() {
+        let app = studio();
+        shown(&app);
+        let studio = app.studio();
+
+        app.open(WINDOWS_ISO);
+        studio.invoke_next();
+        assert_eq!(slint::Model::row_count(&studio.get_drives()), 3);
+        app.engine.drives.lock().unwrap().clear();
+        click(&app, "Refresh");
+        assert_eq!(
+            slint::Model::row_count(&studio.get_drives()),
+            0,
+            "one click on Refresh"
+        );
+
+        click(&app, "Settings");
+        click(&app, "Verify after writing");
+        assert!(
+            !studio.get_verify_after_writing(),
+            "one click on the switch"
+        );
+        click(&app, "Dark");
+        assert_eq!(
+            studio.get_theme_choice(),
+            ThemeChoice::Dark,
+            "one click on a radio button"
+        );
+    }
+
+    #[test]
+    fn one_click_on_the_dimmed_window_closes_a_dialog() {
+        let app = studio();
+        shown(&app);
+        let studio = app.studio();
+        studio.set_settings_open(true);
+
+        // The top left corner is outside the 520 px panel.
+        app.window
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                position: slint::LogicalPosition::new(10.0, 10.0),
+            });
+        for event in [
+            slint::platform::WindowEvent::PointerPressed {
+                position: slint::LogicalPosition::new(10.0, 10.0),
+                button: PointerEventButton::Left,
+            },
+            slint::platform::WindowEvent::PointerReleased {
+                position: slint::LogicalPosition::new(10.0, 10.0),
+                button: PointerEventButton::Left,
+            },
+        ] {
+            app.window.window().dispatch_event(event);
+        }
+        assert!(
+            !studio.get_settings_open(),
+            "one click outside closes Settings"
+        );
+    }
+}

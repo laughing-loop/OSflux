@@ -4,6 +4,7 @@
 
 import { Theme } from "../theme.slint";
 import { Body } from "text.slint";
+import { KeyFocus } from "focus.slint";
 
 export enum ButtonKind { primary, secondary, danger }
 
@@ -48,7 +49,7 @@ export component SquareButton inherits Rectangle {
             root.clicked();
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         enabled: root.enabled;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
@@ -80,8 +81,8 @@ export component SquareButton inherits Rectangle {
         }
     }
 
-    // Keyboard focus: a 2 px inset ring in the link colour.
-    if focus.has-focus: Rectangle {
+    // Keyboard focus only: a 2 px inset ring in the link colour.
+    if focus.has-focus && focus.keyboard: Rectangle {
         border-width: 2px;
         border-color: root.kind == ButtonKind.secondary || !root.enabled ? Theme.link : #FFFFFF;
     }
@@ -117,7 +118,7 @@ export component GhostButton inherits Rectangle {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         enabled: root.enabled;
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
@@ -161,7 +162,7 @@ export component GhostButton inherits Rectangle {
             }
         }
     }
-    if root.enabled && (touch.has-hover || focus.has-focus): Rectangle {
+    if root.enabled && (touch.has-hover || (focus.has-focus && focus.keyboard)): Rectangle {
         x: label.x;
         y: label.y + label.height - 2px;
         width: label.width;
@@ -187,7 +188,7 @@ export component IconButton inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == Key.Return || event.text == " ") {
                 root.clicked();
@@ -202,7 +203,7 @@ export component IconButton inherits Rectangle {
         source: root.icon;
         colorize: touch.has-hover ? Theme.text : Theme.text-secondary;
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         border-width: 2px;
         border-color: Theme.link;
     }

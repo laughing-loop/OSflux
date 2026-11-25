@@ -7,6 +7,7 @@ import { MatchState } from "../state.slint";
 import { Body, Label, Mono } from "text.slint";
 import { StatusIcon } from "status.slint";
 import { RadioMark } from "rows.slint";
+import { KeyFocus } from "focus.slint";
 
 // What was typed against the code or phrase: "Keep typing…", "Does not
 // match…" in red, or "Matches…" with a green check.
@@ -286,7 +287,7 @@ export component OptionRow inherits Rectangle {
             root.toggled(!root.checked);
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == " ") {
                 root.toggled(!root.checked);
@@ -323,7 +324,7 @@ export component OptionRow inherits Rectangle {
             @children
         }
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         border-width: 2px;
         border-color: Theme.link;
     }
@@ -358,7 +359,7 @@ export component Switch inherits Rectangle {
             root.toggled(!root.checked);
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
                 root.toggled(!root.checked);
@@ -375,7 +376,7 @@ export component Switch inherits Rectangle {
         background: #FFFFFF;
         animate x { duration: 120ms; }
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         x: -3px;
         y: -3px;
         width: root.width + 6px;
@@ -406,7 +407,7 @@ export component RadioButton inherits Rectangle {
             root.clicked();
         }
     }
-    focus := FocusScope {
+    focus := KeyFocus {
         key-pressed(event) => {
             if (event.text == " " || event.text == Key.Return) {
                 root.clicked();
@@ -427,7 +428,7 @@ export component RadioButton inherits Rectangle {
             text: root.text;
         }
     }
-    if focus.has-focus: Rectangle {
+    if focus.has-focus && focus.keyboard: Rectangle {
         x: -4px;
         width: root.width + 8px;
         border-width: 2px;

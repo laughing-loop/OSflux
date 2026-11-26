@@ -142,6 +142,6 @@ Look at `git log` for examples. In short:
 
 OSflux is licensed under the GNU General Public License, version 3 or (at your option) any later version (`GPL-3.0-or-later`). See [LICENSE](LICENSE). OSflux Studio as a whole is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
 
-By submitting a contribution, you agree that it is licensed under the same terms, and that you have the right to submit it under them. Do not include code copied from projects under incompatible licences.
+By submitting a contribution, you agree that it is licensed under the licence of the code it changes: GPL-3.0-or-later for the engine, CLI and core, GPL-3.0-only for osflux-studio, and that you have the right to submit it under that licence. Do not include code copied from projects under incompatible licences.
 
 The licence does not cover the OSflux name or logo, including the files in `assets/brand/`; see the Licence section of the README.

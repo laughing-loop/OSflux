@@ -8,6 +8,7 @@ import { StatusIcon } from "components/status.slint";
 import { IconButton, GhostButton } from "components/button.slint";
 import { StepItem } from "components/step.slint";
 import { Tooltip } from "components/tooltip.slint";
+import { ScrollArea } from "components/scroll.slint";
 
 component VerticalRule inherits Rectangle {
     width: 1px;
@@ -158,15 +159,25 @@ export component Rail inherits Rectangle {
             }
         }
 
-        Rectangle {
+        // "This session" sits at the bottom of the rail and scrolls on its
+        // own when the window is too short for it, so the rail never makes
+        // the window taller than it is.
+        session-scroll := ScrollArea {
             vertical-stretch: 1;
-        }
-
-        Rectangle {
-            height: 1px;
-            background: Theme.border-subtle;
-        }
-        VerticalLayout {
+            min-height: 0px;
+            content-height: session.preferred-height;
+            session := VerticalLayout {
+                width: session-scroll.width;
+                // Its own height, not the scroll area's, so the items keep
+                // their spacing; at the bottom of the rail when there is room.
+                height: self.preferred-height;
+                y: max(0px, session-scroll.height - self.preferred-height);
+                spacing: 0;
+                Rectangle {
+                    height: 1px;
+                    background: Theme.border-subtle;
+                }
+                VerticalLayout {
             padding-left: 16px;
             padding-right: 16px;
             padding-top: 16px;
@@ -195,6 +206,8 @@ export component Rail inherits Rectangle {
                 label: "Verify after writing";
                 value: Studio.verify-after-writing ? "On" : "Off";
                 warning: !Studio.verify-after-writing;
+            }
+                }
             }
         }
     }

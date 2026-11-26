@@ -51,6 +51,7 @@ The first release, 0.1.0, will contain everything below.
     - **Writing and verifying:** the engine checks the confirmation and the drive once more, then writes and reads back, with each phase's progress, speed, amount done and time left. Cancel stops after the current chunk; the stick then needs writing again. Studio never forces a busy drive free: it says another program is using the drive.
     - **Done:** "Written and verified", "Written, not verified" or "Hash mismatch" when the image's SHA-256 differs from the one entered, with the result list and the next step. A write that was cancelled or failed says so and offers to try again. "Write another stick" goes back to the drives with the same image.
   - Reading images, listing drives, the safety check and the confirmation run off the UI thread.
+  - The header, action bar and status bar stay in view at any window size down to the 960 × 640 minimum; the page and the rail's "This session" scroll when there is not room.
   - Studio keeps a log, `studio.log` in OSflux's state folder, with startup times, the renderer and each step of setting up dropped files.
   - On Windows Studio draws with Slint's software renderer, which opens the window in about 0.2 s instead of about 1.2 s with OpenGL. `SLINT_BACKEND=winit-femtovg` selects OpenGL.
   - `osflux-studio` is licensed GPL-3.0-only in its package metadata, as it includes Slint under that licence.

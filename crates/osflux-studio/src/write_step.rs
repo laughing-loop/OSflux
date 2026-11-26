@@ -562,8 +562,8 @@ fn not_written_view(failure: &WriteFailure) -> DoneView {
         WriteFailure::Cancelled { written: true } => (
             DoneKind::Cancelled,
             "Writing cancelled",
-            "The stick needs writing again before you can use it.",
-            "It holds part of the image. Confirm the drive again to write it, or erase it another way.".to_string(),
+            "This stick won't start a PC. It needs writing again before you can use it.",
+            "Writing stopped part-way, so the stick holds only part of the image, and whatever was on it before is gone. Confirm the drive again to write it.".to_string(),
         ),
         WriteFailure::InUse(reason) => (
             DoneKind::Failed,
@@ -589,6 +589,11 @@ fn not_written_view(failure: &WriteFailure) -> DoneView {
             },
         ),
     };
+    let description = match failure {
+        WriteFailure::Cancelled { written: true } => "Writing stopped part-way.",
+        WriteFailure::Cancelled { written: false } => "Writing stopped before it began.",
+        _ => "",
+    };
     let status = if kind == DoneKind::Cancelled {
         Status::NeedsInspection
     } else {
@@ -598,7 +603,7 @@ fn not_written_view(failure: &WriteFailure) -> DoneView {
         kind,
         status,
         title,
-        description: String::new(),
+        description: description.to_string(),
         band_title: band_title.to_string(),
         band_body,
         rows: vec![ResultRowView::text(
@@ -608,10 +613,10 @@ fn not_written_view(failure: &WriteFailure) -> DoneView {
         next_step: "",
         hint: "Recorded in the audit log.",
         hint_icon: HintIcon::Log,
-        rail_subtitle: if kind == DoneKind::Cancelled {
-            "Cancelled"
-        } else {
-            "Not written"
+        rail_subtitle: match failure {
+            WriteFailure::Cancelled { written: false } => "Cancelled",
+            WriteFailure::Cancelled { written: true } => "Needs writing again",
+            _ => "Not written",
         },
         rail_blocked: true,
         primary: "Try again",
@@ -872,8 +877,11 @@ mod tests {
         assert_eq!(partly.kind, DoneKind::Cancelled);
         assert_eq!(
             partly.band_title,
-            "The stick needs writing again before you can use it."
+            "This stick won't start a PC. It needs writing again before you can use it."
         );
+        assert_eq!(partly.description, "Writing stopped part-way.");
+        assert_eq!(partly.rail_subtitle, "Needs writing again");
+        assert!(partly.band_body.contains("only part of the image"));
         assert_eq!(partly.primary, "Try again");
 
         let before = done(

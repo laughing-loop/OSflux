@@ -632,9 +632,13 @@ fn a_cancelled_write_offers_to_try_again() {
     assert_eq!(studio.get_title(), "Writing cancelled");
     assert_eq!(
         studio.get_done_band_title(),
-        "The stick needs writing again before you can use it."
+        "This stick won't start a PC. It needs writing again before you can use it."
     );
     assert!(!studio.get_done_band_red(), "amber, not red");
+    assert_eq!(
+        studio.get_steps().row_data(4).unwrap().subtitle,
+        "Needs writing again"
+    );
     assert_eq!(studio.get_done_primary_label(), "Try again");
 
     studio.invoke_done_primary();

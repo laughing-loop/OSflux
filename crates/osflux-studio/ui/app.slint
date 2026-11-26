@@ -44,8 +44,11 @@ export component AppWindow inherits Window {
             Rail { }
             VerticalLayout {
                 horizontal-stretch: 1;
+                // Only the page shrinks and scrolls; the header, action bar
+                // and status bar keep their height at any window size.
                 scroll := ScrollArea {
                     vertical-stretch: 1;
+                    min-height: 0px;
                     content-height: page.preferred-height;
                     page := VerticalLayout {
                         width: scroll.width;

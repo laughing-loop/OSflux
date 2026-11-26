@@ -4,7 +4,7 @@
 //! and never saves settings.
 //!
 //! `--preview <view> [--image file] [--theme dark|light] [--not-admin]
-//! [--verify-off] [--snapshot file.png]`, where the view is one of shell,
+//! [--verify-off] [--size WIDTHxHEIGHT] [--snapshot file.png]`, where the view is one of shell,
 //! settings, about, licences, gallery, image, drives, drives-none, safety,
 //! safety-blocked, the Windows options and Confirm views, writing,
 //! verifying, done or done-mismatch.
@@ -97,6 +97,9 @@ pub struct Options {
     pub administrator: bool,
     pub image: Option<PathBuf>,
     pub snapshot: Option<PathBuf>,
+    /// `--size 960x640`: the window's size, to check the layout when it is
+    /// small. The design's size otherwise.
+    pub size: Option<(u32, u32)>,
 }
 
 impl Options {
@@ -112,6 +115,7 @@ impl Options {
             administrator: true,
             image: None,
             snapshot: None,
+            size: None,
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -147,6 +151,12 @@ impl Options {
                 "--not-admin" => options.administrator = false,
                 "--verify-off" => options.settings.verify_after_writing = false,
                 "--snapshot" => options.snapshot = args.next().map(PathBuf::from),
+                "--size" => {
+                    options.size = args.next().and_then(|size| {
+                        let (width, height) = size.split_once('x')?;
+                        Some((width.parse().ok()?, height.parse().ok()?))
+                    })
+                }
                 other => eprintln!("--preview: ignoring unknown option {other}"),
             }
         }
@@ -321,6 +331,11 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
             session.typed_edited("OSFLUX ERASE TARGET 4 ");
         }
         View::Shell | View::Gallery | View::Image => {}
+    }
+    if let Some((width, height)) = options.size {
+        window
+            .window()
+            .set_size(slint::LogicalSize::new(width as f32, height as f32));
     }
     present(window, options.snapshot)
 }

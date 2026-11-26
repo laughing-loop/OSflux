@@ -422,9 +422,9 @@ mod tests {
         }
     }
 
-    /// When Windows' disk details cannot be read (PowerShell missing,
-    /// blocked or failing), drives are still found by opening them, with a
-    /// size but no model, serial, device ID or media type, and with
+    /// When Windows' disk details cannot be read (the storage query or Plug
+    /// and Play fails), drives are still found by opening them, with a size
+    /// but no model, serial, device ID or media type, and with
     /// `contains_system_volume` left false because nothing checked it. Each
     /// such drive, the system disk included, must be refused: by its
     /// assessment, after its contents are read, and by the safety check.
@@ -435,7 +435,7 @@ mod tests {
         use osflux_core::device::PhysicalDevice;
 
         for access in [DeviceAccess::Readable, DeviceAccess::MetadataOnly] {
-            // The system disk, as listed when the PowerShell query fails.
+            // The system disk, as listed when its details cannot be read.
             let system_disk = PhysicalDevice::found_without_metadata(
                 0,
                 r"\\.\PhysicalDrive0".to_string(),

@@ -1,9 +1,15 @@
-use std::collections::{HashMap, HashSet};
-use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use windows::core::PCWSTR;
+use windows::Win32::Devices::DeviceAndDriverInstallation::{
+    SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInterfaces, SetupDiGetClassDevsW,
+    SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceInterfaceDetailW,
+    SetupDiGetDeviceRegistryPropertyW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT, HDEVINFO,
+    SPDRP_FRIENDLYNAME, SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+    SP_DEVINFO_DATA,
+};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::{CloseHandle, ERROR_NOT_READY, ERROR_NO_MORE_FILES, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, FlushFileBuffers,
@@ -12,14 +18,15 @@ use windows::Win32::Storage::FileSystem::{
     IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
 };
 use windows::Win32::System::Ioctl::{
-    DISK_GEOMETRY, FSCTL_DISMOUNT_VOLUME, FSCTL_LOCK_VOLUME, GET_LENGTH_INFORMATION,
-    IOCTL_DISK_GET_DRIVE_GEOMETRY, IOCTL_DISK_GET_LENGTH_INFO, IOCTL_DISK_UPDATE_PROPERTIES,
-    IOCTL_STORAGE_GET_DEVICE_NUMBER, STORAGE_DEVICE_NUMBER,
+    PropertyStandardQuery, StorageDeviceProperty, DISK_GEOMETRY, FSCTL_DISMOUNT_VOLUME,
+    FSCTL_LOCK_VOLUME, GET_LENGTH_INFORMATION, GUID_DEVINTERFACE_DISK,
+    IOCTL_DISK_GET_DRIVE_GEOMETRY, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, IOCTL_DISK_GET_LENGTH_INFO,
+    IOCTL_DISK_UPDATE_PROPERTIES, IOCTL_STORAGE_GET_DEVICE_NUMBER, IOCTL_STORAGE_QUERY_PROPERTY,
+    STORAGE_DEVICE_NUMBER, STORAGE_PROPERTY_QUERY,
 };
-use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 use windows::Win32::System::IO::DeviceIoControl;
 
-use super::disk_metadata::{parse_disk_metadata_line, DiskMetadata};
+use super::disk_metadata::{disk_metadata, parse_storage_descriptor, StorageDescriptor};
 use super::{
     BlockDevice, BusyVolumes, DeviceAccess, DeviceError, DeviceRead, DeviceResult, PhysicalDevice,
 };
@@ -35,6 +42,8 @@ const MAX_VOLUME_NAME_CHARS: usize = 260;
 const MAX_VOLUME_EXTENTS: usize = 32;
 const DISK_EXTENTS_HEADER_SIZE: usize = 8;
 const DISK_EXTENT_SIZE: usize = 24;
+/// Room for a `STORAGE_DEVICE_DESCRIPTOR` and its strings.
+const DESCRIPTOR_BUFFER_BYTES: usize = 4096;
 
 pub struct WindowsBlockDevice {
     handle: HANDLE,
@@ -541,28 +550,245 @@ fn wide_to_string(buffer: &[u16]) -> String {
     String::from_utf16_lossy(&buffer[..length])
 }
 
+/// Every disk Windows lets OSflux open, with what the storage stack and
+/// Plug and Play report about it. Nothing here needs PowerShell or WMI, so
+/// listing drives works where scripts are blocked and never flashes a
+/// console window.
 pub fn list_physical_devices() -> Vec<PhysicalDevice> {
-    let metadata = query_disk_metadata();
     let mut devices = scan_physical_devices(DEFAULT_SCAN_LIMIT);
-    let mut seen_indexes = HashSet::new();
+    let devnodes = disk_devnodes();
+    // When the system volume cannot be located, every disk counts as
+    // holding it, so none can be erased by mistake.
+    let system_disks = system_disk_numbers();
 
     for device in &mut devices {
-        seen_indexes.insert(device.index);
-        if let Some(metadata) = metadata.get(&device.index) {
-            apply_metadata(device, metadata);
-        }
+        let descriptor = query_storage_descriptor(&device.path);
+        let devnode = devnodes.get(&device.index);
+        let size_bytes = device.size_bytes.or_else(|| query_disk_size(&device.path));
+        let metadata = disk_metadata(
+            device.index,
+            descriptor.as_ref(),
+            devnode.and_then(|node| node.friendly_name.clone()),
+            devnode.and_then(|node| node.instance_id.clone()),
+            size_bytes,
+            system_disks
+                .as_ref()
+                .is_none_or(|disks| disks.contains(&device.index)),
+        );
+        apply_metadata(device, &metadata);
     }
 
-    for metadata in metadata.values() {
-        if seen_indexes.contains(&metadata.index) {
-            continue;
-        }
-
-        devices.push(device_from_metadata(metadata));
-    }
-
-    devices.sort_by_key(|device| device.index);
     devices
+}
+
+/// What Plug and Play knows about a disk: its device-instance ID, which
+/// names the port it is on, and the name Device Manager shows.
+#[derive(Debug, Clone, Default)]
+struct Devnode {
+    instance_id: Option<String>,
+    friendly_name: Option<String>,
+}
+
+/// The disks Plug and Play lists, by disk number, matched through each
+/// disk interface's `IOCTL_STORAGE_GET_DEVICE_NUMBER`.
+fn disk_devnodes() -> HashMap<u32, Devnode> {
+    let mut devnodes = HashMap::new();
+    // SAFETY: the device information set is destroyed below; every buffer
+    // passed is sized as the call is told.
+    unsafe {
+        let Ok(set) = SetupDiGetClassDevsW(
+            Some(&GUID_DEVINTERFACE_DISK),
+            PCWSTR::null(),
+            HWND(0),
+            DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+        ) else {
+            return devnodes;
+        };
+        for member in 0.. {
+            let mut interface = SP_DEVICE_INTERFACE_DATA {
+                cbSize: std::mem::size_of::<SP_DEVICE_INTERFACE_DATA>() as u32,
+                ..Default::default()
+            };
+            if SetupDiEnumDeviceInterfaces(
+                set,
+                None,
+                &GUID_DEVINTERFACE_DISK,
+                member,
+                &mut interface,
+            )
+            .is_err()
+            {
+                break;
+            }
+            if let Some((number, devnode)) = interface_devnode(set, &interface) {
+                devnodes.insert(number, devnode);
+            }
+        }
+        let _ = SetupDiDestroyDeviceInfoList(set);
+    }
+    devnodes
+}
+
+/// The disk number and devnode details of one disk interface.
+unsafe fn interface_devnode(
+    set: HDEVINFO,
+    interface: &SP_DEVICE_INTERFACE_DATA,
+) -> Option<(u32, Devnode)> {
+    let mut required = 0u32;
+    let _ = SetupDiGetDeviceInterfaceDetailW(set, interface, None, 0, Some(&mut required), None);
+    if !(8..=64 * 1024).contains(&required) {
+        return None;
+    }
+    // u64s, so the detail structure is aligned as Windows expects.
+    let mut buffer = vec![0u64; (required as usize).div_ceil(8)];
+    let detail = buffer
+        .as_mut_ptr()
+        .cast::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>();
+    (*detail).cbSize = std::mem::size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+    let mut info = SP_DEVINFO_DATA {
+        cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+        ..Default::default()
+    };
+    SetupDiGetDeviceInterfaceDetailW(
+        set,
+        interface,
+        Some(detail),
+        required,
+        None,
+        Some(&mut info),
+    )
+    .ok()?;
+    // DevicePath follows the u32 cbSize.
+    let path_units = (required as usize).saturating_sub(4) / 2;
+    let path = std::slice::from_raw_parts(
+        buffer.as_ptr().cast::<u8>().add(4).cast::<u16>(),
+        path_units,
+    );
+    let path = wide_to_string(path);
+
+    let handle = open_handle(&path, 0, FILE_ATTRIBUTE_NORMAL).ok()?;
+    let number = query_device_number(handle);
+    close_handle(handle);
+    let number = number.filter(is_whole_disk)?;
+
+    let mut id = [0u16; 512];
+    let instance_id = SetupDiGetDeviceInstanceIdW(set, &info, Some(&mut id), None)
+        .ok()
+        .map(|_| wide_to_string(&id));
+    let mut name = [0u8; 1024];
+    let friendly_name = SetupDiGetDeviceRegistryPropertyW(
+        set,
+        &info,
+        SPDRP_FRIENDLYNAME,
+        None,
+        Some(&mut name),
+        None,
+    )
+    .ok()
+    .map(|_| {
+        let units: Vec<u16> = name
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        wide_to_string(&units)
+    });
+
+    Some((
+        number.DeviceNumber,
+        Devnode {
+            instance_id,
+            friendly_name,
+        },
+    ))
+}
+
+fn query_device_number(handle: HANDLE) -> Option<STORAGE_DEVICE_NUMBER> {
+    let mut number = STORAGE_DEVICE_NUMBER::default();
+    let mut returned = 0u32;
+    // SAFETY: the output buffer is the structure itself, sized as passed.
+    unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_GET_DEVICE_NUMBER,
+            None,
+            0,
+            Some((&mut number as *mut STORAGE_DEVICE_NUMBER).cast()),
+            std::mem::size_of::<STORAGE_DEVICE_NUMBER>() as u32,
+            Some(&mut returned),
+            None,
+        )
+    }
+    .ok()?;
+    Some(number)
+}
+
+/// The disk's `STORAGE_DEVICE_DESCRIPTOR`: bus, removable media, vendor,
+/// product and serial. The query needs no access rights, so it works
+/// without Administrator too.
+fn query_storage_descriptor(path: &str) -> Option<StorageDescriptor> {
+    let handle = open_handle(path, 0, FILE_ATTRIBUTE_NORMAL).ok()?;
+    let query = STORAGE_PROPERTY_QUERY {
+        PropertyId: StorageDeviceProperty,
+        QueryType: PropertyStandardQuery,
+        AdditionalParameters: [0],
+    };
+    let mut buffer = vec![0u8; DESCRIPTOR_BUFFER_BYTES];
+    let mut returned = 0u32;
+    // SAFETY: both buffers are sized as passed.
+    let result = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_STORAGE_QUERY_PROPERTY,
+            Some((&query as *const STORAGE_PROPERTY_QUERY).cast()),
+            std::mem::size_of::<STORAGE_PROPERTY_QUERY>() as u32,
+            Some(buffer.as_mut_ptr().cast()),
+            buffer.len() as u32,
+            Some(&mut returned),
+            None,
+        )
+    };
+    close_handle(handle);
+    result.ok()?;
+    let returned = (returned as usize).min(buffer.len());
+    parse_storage_descriptor(&buffer[..returned])
+}
+
+/// The disk's size from its geometry, which needs no access rights: for a
+/// disk OSflux may not read, as when not running as Administrator.
+fn query_disk_size(path: &str) -> Option<u64> {
+    let handle = open_handle(path, 0, FILE_ATTRIBUTE_NORMAL).ok()?;
+    // DISK_GEOMETRY_EX: a 24-byte DISK_GEOMETRY, then the size as an i64.
+    let mut buffer = [0u64; 8];
+    let mut returned = 0u32;
+    // SAFETY: the buffer is sized as passed.
+    let result = unsafe {
+        DeviceIoControl(
+            handle,
+            IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+            None,
+            0,
+            Some(buffer.as_mut_ptr().cast()),
+            std::mem::size_of_val(&buffer) as u32,
+            Some(&mut returned),
+            None,
+        )
+    };
+    close_handle(handle);
+    result.ok()?;
+    (returned >= 32)
+        .then(|| u64::try_from(buffer[3] as i64).ok())
+        .flatten()
+        .filter(|size| *size > 0)
+}
+
+/// The disks the system volume (`%SystemDrive%`) sits on, from its volume
+/// disk extents. `None` when that cannot be told.
+fn system_disk_numbers() -> Option<Vec<u32>> {
+    let system_drive = std::env::var("SystemDrive")
+        .ok()
+        .filter(|drive| !drive.trim().is_empty())?;
+    let disks = volume_disk_numbers(&format!(r"\\.\{}", system_drive.trim()));
+    (!disks.is_empty()).then_some(disks)
 }
 
 fn scan_physical_devices(limit: u32) -> Vec<PhysicalDevice> {
@@ -600,7 +826,7 @@ fn probe_physical_device(index: u32) -> Option<PhysicalDevice> {
     }
 }
 
-fn apply_metadata(device: &mut PhysicalDevice, metadata: &DiskMetadata) {
+fn apply_metadata(device: &mut PhysicalDevice, metadata: &super::disk_metadata::DiskMetadata) {
     device.size_bytes = device.size_bytes.or(metadata.size_bytes);
     device.model = metadata.model.clone();
     device.interface_type = metadata.interface_type.clone();
@@ -608,56 +834,6 @@ fn apply_metadata(device: &mut PhysicalDevice, metadata: &DiskMetadata) {
     device.pnp_device_id = metadata.pnp_device_id.clone();
     device.serial_number = metadata.serial_number.clone();
     device.contains_system_volume = metadata.contains_system_volume;
-}
-
-fn device_from_metadata(metadata: &DiskMetadata) -> PhysicalDevice {
-    PhysicalDevice {
-        index: metadata.index,
-        path: format!(r"\\.\PhysicalDrive{}", metadata.index),
-        size_bytes: metadata.size_bytes,
-        model: metadata.model.clone(),
-        interface_type: metadata.interface_type.clone(),
-        media_type: metadata.media_type.clone(),
-        pnp_device_id: metadata.pnp_device_id.clone(),
-        serial_number: metadata.serial_number.clone(),
-        contains_system_volume: metadata.contains_system_volume,
-        access: DeviceAccess::MetadataOnly,
-        note: Some("listed by Windows disk metadata; direct handle unavailable".to_string()),
-    }
-}
-
-/// Asks Windows, through PowerShell, about every disk. Returns nothing when
-/// PowerShell is missing, blocked or fails; the drives are then still found
-/// by opening them, but without an identity or media type, so none of them
-/// can be chosen as a target.
-fn query_disk_metadata() -> HashMap<u32, DiskMetadata> {
-    // Studio is a windowed program with no console, so Windows would give
-    // powershell.exe a console window of its own and flash it on screen.
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            DISK_METADATA_SCRIPT,
-        ])
-        .creation_flags(CREATE_NO_WINDOW.0)
-        .output();
-
-    let Ok(output) = output else {
-        return HashMap::new();
-    };
-
-    if !output.status.success() {
-        return HashMap::new();
-    }
-
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_disk_metadata_line)
-        .map(|metadata| (metadata.index, metadata))
-        .collect()
 }
 
 fn open_handle(
@@ -708,56 +884,6 @@ fn close_handle(handle: HANDLE) {
         }
     }
 }
-
-const DISK_METADATA_SCRIPT: &str = r#"
-$systemDrive = $env:SystemDrive
-
-function Clean($value) {
-    if ($null -eq $value) {
-        return ""
-    }
-
-    return ([string]$value) -replace "`t", " " -replace "`r|`n", " "
-}
-
-Get-CimInstance Win32_DiskDrive | Sort-Object Index | ForEach-Object {
-    $disk = $_
-    $containsSystem = $false
-
-    # When the check cannot run, say so: OSflux then treats the disk as the
-    # system disk rather than as safe to erase. -ErrorAction Stop makes a
-    # failed lookup reach the catch; by default it would only print a
-    # warning and leave the disk looking safe.
-    if ([string]::IsNullOrEmpty($systemDrive)) {
-        $containsSystem = "unknown"
-    } else {
-        try {
-            $partitions = Get-CimAssociatedInstance -InputObject $disk -Association Win32_DiskDriveToDiskPartition -ErrorAction Stop
-            foreach ($partition in $partitions) {
-                $logicalDisks = Get-CimAssociatedInstance -InputObject $partition -Association Win32_LogicalDiskToPartition -ErrorAction Stop
-                foreach ($logicalDisk in $logicalDisks) {
-                    if ($logicalDisk.DeviceID -eq $systemDrive) {
-                        $containsSystem = $true
-                    }
-                }
-            }
-        } catch {
-            $containsSystem = "unknown"
-        }
-    }
-
-    [string]::Join("`t", @(
-        (Clean $disk.Index),
-        (Clean $disk.Model),
-        (Clean $disk.InterfaceType),
-        (Clean $disk.MediaType),
-        (Clean $disk.Size),
-        (Clean $disk.PNPDeviceID),
-        (Clean $containsSystem),
-        (Clean $disk.SerialNumber)
-    ))
-}
-"#;
 
 #[cfg(test)]
 mod tests {
@@ -852,6 +978,35 @@ mod tests {
             volumes.contains(&system_volume),
             "{system_volume} not among {volumes:?}"
         );
+    }
+
+    #[test]
+    fn lists_the_system_disk_with_its_details_and_as_holding_the_system_volume() {
+        let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        let system_disks = volume_disk_numbers(&format!(r"\\.\{system_drive}"));
+        let devices = super::list_physical_devices();
+        let system = devices
+            .iter()
+            .find(|device| device.index == system_disks[0])
+            .expect("the system disk is listed");
+
+        assert!(system.contains_system_volume);
+        assert!(system.media_type.is_some(), "{system:?}");
+        assert!(system.interface_type.is_some(), "{system:?}");
+        assert!(system.model.is_some(), "{system:?}");
+        assert!(system.size_bytes.is_some(), "{system:?}");
+        assert!(
+            !system.is_likely_removable_target() || system.contains_system_volume,
+            "the system disk is never a target"
+        );
+        // Only the system volume's disks are marked.
+        for device in &devices {
+            assert_eq!(
+                device.contains_system_volume,
+                system_disks.contains(&device.index),
+                "{device:?}"
+            );
+        }
     }
 
     #[test]

@@ -6,4 +6,6 @@ license.workspace = true
 
 [dependencies]
 crossbeam.workspace = true
-windows.workspace = true
+# Plug and Play's device-instance IDs and friendly names, for listing disks
+# without PowerShell.
+windows = { workspace = true, features = ["Win32_Devices_DeviceAndDriverInstallation"] }

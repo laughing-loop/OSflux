@@ -66,5 +66,6 @@ The first release, 0.1.0, will contain everything below.
 
 ### Changed
 
+- **Drives are listed without PowerShell.** OSflux asks Windows' storage stack directly, as Rufus does: `IOCTL_STORAGE_QUERY_PROPERTY` for the bus, removable media, model and serial, Plug and Play for the device-instance ID and the name Device Manager shows, the disk geometry for the size when the drive can't be read, and the system volume's disk extents to find the system disk. Listing works where scripts are blocked, is faster, and never opens a console window. Drive codes stay the same; the bus is named more precisely (SATA or NVMe where Windows' old inventory said IDE or SCSI). If the system volume can't be located, every disk is treated as holding it.
 - **The program is now `osflux`** (`osflux.exe` on Windows); it was `osflux-cli`.
 - **Rust is pinned** to 1.97.0 in `rust-toolchain.toml`, so every machine builds and lints the same way.

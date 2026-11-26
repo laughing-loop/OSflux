@@ -1,0 +1,78 @@
+name: Bug report
+description: Something in OSflux or OSflux Studio does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **If it is a security problem**, such as OSflux writing to the wrong drive or accepting a confirmation it should refuse, do not file it here: follow [SECURITY.md](https://github.com/laughing-loop/OSflux/blob/main/SECURITY.md) to report it privately.
+
+        Please remove anything private, such as user names in paths or drive serial numbers, from logs and screenshots before you post them.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran, or the steps you took in Studio.
+      placeholder: |
+        1. cargo run -- --intent --image "D:\Images\example.iso" --target 2
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part of OSflux
+      options:
+        - CLI (osflux)
+        - Studio (osflux-studio)
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: OSflux version or commit
+      description: The output of `osflux --version`, or the commit you built from.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 24H2, Ubuntu 24.04, ...
+    validations:
+      required: true
+  - type: textarea
+    id: image-and-drive
+    attributes:
+      label: Image and drive
+      description: If the bug involves an image or a drive, which image (name and where it came from, for example `Win11_24H2_EnglishInternational_x64.iso` from Microsoft) and which drive (model and size)?
+  - type: textarea
+    id: output
+    attributes:
+      label: Output, logs and audit log entries
+      description: The full output, with `--json` if it helps. For a write, the matching lines of `audit.log` from the OSflux state folder are useful.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and this has not been reported.
+          required: true
+        - label: I removed anything private from the output and screenshots.
+          required: true

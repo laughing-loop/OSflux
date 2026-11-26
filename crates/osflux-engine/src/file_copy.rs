@@ -959,7 +959,7 @@ pub(crate) mod tests {
     fn all_setup_options() -> SetupOptions {
         SetupOptions {
             bypass_requirements: true,
-            local_account: Some("Joly".to_string()),
+            local_account: Some("alex".to_string()),
             skip_privacy_questions: true,
             disable_bitlocker_auto_encryption: true,
             region: Some(crate::answer_file::RegionSettings {

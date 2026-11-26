@@ -25,6 +25,7 @@ export {
 
 export component AppWindow inherits Window {
     title: "OSflux Studio";
+    // On Windows the program's own .ico replaces this at the sizes Windows uses (src/platform/icon.rs).
     icon: @image-url("../../../assets/brand/icons/windows/osflux-256.png");
     preferred-width: 1080px;
     preferred-height: 720px;

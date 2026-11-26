@@ -3,6 +3,7 @@
 
 pub mod clock;
 pub mod drop;
+pub mod icon;
 pub mod picker;
 
 /// The Win32 handle of a shown window, for the Open dialog's owner and for

@@ -156,6 +156,9 @@ fn set_up_drop(window: slint::Weak<AppWindow>, session: Weak<RefCell<Session>>, 
         return;
     };
     crate::log!("drop: native window handle {handle:#x} found after {attempt} retries");
+    if let Err(error) = platform::icon::use_program_icon(handle) {
+        crate::log!("icon: keeping Slint's window icon: {error}");
+    }
     let handler = Box::new(move |path: PathBuf| {
         session::open_dropped_image(session.clone(), path);
     });

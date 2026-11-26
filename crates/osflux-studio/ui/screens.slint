@@ -6,7 +6,7 @@ import { Body, Label, Mono, Section, Title } from "components/text.slint";
 import { StatusIcon, StatusLabel } from "components/status.slint";
 import { SquareButton, ButtonKind, GhostButton } from "components/button.slint";
 import { Band, BandKind, Tag } from "components/band.slint";
-import { TextField, OptionRow, CodeBoxes, PhraseField, MatchMessage } from "components/inputs.slint";
+import { TextField, OptionRow, CodeBoxes, PhraseField, MatchMessage, AcknowledgeRow } from "components/inputs.slint";
 import { Tooltip } from "components/tooltip.slint";
 import {
     SectionHeader, KeyValueRow, NoteRow, DriveTableHeader, DriveRow, BlockedDriveRow,
@@ -870,7 +870,93 @@ export component ConfirmScreen inherits VerticalLayout {
         }
     }
 
-    if Studio.confirm-error == "" && !Studio.confirm-busy && !Studio.confirm-short: VerticalLayout {
+    // A drive with files that the engine could name: its code, and a box
+    // that says what will be lost.
+    if Studio.confirm-error == "" && !Studio.confirm-busy && Studio.confirm-acknowledge: VerticalLayout {
+        spacing: 0;
+        Band {
+            kind: BandKind.amber;
+            compact: true;
+            body: Studio.contents-note;
+        }
+        Rectangle {
+            height: 16px;
+        }
+        Band {
+            kind: BandKind.red;
+            title: Studio.erase-title;
+            body: Studio.erase-body;
+        }
+        if !Studio.confirm-expired: VerticalLayout {
+            spacing: 0;
+            Rectangle {
+                height: 22px;
+            }
+            Body {
+                text: "Type this drive's code to confirm";
+                font-size: 16px;
+                font-weight: 600;
+            }
+            Rectangle {
+                height: 14px;
+            }
+            HorizontalLayout {
+                alignment: start;
+                spacing: 24px;
+                Rectangle {
+                    background: Theme.layer-01;
+                    accessible-role: AccessibleRole.text;
+                    accessible-label: "This drive's code: " + Studio.drive-code;
+                    HorizontalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        alignment: center;
+                        Mono {
+                            vertical-alignment: center;
+                            text: Studio.drive-code;
+                            font-size: 28px;
+                            font-weight: 500;
+                            letter-spacing: 2.2px;
+                            color: Theme.link;
+                        }
+                    }
+                }
+                CodeBoxes {
+                    text <=> Studio.typed;
+                    characters: Studio.typed-characters;
+                    state: Studio.match-state;
+                    edited(text) => { Studio.typed-edited(text); }
+                    init => { self.focus-input(); }
+                }
+            }
+            Rectangle {
+                height: 12px;
+            }
+            InfoNote {
+                text: "This code identifies this exact drive. If the drive changes, the code changes.";
+            }
+            Rectangle {
+                height: 16px;
+            }
+            AcknowledgeRow {
+                text: Studio.acknowledgement;
+                checked: Studio.acknowledged;
+                toggled(ticked) => {
+                    Studio.acknowledged = ticked;
+                    Studio.acknowledged-changed(ticked);
+                }
+            }
+            Rectangle {
+                height: 12px;
+            }
+            MatchMessage {
+                state: Studio.match-state;
+                text: Studio.match-message;
+            }
+        }
+    }
+
+    if Studio.confirm-error == "" && !Studio.confirm-busy && !Studio.confirm-short && !Studio.confirm-acknowledge: VerticalLayout {
         spacing: 0;
         Band {
             kind: BandKind.amber;

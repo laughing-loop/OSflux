@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::Path;
 
+use crate::drive_contents::DriveContents;
 use crate::image_plan::{plan_image, ImagePlan, ImagePlanError, ImagePlanStatus};
 use crate::target::{
     assess_target, TargetAssessment, TargetAssessmentError, TargetAssessmentStatus,
@@ -21,6 +22,9 @@ pub struct WritePreflight {
     pub target_identity_code: Option<String>,
     pub target_status: TargetAssessmentStatus,
     pub target_reason: String,
+    /// What the target holds, when it could be read. A confirmation that
+    /// names what will be lost is built from it.
+    pub target_contents: Option<DriveContents>,
     pub requires_confirmation: bool,
     pub notes: Vec<String>,
     pub warnings: Vec<String>,
@@ -167,6 +171,7 @@ pub fn build_write_preflight(image_plan: &ImagePlan, target: &TargetAssessment) 
         target_identity_code: target.identity_code.clone(),
         target_status: target.status,
         target_reason: target.reason.clone(),
+        target_contents: target.contents.clone(),
         requires_confirmation: target.requires_confirmation,
         notes,
         warnings,

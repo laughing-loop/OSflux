@@ -10,8 +10,8 @@ use osflux_studio::steps::StepId;
 use osflux_studio::{HintIcon, MatchState, Screen, Status, StepState};
 use slint::Model;
 use support::{
-    drive, frame_05_drives, studio, studio_with, system_drive, BROKEN_ISO, LINUX_ISO, MISSING_ISO,
-    WINDOWS_ISO,
+    drive, frame_05_drives, studio, studio_with, system_drive, with_unreadable_contents,
+    BROKEN_ISO, LINUX_ISO, MISSING_ISO, WINDOWS_ISO,
 };
 
 fn rail_titles(studio: &osflux_studio::Studio<'_>) -> Vec<String> {
@@ -477,7 +477,7 @@ fn an_empty_drive_is_confirmed_with_its_code() {
 }
 
 #[test]
-fn a_drive_with_files_needs_the_full_phrase_and_not_its_code() {
+fn a_drive_with_files_is_confirmed_with_its_code_and_the_box() {
     let app = studio();
     through_the_safety_check(&app, LINUX_ISO, 2);
     let studio = app.studio();
@@ -489,11 +489,70 @@ fn a_drive_with_files_needs_the_full_phrase_and_not_its_code() {
         "no Windows options for Linux"
     );
     assert!(!studio.get_confirm_short());
+    assert!(studio.get_confirm_acknowledge());
+    assert_eq!(studio.get_drive_code(), "7F34");
+    assert_eq!(
+        studio.get_acknowledgement(),
+        "Erase Generic SD/MMC USB Device (14.8 GB) and the 1 partition with files on it"
+    );
+    assert_eq!(
+        studio.get_contents_note(),
+        "This drive has files on it. Type its code and tick the box to confirm."
+    );
+    assert!(studio
+        .get_erase_title()
+        .contains("Generic SD/MMC USB Device"));
+    assert!(!studio.get_acknowledged());
+
+    studio.invoke_typed_edited("7f34".into());
+    assert_eq!(studio.get_typed(), "7F34", "kept in the code boxes");
+    assert_eq!(studio.get_match_state(), MatchState::Typing);
+    assert_eq!(
+        studio.get_match_message(),
+        "Code matches. Tick the box to unlock Write to drive."
+    );
+    assert!(!studio.get_can_write(), "the code alone is not enough");
+
+    studio.set_acknowledged(true);
+    studio.invoke_acknowledged_changed(true);
+    assert_eq!(studio.get_match_state(), MatchState::Match);
+    assert_eq!(
+        studio.get_match_message(),
+        "Matches Generic SD/MMC USB Device"
+    );
+    assert!(studio.get_can_write());
+
+    studio.invoke_typed_edited("7F35".into());
+    assert_eq!(studio.get_match_state(), MatchState::Mismatch);
+    assert!(
+        !studio.get_can_write(),
+        "the box does not make a wrong code right"
+    );
+
+    studio.invoke_typed_edited("7F34".into());
+    studio.set_acknowledged(false);
+    studio.invoke_acknowledged_changed(false);
+    assert!(!studio.get_can_write(), "clearing the box locks it again");
+}
+
+#[test]
+fn a_drive_whose_contents_cannot_be_read_needs_the_full_phrase() {
+    let mut drives = frame_05_drives();
+    let last = drives.len() - 1;
+    drives[last] = with_unreadable_contents(drives[last].clone());
+    let app = studio_with(Settings::default(), drives);
+    through_the_safety_check(&app, LINUX_ISO, 2);
+    let studio = app.studio();
+    studio.invoke_next();
+
+    assert_eq!(studio.get_screen(), Screen::Confirm);
+    assert!(!studio.get_confirm_short());
+    assert!(!studio.get_confirm_acknowledge());
     assert_eq!(studio.get_phrase_head(), "OSFLUX ERASE TARGET 4 ");
     assert_eq!(studio.get_phrase_code(), "7F34");
     assert_eq!(
         studio.get_contents_note(),
-        "This drive has files on it, so OSflux asks for the full phrase."
+        "OSflux couldn't check what's on this drive, so it asks for the full phrase."
     );
     assert!(studio
         .get_erase_title()

@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::answer_file::SetupOptions;
 use crate::audit::{AuditEvent, AuditEventKind, AuditLog};
 use crate::clock::now_unix_seconds;
-use crate::drive_contents::inspect_drive_contents;
+use crate::drive_contents::{inspect_drive_contents, DriveContents};
 use crate::file_copy::{lay_out_uefi_fat32, prepare_copy, FileCopyError, UefiFat32Layout};
 use crate::image_io::ImageRead;
 use crate::json::string_json;
@@ -20,7 +20,10 @@ use crate::target::{
 use crate::write_authorization::{
     AuthorizationProblem, AuthorizationStore, AuthorizationStoreError, ImageIdentity,
 };
-use crate::write_intent::{confirmation_phrase, match_confirmation, ConfirmationForm};
+use crate::write_intent::{
+    confirmation_phrase, contents_acknowledgement, match_supplied_confirmation, ConfirmationForm,
+    SuppliedConfirmation,
+};
 use crate::write_mode_selection::{
     select_write_mode, SelectedWriteMode, WriteModeSelection, WriteModeSelectionError,
     WriteModeSelectionStatus,
@@ -57,8 +60,14 @@ pub struct RawWritePlan {
     pub chunk_size_bytes: u64,
     /// Which confirmation was typed. With the identity code, the drive is
     /// checked again once it is locked, and the write stops if it is no
-    /// longer empty.
+    /// longer empty. With the code and an acknowledgement, the write stops if
+    /// the drive's layout no longer matches `contents_fingerprint`.
     pub confirmation_form: ConfirmationForm,
+    /// The acknowledgement the person ticked, when they confirmed with it.
+    pub contents_acknowledgement: Option<String>,
+    /// The layout the acknowledgement covers; set by `prepare_raw_write` from
+    /// the recorded confirmation.
+    pub contents_fingerprint: Option<String>,
     pub layout: WriteLayout,
     /// Whether the written bytes are read back and compared. On unless the
     /// operator asks to skip it.
@@ -197,6 +206,13 @@ pub enum RawWriteError {
         target_index: u32,
         reason: String,
     },
+    /// The code and an acknowledgement were given, but the drive is not the
+    /// one the acknowledgement describes any more, or what it holds can no
+    /// longer be named.
+    ContentsAcknowledgementRefused {
+        target_index: u32,
+        reason: String,
+    },
     /// OSflux can only read the drive's details, not open it, so it stops
     /// before the final prompt and leaves the confirmation unused.
     NeedsAdministrator {
@@ -262,6 +278,13 @@ impl fmt::Display for RawWriteError {
                 formatter,
                 "the identity code alone only confirms a write to an empty drive, and drive {target_index} is not empty ({reason}); type the full phrase that --intent prints instead"
             ),
+            Self::ContentsAcknowledgementRefused {
+                target_index,
+                reason,
+            } => write!(
+                formatter,
+                "what is on drive {target_index} is not what was acknowledged when the write was confirmed ({reason}); nothing was written, so confirm the drive again"
+            ),
             Self::NeedsAdministrator { target_index } => write!(
                 formatter,
                 "writing to drive {target_index} needs Administrator rights, which this window does not have; the confirmation from --intent was not used up"
@@ -305,25 +328,37 @@ impl std::error::Error for RawWriteError {}
 
 /// Runs the full safety chain, then re-assesses the target and builds a plan
 /// for writing a raw disk image. Nothing is opened for writing here.
-pub fn prepare_raw_write(
+pub fn prepare_raw_write<'s>(
     image_path: impl AsRef<Path>,
     target_index: u32,
-    supplied_confirmation_phrase: &str,
+    supplied_confirmation: impl Into<SuppliedConfirmation<'s>>,
     chunk_size_bytes: u64,
     setup_options: &SetupOptions,
     authorizations: &AuthorizationStore,
 ) -> Result<RawWritePlan, RawWriteError> {
     let image_path = image_path.as_ref();
+    let supplied = supplied_confirmation.into();
     validate_chunk_size(chunk_size_bytes)?;
     // Checked before anything slow, so a mistyped account name is reported
     // straight away.
     setup_options
         .validate()
         .map_err(|reason| RawWriteError::Blocked { reason })?;
+    // The planning steps before this one know only typed text. For the code
+    // with an acknowledgement they are given the phrase that code belongs
+    // to; whether the code and the acknowledgement confirm the write is
+    // decided below, against a fresh look at the drive and the recorded
+    // confirmation.
+    let planning_phrase = match supplied {
+        SuppliedConfirmation::Typed(text) => text.to_string(),
+        SuppliedConfirmation::CodeWithContentsAcknowledged { code, .. } => {
+            confirmation_phrase(target_index, &code.trim().to_ascii_uppercase())
+        }
+    };
     let selection = select_write_mode(
         image_path,
         target_index,
-        Some(supplied_confirmation_phrase),
+        Some(&planning_phrase),
         chunk_size_bytes,
     )
     .map_err(RawWriteError::Plan)?;
@@ -336,7 +371,7 @@ pub fn prepare_raw_write(
         image_path,
         &selection,
         &target,
-        supplied_confirmation_phrase,
+        supplied,
         chunk_size_bytes,
         |drive_bytes| {
             let sector_bytes = read_sector_size(&target_path)?;
@@ -374,13 +409,34 @@ pub fn prepare_raw_write(
             &plan.target_path,
             &plan.target_identity_code,
             &image,
-            supplied_confirmation_phrase,
+            &supplied,
             now_unix_seconds(),
         )
         .map_err(authorization_error)?;
 
+    // The acknowledgement covers the drive as it was when the write was
+    // confirmed. A partition added, removed or reformatted since then is
+    // not what the person agreed to lose.
+    let contents_fingerprint =
+        if plan.confirmation_form == ConfirmationForm::CodeWithContentsAcknowledged {
+            let now = target
+                .contents
+                .as_ref()
+                .map(DriveContents::layout_fingerprint);
+            if now.is_none() || now != authorization.contents_fingerprint {
+                return Err(RawWriteError::ContentsAcknowledgementRefused {
+                    target_index,
+                    reason: "its partitions changed after the write was confirmed".to_string(),
+                });
+            }
+            now
+        } else {
+            None
+        };
+
     Ok(RawWritePlan {
         authorization_expires_at_unix_seconds: authorization.expires_at_unix_seconds,
+        contents_fingerprint,
         ..plan
     })
 }
@@ -390,14 +446,15 @@ pub fn prepare_raw_write(
 /// FAT32 drive for a drive of the given size; it only runs once every other
 /// check has passed, so a blocked drive or a mistyped phrase is reported as
 /// itself.
-pub fn build_raw_write_plan(
+pub fn build_raw_write_plan<'s>(
     image_path: &Path,
     selection: &WriteModeSelection,
     target: &TargetAssessment,
-    supplied_confirmation_phrase: &str,
+    supplied_confirmation: impl Into<SuppliedConfirmation<'s>>,
     chunk_size_bytes: u64,
     lay_out_files: impl FnOnce(u64) -> Result<UefiFat32Layout, RawWriteError>,
 ) -> Result<RawWritePlan, RawWriteError> {
+    let supplied = supplied_confirmation.into();
     validate_chunk_size(chunk_size_bytes)?;
 
     if target.index != selection.target_index || target.path != selection.target_path {
@@ -437,13 +494,36 @@ pub fn build_raw_write_plan(
     let full_phrase = confirmation_phrase(target.index, &identity_code);
     let short_code =
         (target.status == TargetAssessmentStatus::Eligible).then_some(identity_code.as_str());
-    let Some(confirmation_form) =
-        match_confirmation(Some(&full_phrase), short_code, supplied_confirmation_phrase)
-    else {
-        if supplied_confirmation_phrase
-            .trim()
-            .eq_ignore_ascii_case(&identity_code)
-        {
+    // The acknowledgement is built again from this fresh look at the drive,
+    // so it must still say exactly what was ticked.
+    let acknowledgement = match (target.status, target.contents.as_ref()) {
+        (TargetAssessmentStatus::Eligible, _) | (_, None) => None,
+        (_, Some(contents)) => {
+            contents_acknowledgement(target.model.as_deref(), target.size_bytes, contents)
+        }
+    };
+    let Some(confirmation_form) = match_supplied_confirmation(
+        Some(&full_phrase),
+        short_code,
+        Some(&identity_code),
+        acknowledgement.as_deref(),
+        &supplied,
+    ) else {
+        if let SuppliedConfirmation::CodeWithContentsAcknowledged { code, .. } = supplied {
+            if !code.trim().eq_ignore_ascii_case(&identity_code) {
+                return Err(RawWriteError::ConfirmationMismatch {
+                    target_index: target.index,
+                });
+            }
+            return Err(RawWriteError::ContentsAcknowledgementRefused {
+                target_index: target.index,
+                reason: match &acknowledgement {
+                    Some(now) => format!("it now reads \"{now}\""),
+                    None => "what it holds can no longer be named".to_string(),
+                },
+            });
+        }
+        if supplied.typed().trim().eq_ignore_ascii_case(&identity_code) {
             return Err(RawWriteError::ShortConfirmationRefused {
                 target_index: target.index,
                 reason: target
@@ -500,6 +580,13 @@ pub fn build_raw_write_plan(
         target_identity_code: identity_code,
         chunk_size_bytes,
         confirmation_form,
+        contents_acknowledgement: match supplied {
+            SuppliedConfirmation::CodeWithContentsAcknowledged {
+                acknowledgement, ..
+            } => Some(acknowledgement.to_string()),
+            SuppliedConfirmation::Typed(_) => None,
+        },
+        contents_fingerprint: None,
         layout,
         verification: Verification::ReadBack,
         authorization_expires_at_unix_seconds: 0,
@@ -557,10 +644,14 @@ pub fn write_image_to_target(
     // No write without a record of it: when the start cannot be logged, the
     // confirmation and the drive are both left alone.
     let confirmed_with = match plan.confirmation_form {
-        ConfirmationForm::FullPhrase => "confirmed with the full phrase",
+        ConfirmationForm::FullPhrase => "confirmed with the full phrase".to_string(),
         ConfirmationForm::IdentityCode => {
-            "confirmed with the drive's identity code, because the drive was empty"
+            "confirmed with the drive's identity code, because the drive was empty".to_string()
         }
+        ConfirmationForm::CodeWithContentsAcknowledged => format!(
+            "confirmed with the drive's identity code and the acknowledgement \"{}\"",
+            plan.contents_acknowledgement.as_deref().unwrap_or_default()
+        ),
     };
     let confirmed_with = match &plan.layout {
         WriteLayout::Raw => format!("{confirmed_with}; image copied byte for byte"),
@@ -728,6 +819,17 @@ pub fn execute_raw_write<D: BlockDevice>(
             return Err(RawWriteError::ShortConfirmationRefused {
                 target_index: plan.target_index,
                 reason: contents.reason,
+            });
+        }
+    }
+    // Likewise for the acknowledgement: the drive must still be laid out as
+    // it was when the person ticked the box naming what would be lost.
+    if plan.confirmation_form == ConfirmationForm::CodeWithContentsAcknowledged {
+        let now = inspect_drive_contents(device).layout_fingerprint();
+        if plan.contents_fingerprint.as_deref() != Some(now.as_str()) {
+            return Err(RawWriteError::ContentsAcknowledgementRefused {
+                target_index: plan.target_index,
+                reason: "its partitions changed after the write was confirmed".to_string(),
             });
         }
     }
@@ -1016,7 +1118,7 @@ mod tests {
     use crate::image_plan::{ImagePlanStatus, ImageWriteStrategy};
     use crate::target::{TargetAssessment, TargetAssessmentStatus};
     use crate::write_authorization::{AuthorizationStore, ImageIdentity, WriteAuthorization};
-    use crate::write_intent::ConfirmationForm;
+    use crate::write_intent::{ConfirmationForm, SuppliedConfirmation};
     use crate::write_mode_selection::{
         SelectedWriteMode, WriteModeSelection, WriteModeSelectionStatus,
     };
@@ -1389,6 +1491,183 @@ mod tests {
         assert!(error.to_string().contains("full phrase"), "{error}");
     }
 
+    fn drive_with_files(partitions: u32) -> TargetAssessment {
+        use crate::drive_contents::{
+            DriveContents, DriveContentsState, DrivePartition, FilesystemKind, PartitionScheme,
+        };
+        let mut target = target(Some("7F3A"));
+        target.contents = Some(DriveContents {
+            state: DriveContentsState::HasData,
+            reason: "the FAT32 partition's root folder holds \"Holiday Photo.jpg\"".to_string(),
+            partition_scheme: Some(PartitionScheme::Mbr),
+            partitions: (1..=partitions)
+                .map(|number| DrivePartition {
+                    number,
+                    start_bytes: u64::from(number) * MIB,
+                    size_bytes: 4 * MIB,
+                    filesystem: Some(FilesystemKind::Fat32),
+                    label: Some("PHOTOS".to_string()),
+                    used_bytes: Some(4096),
+                })
+                .collect(),
+        });
+        target
+    }
+
+    const ACKNOWLEDGED: &str = "Erase Test Stick (16.0 MB) and the 1 partition with files on it";
+
+    fn acknowledged<'a>(code: &'a str, acknowledgement: &'a str) -> SuppliedConfirmation<'a> {
+        SuppliedConfirmation::CodeWithContentsAcknowledged {
+            code,
+            acknowledgement,
+        }
+    }
+
+    #[test]
+    fn accepts_the_code_with_the_acknowledgement_for_a_drive_with_files() {
+        let plan = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &drive_with_files(1),
+            acknowledged(" 7f3a", ACKNOWLEDGED),
+            4 * MIB,
+            no_file_copy,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.confirmation_form,
+            ConfirmationForm::CodeWithContentsAcknowledged
+        );
+        assert_eq!(plan.contents_acknowledgement.as_deref(), Some(ACKNOWLEDGED));
+    }
+
+    #[test]
+    fn refuses_an_acknowledgement_that_no_longer_describes_the_drive() {
+        // A second partition appeared after the box was ticked.
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &drive_with_files(2),
+            acknowledged("7F3A", ACKNOWLEDGED),
+            4 * MIB,
+            no_file_copy,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                RawWriteError::ContentsAcknowledgementRefused {
+                    target_index: 2,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("2 partitions"), "{error}");
+    }
+
+    #[test]
+    fn refuses_an_acknowledgement_for_a_drive_it_cannot_name() {
+        // Unreadable now: there is nothing the acknowledgement can describe.
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &target(Some("7F3A")),
+            acknowledged("7F3A", ACKNOWLEDGED),
+            4 * MIB,
+            no_file_copy,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(error, RawWriteError::ContentsAcknowledgementRefused { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn refuses_an_acknowledgement_with_another_drives_code() {
+        let error = build_raw_write_plan(
+            Path::new("disk.img"),
+            &selection(Some(SelectedWriteMode::RawBlockWrite)),
+            &drive_with_files(1),
+            acknowledged("0B21", ACKNOWLEDGED),
+            4 * MIB,
+            no_file_copy,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                RawWriteError::ConfirmationMismatch { target_index: 2 }
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn writes_to_an_acknowledged_drive_whose_layout_is_unchanged() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(8 * MIB);
+        let mut acknowledged = plan(&path, image.len() as u64, 8 * MIB);
+        acknowledged.confirmation_form = ConfirmationForm::CodeWithContentsAcknowledged;
+        acknowledged.contents_fingerprint =
+            Some(crate::drive_contents::inspect_drive_contents(&drive).layout_fingerprint());
+
+        let report = execute_raw_write(&acknowledged, &drive, |_| {}).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(report.bytes_written, image.len() as u64);
+    }
+
+    #[test]
+    fn stops_before_writing_when_an_acknowledged_drive_changed() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(8 * MIB);
+        let mut acknowledged = plan(&path, image.len() as u64, 8 * MIB);
+        acknowledged.confirmation_form = ConfirmationForm::CodeWithContentsAcknowledged;
+        acknowledged.contents_fingerprint = Some("0".repeat(64));
+
+        let error = execute_raw_write(&acknowledged, &drive, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            matches!(
+                error,
+                RawWriteError::ContentsAcknowledgementRefused {
+                    target_index: 2,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(drive.writes.borrow().is_empty(), "nothing may be written");
+        assert!(drive.data.borrow().iter().all(|&byte| byte == 0xEE));
+    }
+
+    #[test]
+    fn an_acknowledged_plan_without_a_fingerprint_writes_nothing() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(8 * MIB);
+        let mut acknowledged = plan(&path, image.len() as u64, 8 * MIB);
+        acknowledged.confirmation_form = ConfirmationForm::CodeWithContentsAcknowledged;
+
+        let error = execute_raw_write(&acknowledged, &drive, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            matches!(error, RawWriteError::ContentsAcknowledgementRefused { .. }),
+            "{error}"
+        );
+        assert!(drive.writes.borrow().is_empty(), "nothing may be written");
+    }
+
     #[test]
     fn the_full_phrase_still_works_for_an_empty_drive() {
         let mut empty = target(Some("7F3A"));
@@ -1519,6 +1798,8 @@ mod tests {
                 target_identity_code: "7F3A".to_string(),
                 confirmation_phrase: "OSFLUX ERASE TARGET 250 7F3A".to_string(),
                 short_confirmation: None,
+                contents_acknowledgement: None,
+                contents_fingerprint: None,
                 image: ImageIdentity::read(&path).unwrap(),
                 issued_at_unix_seconds: now_unix_seconds(),
                 expires_at_unix_seconds: now_unix_seconds() + 600,
@@ -1577,6 +1858,8 @@ mod tests {
             target_identity_code: "7F3A".to_string(),
             confirmation_phrase: "OSFLUX ERASE TARGET 250 7F3A".to_string(),
             short_confirmation: None,
+            contents_acknowledgement: None,
+            contents_fingerprint: None,
             image: ImageIdentity::read(&path).unwrap(),
             issued_at_unix_seconds: now_unix_seconds(),
             expires_at_unix_seconds: now_unix_seconds() + 600,
@@ -1987,6 +2270,8 @@ mod tests {
             target_identity_code: "7F3A".to_string(),
             chunk_size_bytes: 4 * MIB,
             confirmation_form: ConfirmationForm::FullPhrase,
+            contents_acknowledgement: None,
+            contents_fingerprint: None,
             layout: WriteLayout::Raw,
             verification: Verification::ReadBack,
             authorization_expires_at_unix_seconds: 0,

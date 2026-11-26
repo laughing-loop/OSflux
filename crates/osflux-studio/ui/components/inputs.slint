@@ -335,6 +335,67 @@ export component OptionRow inherits Rectangle {
     }
 }
 
+// The box a person ticks to say what a write will erase, on Confirm for a
+// drive with files. Red edge, so it reads with the red band above it.
+export component AcknowledgeRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback toggled(bool);
+
+    background: Theme.layer-01;
+    min-height: layout.min-height;
+    accessible-role: checkbox;
+    accessible-checked: checked;
+    accessible-label: text;
+    accessible-action-default => { toggled(!checked); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            focus.focus();
+            root.toggled(!root.checked);
+        }
+    }
+    focus := KeyFocus {
+        key-pressed(event) => {
+            if (event.text == " ") {
+                root.toggled(!root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    Rectangle {
+        x: 0;
+        width: 3px;
+        background: Theme.status-blocked;
+    }
+    layout := HorizontalLayout {
+        padding-left: 19px;
+        padding-right: 16px;
+        padding-top: 13px;
+        padding-bottom: 13px;
+        spacing: 14px;
+        VerticalLayout {
+            alignment: start;
+            padding-top: 1px;
+            CheckMark {
+                checked: root.checked;
+            }
+        }
+        Body {
+            text: root.text;
+            font-weight: 600;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+    }
+    if focus.has-focus && focus.keyboard: Rectangle {
+        border-width: 2px;
+        border-color: Theme.link;
+    }
+}
+
 // The switch: 44 × 24, accent when on. The one rounded control.
 export component Switch inherits Rectangle {
     in property <bool> checked;

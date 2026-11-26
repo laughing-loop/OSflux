@@ -141,6 +141,38 @@ impl DriveContents {
         }
     }
 
+    /// A fingerprint of the drive's layout: its state, partition scheme, and
+    /// each partition's position, size, filesystem and label, as SHA-256 hex.
+    /// A confirmation that names what will be lost records it, and the write
+    /// stops if it differs later. Used space is left out: Windows can update
+    /// a FAT volume's free-space count when the volume is dismounted, which
+    /// changes nothing the person agreed to lose.
+    pub fn layout_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut layout = format!(
+            "state={};scheme={}",
+            self.state.as_str(),
+            self.partition_scheme
+                .map_or("none", PartitionScheme::as_str)
+        );
+        for partition in &self.partitions {
+            // The label is length-prefixed, so no label can imitate a field.
+            let label = partition.label.as_deref().unwrap_or_default();
+            layout.push_str(&format!(
+                ";partition={},{},{},{},{}:{label}",
+                partition.number,
+                partition.start_bytes,
+                partition.size_bytes,
+                partition.filesystem.map_or("none", FilesystemKind::as_str),
+                label.len(),
+            ));
+        }
+        Sha256::digest(layout.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
     /// The contents as a JSON object, indented to sit `indent` spaces deep.
     pub fn to_json(&self, indent: usize) -> String {
         let pad = " ".repeat(indent);

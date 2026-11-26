@@ -218,6 +218,9 @@ fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>, session: &Rc<RefCell<
     studio.on_typed_edited(move |text| state.borrow_mut().typed_edited(&text));
 
     let state = Rc::clone(session);
+    studio.on_acknowledged_changed(move |ticked| state.borrow_mut().acknowledged_changed(ticked));
+
+    let state = Rc::clone(session);
     studio.on_confirm_again(move || state.borrow_mut().confirm_again());
 
     let state = Rc::clone(session);

@@ -50,7 +50,7 @@ cargo run
 cargo run -- --version
 ```
 
-Run OSflux Studio, or preview a view. The views are `shell`, `settings`, `about`, `licences` and `gallery` (the component sheet), plus the steps: `image`, `drives`, `drives-none`, `safety`, `safety-blocked`, `windows-options`, `windows-options-set`, `confirm-code`, `confirm-code-wrong`, `confirm-code-match`, `confirm-phrase` and `confirm-expired`. The steps read the image given with `--image` through the real engine; the drives in a preview are samples, so none is read or written.
+Run OSflux Studio, or preview a view. The views are `shell`, `settings`, `about`, `licences` and `gallery` (the component sheet), plus the steps: `image`, `drives`, `drives-none`, `safety`, `safety-blocked`, `windows-options`, `windows-options-set`, `confirm-code`, `confirm-code-wrong`, `confirm-code-match`, `confirm-files`, `confirm-files-ticked`, `confirm-phrase` and `confirm-expired`. The steps read the image given with `--image` through the real engine; the drives in a preview are samples, so none is read or written.
 
 ```powershell
 cargo run -p osflux-studio

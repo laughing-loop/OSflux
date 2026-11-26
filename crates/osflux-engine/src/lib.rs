@@ -19,6 +19,7 @@ pub mod preflight;
 pub mod progress;
 pub mod raw_write;
 pub mod safety_check;
+mod size_label;
 pub mod target;
 #[cfg(test)]
 mod test_support;
@@ -93,6 +94,7 @@ pub use safety_check::{
     build_safety_check, run_safety_check, SafetyCheck, SafetyCheckError, SafetyCheckItem,
     SafetyCheckKind, SafetyCheckState,
 };
+pub use size_label::size_label;
 pub use target::{
     assess_all_targets, assess_target, assess_target_device, with_drive_contents, TargetAssessment,
     TargetAssessmentError, TargetAssessmentStatus,
@@ -106,8 +108,9 @@ pub use write_command::{
     build_write_command_plan, prepare_write_command, WriteCommandPlan, WriteCommandStatus,
 };
 pub use write_intent::{
-    build_write_intent, confirmation_phrase, create_write_intent, match_confirmation,
-    ConfirmationForm, WriteIntent, WriteIntentStatus,
+    build_write_intent, confirmation_phrase, contents_acknowledgement, create_write_intent,
+    match_confirmation, match_supplied_confirmation, ConfirmationForm, SuppliedConfirmation,
+    WriteIntent, WriteIntentStatus,
 };
 pub use write_mode_selection::{
     build_write_mode_selection, select_write_mode, SelectedWriteMode, WriteModeSelection,

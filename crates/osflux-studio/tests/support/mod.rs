@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 use osflux_engine::{
     build_safety_check, build_write_intent, build_write_preflight, BootCatalogPlatform,
     BootEmulation, BootStyle, DetectionMethod, DeviceAccess, DriveContents, DriveContentsState,
-    ElToritoBootInfo, ImageFamily, ImageKind, ImagePlan, ImagePlanStatus, ImageSignature,
-    ImageWriteStrategy, IsoBootAsset, IsoBootAssetKind, IsoBootMetadata, IsoDirectoryMetadata,
-    IsoFilesystemStrategy, SafetyCheck, TargetAssessment, TargetAssessmentStatus,
-    WriteIntentStatus, WriteMode,
+    DrivePartition, ElToritoBootInfo, FilesystemKind, ImageFamily, ImageKind, ImagePlan,
+    ImagePlanStatus, ImageSignature, ImageWriteStrategy, IsoBootAsset, IsoBootAssetKind,
+    IsoBootMetadata, IsoDirectoryMetadata, IsoFilesystemStrategy, PartitionScheme, SafetyCheck,
+    TargetAssessment, TargetAssessmentStatus, WriteIntentStatus, WriteMode,
 };
 use osflux_studio::confirm_step::{ConfirmFailure, Confirmation};
 use osflux_studio::drive_step::ChosenDrive;
@@ -198,10 +198,30 @@ pub fn drive(
     }
 }
 
+/// One FAT32 partition with files, which the engine can name.
 pub fn with_files(mut target: TargetAssessment) -> TargetAssessment {
+    let size = target.size_bytes.unwrap_or(1 << 30);
     target.contents = Some(DriveContents {
         state: DriveContentsState::HasData,
         reason: "one FAT32 partition with files".to_string(),
+        partition_scheme: Some(PartitionScheme::Mbr),
+        partitions: vec![DrivePartition {
+            number: 1,
+            start_bytes: 1 << 20,
+            size_bytes: size - (1 << 20),
+            filesystem: Some(FilesystemKind::Fat32),
+            label: Some("PHOTOS".to_string()),
+            used_bytes: Some(2 << 30),
+        }],
+    });
+    target
+}
+
+/// A drive OSflux could not read, so what it holds cannot be named.
+pub fn with_unreadable_contents(mut target: TargetAssessment) -> TargetAssessment {
+    target.contents = Some(DriveContents {
+        state: DriveContentsState::Unknown,
+        reason: "the drive could not be read".to_string(),
         partition_scheme: None,
         partitions: Vec::new(),
     });

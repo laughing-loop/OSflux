@@ -1,9 +1,11 @@
 use std::fmt;
 use std::path::Path;
 
+use crate::drive_contents::{DriveContents, DriveContentsState};
 use crate::preflight::{
     run_write_preflight, WritePreflight, WritePreflightError, WritePreflightStatus,
 };
+use crate::size_label::size_label;
 use crate::target::TargetAssessmentStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +16,15 @@ pub struct WriteIntent {
     /// The drive's identity code, offered as a short confirmation only when
     /// the drive is empty. The full phrase is always accepted as well.
     pub short_confirmation: Option<String>,
+    /// For a drive with files on it whose partitions could be read: what
+    /// will be lost, such as `Erase SMI USB DISK (14.8 GB) and the 1
+    /// partition with files on it`. The identity code together with this
+    /// exact acknowledgement also confirms the write. Studio offers it; the
+    /// CLI asks for the full phrase.
+    pub contents_acknowledgement: Option<String>,
+    /// The drive's layout fingerprint when the acknowledgement was built, so
+    /// the write can stop if the drive changes in between.
+    pub contents_fingerprint: Option<String>,
     pub image_source: String,
     pub target_index: u32,
     pub target_path: String,
@@ -48,6 +59,7 @@ impl WriteIntent {
                 "  \"confirmationPhrase\": {},\n",
                 "  \"confirmationLevel\": {},\n",
                 "  \"shortConfirmation\": {},\n",
+                "  \"contentsAcknowledgement\": {},\n",
                 "  \"imageSource\": \"{}\",\n",
                 "  \"targetIndex\": {},\n",
                 "  \"targetPath\": \"{}\",\n",
@@ -66,6 +78,7 @@ impl WriteIntent {
             optional_string_json(self.confirmation_phrase.as_deref()),
             optional_string_json(self.confirmation_level()),
             optional_string_json(self.short_confirmation.as_deref()),
+            optional_string_json(self.contents_acknowledgement.as_deref()),
             escape_json_string(&self.image_source),
             self.target_index,
             escape_json_string(&self.target_path),
@@ -124,6 +137,10 @@ pub enum ConfirmationForm {
     /// The four-character identity code alone, accepted only for an empty
     /// drive.
     IdentityCode,
+    /// The identity code together with the acknowledgement that names what
+    /// will be lost, accepted only for a drive whose contents could be read
+    /// and only while they stay as they were.
+    CodeWithContentsAcknowledged,
 }
 
 impl ConfirmationForm {
@@ -131,6 +148,94 @@ impl ConfirmationForm {
         match self {
             Self::FullPhrase => "full-phrase",
             Self::IdentityCode => "identity-code",
+            Self::CodeWithContentsAcknowledged => "identity-code-contents-acknowledged",
+        }
+    }
+}
+
+/// What the person supplied to confirm a write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuppliedConfirmation<'a> {
+    /// Typed text: the full phrase, or the identity code for an empty drive.
+    Typed(&'a str),
+    /// The identity code, and the acknowledgement exactly as it was shown
+    /// next to the box that was ticked.
+    CodeWithContentsAcknowledged {
+        code: &'a str,
+        acknowledgement: &'a str,
+    },
+}
+
+impl<'a> From<&'a str> for SuppliedConfirmation<'a> {
+    fn from(text: &'a str) -> Self {
+        Self::Typed(text)
+    }
+}
+
+impl<'a> From<&'a String> for SuppliedConfirmation<'a> {
+    fn from(text: &'a String) -> Self {
+        Self::Typed(text)
+    }
+}
+
+impl SuppliedConfirmation<'_> {
+    /// The identity code or text that was typed.
+    pub fn typed(&self) -> &str {
+        match self {
+            Self::Typed(text) => text,
+            Self::CodeWithContentsAcknowledged { code, .. } => code,
+        }
+    }
+}
+
+/// The acknowledgement for a drive with files on it, naming what will be
+/// lost: `Erase SMI USB DISK (14.8 GB) and the 1 partition with files on
+/// it`. `None` unless the drive's partitions could be read, since the
+/// acknowledgement must say what it covers.
+pub fn contents_acknowledgement(
+    model: Option<&str>,
+    size_bytes: Option<u64>,
+    contents: &DriveContents,
+) -> Option<String> {
+    if contents.state != DriveContentsState::HasData || contents.partitions.is_empty() {
+        return None;
+    }
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    let drive = match (model, size_bytes) {
+        (Some(model), Some(size)) => format!("{model} ({})", size_label(size)),
+        (Some(model), None) => model.to_string(),
+        (None, Some(size)) => format!("this drive ({})", size_label(size)),
+        (None, None) => "this drive".to_string(),
+    };
+    let partitions = match contents.partitions.len() {
+        1 => "the 1 partition".to_string(),
+        count => format!("the {count} partitions"),
+    };
+    Some(format!("Erase {drive} and {partitions} with files on it"))
+}
+
+/// Matches a supplied confirmation. Typed text is matched as
+/// [`match_confirmation`] does. The identity code with an acknowledgement
+/// matches only when an acknowledgement is on offer, the code is this
+/// drive's (ignoring surrounding spaces and letter case), and the
+/// acknowledgement is exactly the one offered.
+pub fn match_supplied_confirmation(
+    full_phrase: Option<&str>,
+    short_code: Option<&str>,
+    identity_code: Option<&str>,
+    offered_acknowledgement: Option<&str>,
+    supplied: &SuppliedConfirmation<'_>,
+) -> Option<ConfirmationForm> {
+    match supplied {
+        SuppliedConfirmation::Typed(text) => match_confirmation(full_phrase, short_code, text),
+        SuppliedConfirmation::CodeWithContentsAcknowledged {
+            code,
+            acknowledgement,
+        } => {
+            let code_matches =
+                identity_code.is_some_and(|identity| code.trim().eq_ignore_ascii_case(identity));
+            let acknowledged = offered_acknowledgement == Some(*acknowledgement);
+            (code_matches && acknowledged).then_some(ConfirmationForm::CodeWithContentsAcknowledged)
         }
     }
 }
@@ -173,6 +278,24 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         }
         _ => None,
     };
+    // A drive with files gets the acknowledgement instead, when what it
+    // holds could be read and named.
+    let contents_acknowledgement = match (&confirmation_phrase, &short_confirmation) {
+        (Some(_), None) => preflight.target_contents.as_ref().and_then(|contents| {
+            contents_acknowledgement(
+                preflight.target_model.as_deref(),
+                preflight.target_size_bytes,
+                contents,
+            )
+        }),
+        _ => None,
+    };
+    let contents_fingerprint = contents_acknowledgement.as_ref().and_then(|_| {
+        preflight
+            .target_contents
+            .as_ref()
+            .map(DriveContents::layout_fingerprint)
+    });
 
     let mut notes = Vec::new();
     notes.push("Write intent is read-only; no device writes were attempted.".to_string());
@@ -203,6 +326,8 @@ pub fn build_write_intent(preflight: &WritePreflight) -> WriteIntent {
         reason: intent_reason(preflight.status).to_string(),
         confirmation_phrase,
         short_confirmation,
+        contents_acknowledgement,
+        contents_fingerprint,
         image_source: preflight.image_source.clone(),
         target_index: preflight.target_index,
         target_path: preflight.target_path.clone(),
@@ -292,7 +417,13 @@ fn escape_json_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_write_intent, match_confirmation, ConfirmationForm, WriteIntentStatus};
+    use super::{
+        build_write_intent, contents_acknowledgement, match_confirmation,
+        match_supplied_confirmation, ConfirmationForm, SuppliedConfirmation, WriteIntentStatus,
+    };
+    use crate::drive_contents::{
+        DriveContents, DriveContentsState, DrivePartition, FilesystemKind, PartitionScheme,
+    };
     use crate::image_plan::ImagePlanStatus;
     use crate::preflight::{WritePreflight, WritePreflightStatus};
     use crate::target::TargetAssessmentStatus;
@@ -447,9 +578,161 @@ mod tests {
             target_status: TargetAssessmentStatus::NeedsConfirmation,
             target_reason: "target looks eligible but still requires explicit confirmation"
                 .to_string(),
+            target_contents: None,
             requires_confirmation: true,
             notes: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    fn contents(state: DriveContentsState, partitions: usize) -> DriveContents {
+        DriveContents {
+            state,
+            reason: state.as_str().to_string(),
+            partition_scheme: Some(PartitionScheme::Mbr),
+            partitions: (1..=partitions as u32)
+                .map(|number| DrivePartition {
+                    number,
+                    start_bytes: u64::from(number) * 1024 * 1024,
+                    size_bytes: 8 * 1024 * 1024,
+                    filesystem: Some(FilesystemKind::Fat32),
+                    label: Some("FILES".to_string()),
+                    used_bytes: Some(4096),
+                })
+                .collect(),
+        }
+    }
+
+    const ACKNOWLEDGEMENT: &str =
+        "Erase SMI USB DISK (14.8 GB) and the 1 partition with files on it";
+
+    #[test]
+    fn names_what_will_be_lost_for_a_drive_with_files() {
+        let mut preflight = preflight(WritePreflightStatus::NeedsConfirmation);
+        preflight.target_model = Some("SMI USB DISK".to_string());
+        preflight.target_size_bytes = Some(15_931_539_456);
+        preflight.target_contents = Some(contents(DriveContentsState::HasData, 1));
+
+        let intent = build_write_intent(&preflight);
+
+        assert_eq!(
+            intent.contents_acknowledgement.as_deref(),
+            Some(ACKNOWLEDGEMENT)
+        );
+        assert_eq!(
+            intent.contents_fingerprint,
+            preflight
+                .target_contents
+                .as_ref()
+                .map(DriveContents::layout_fingerprint)
+        );
+        // The full phrase stays on offer, for the CLI.
+        assert_eq!(intent.confirmation_level(), Some("full"));
+        assert!(intent.to_json_pretty().contains(&format!(
+            "\"contentsAcknowledgement\": \"{ACKNOWLEDGEMENT}\""
+        )));
+    }
+
+    #[test]
+    fn counts_every_partition_in_the_acknowledgement() {
+        let text = contents_acknowledgement(
+            Some("Generic Flash"),
+            None,
+            &contents(DriveContentsState::HasData, 2),
+        );
+        assert_eq!(
+            text.as_deref(),
+            Some("Erase Generic Flash and the 2 partitions with files on it")
+        );
+        let unnamed = contents_acknowledgement(
+            None,
+            Some(1 << 30),
+            &contents(DriveContentsState::HasData, 1),
+        );
+        assert_eq!(
+            unnamed.as_deref(),
+            Some("Erase this drive (1.00 GB) and the 1 partition with files on it")
+        );
+    }
+
+    #[test]
+    fn offers_no_acknowledgement_without_readable_partitions() {
+        // Unreadable, or data with no partition to name: the full phrase is
+        // the only way to confirm.
+        for contents in [
+            contents(DriveContentsState::Unknown, 0),
+            contents(DriveContentsState::HasData, 0),
+        ] {
+            let mut preflight = preflight(WritePreflightStatus::NeedsConfirmation);
+            preflight.target_contents = Some(contents);
+            let intent = build_write_intent(&preflight);
+            assert_eq!(intent.contents_acknowledgement, None);
+            assert_eq!(intent.contents_fingerprint, None);
+        }
+        let intent = build_write_intent(&preflight(WritePreflightStatus::NeedsConfirmation));
+        assert_eq!(intent.contents_acknowledgement, None);
+    }
+
+    #[test]
+    fn an_empty_drive_gets_the_short_code_not_the_acknowledgement() {
+        let mut preflight = preflight(WritePreflightStatus::Ready);
+        preflight.target_status = TargetAssessmentStatus::Eligible;
+        preflight.target_contents = Some(contents(DriveContentsState::EmptyFilesystem, 1));
+
+        let intent = build_write_intent(&preflight);
+
+        assert_eq!(intent.short_confirmation.as_deref(), Some("7F3A"));
+        assert_eq!(intent.contents_acknowledgement, None);
+    }
+
+    #[test]
+    fn a_blocked_intent_offers_no_acknowledgement() {
+        let mut preflight = preflight(WritePreflightStatus::Blocked);
+        preflight.target_contents = Some(contents(DriveContentsState::HasData, 1));
+
+        assert_eq!(
+            build_write_intent(&preflight).contents_acknowledgement,
+            None
+        );
+    }
+
+    #[test]
+    fn matches_the_code_only_with_the_exact_acknowledgement() {
+        let phrase = "OSFLUX ERASE TARGET 2 7F3A";
+        let check = |code: &str, acknowledgement: &str, offer: Option<&str>| {
+            match_supplied_confirmation(
+                Some(phrase),
+                None,
+                Some("7F3A"),
+                offer,
+                &SuppliedConfirmation::CodeWithContentsAcknowledged {
+                    code,
+                    acknowledgement,
+                },
+            )
+        };
+
+        assert_eq!(
+            check(" 7f3a ", ACKNOWLEDGEMENT, Some(ACKNOWLEDGEMENT)),
+            Some(ConfirmationForm::CodeWithContentsAcknowledged)
+        );
+        assert_eq!(check("7F3B", ACKNOWLEDGEMENT, Some(ACKNOWLEDGEMENT)), None);
+        assert_eq!(
+            check("7F3A", "Erase SMI USB DISK", Some(ACKNOWLEDGEMENT)),
+            None
+        );
+        assert_eq!(check("7F3A", ACKNOWLEDGEMENT, None), None);
+        // The code typed on its own is not enough for a drive with files.
+        let typed = |text| {
+            match_supplied_confirmation(
+                Some(phrase),
+                None,
+                Some("7F3A"),
+                Some(ACKNOWLEDGEMENT),
+                &SuppliedConfirmation::Typed(text),
+            )
+        };
+        assert_eq!(typed("7F3A"), None);
+        assert_eq!(typed(phrase), Some(ConfirmationForm::FullPhrase));
     }
 }

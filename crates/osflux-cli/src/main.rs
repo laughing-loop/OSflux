@@ -1231,6 +1231,12 @@ fn print_raw_write_plan(plan: &RawWritePlan) {
         ConfirmationForm::IdentityCode => println!(
             "confirmed with: the identity code, because the drive is empty (checked again once the drive is locked)"
         ),
+        // The CLI only accepts typed text, so it never plans this form;
+        // Studio does.
+        ConfirmationForm::CodeWithContentsAcknowledged => println!(
+            "confirmed with: the identity code and the acknowledgement \"{}\" (checked again once the drive is locked)",
+            plan.contents_acknowledgement.as_deref().unwrap_or_default()
+        ),
     }
     match plan.verification {
         Verification::ReadBack => {
@@ -1338,6 +1344,7 @@ fn exit_with_raw_write_error(error: RawWriteError) -> ! {
         | RawWriteError::TargetBlocked { .. }
         | RawWriteError::ConfirmationMismatch { .. }
         | RawWriteError::ShortConfirmationRefused { .. }
+        | RawWriteError::ContentsAcknowledgementRefused { .. }
         | RawWriteError::NeedsAdministrator { .. }
         | RawWriteError::Authorization { .. }
         | RawWriteError::TargetChanged { .. } => EXIT_NOT_READY,

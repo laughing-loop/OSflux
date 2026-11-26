@@ -43,9 +43,10 @@ The first release, 0.1.0, will contain everything below.
     - **Safety check:** the engine's verdict and its checks in order, plus Verification, with the technical details. A blocked verdict offers a way back.
     - **Windows options,** for Windows installers only: the five Setup options, all off by default, with a username field for the local account and no password field. The name is checked by the engine's rules.
     - **Confirm:**
-      - An empty drive is confirmed with its four-character code, typed into four boxes. Any other drive needs the full phrase.
+      - An empty drive is confirmed with its four-character code, typed into four boxes.
+      - A drive with files is confirmed with the same code and a ticked box that says what will be lost, such as "Erase SMI USB DISK (14.8 GB) and the 1 partition with files on it". A drive whose contents could not be read still needs the full phrase.
       - The engine records a one-time confirmation that lasts 10 minutes, as `--intent` does. When it expires, writing locks until the drive is confirmed again.
-      - Studio keeps exactly what was typed for the engine.
+      - Studio keeps exactly what was typed, and the box's text as the engine wrote it, for the engine.
       - "Write to drive" unlocks only on a match. Writing itself comes next.
   - Reading images, listing drives, the safety check and the confirmation run off the UI thread.
   - Studio keeps a log, `studio.log` in OSflux's state folder, with startup times, the renderer and each step of setting up dropped files.
@@ -56,6 +57,7 @@ The first release, 0.1.0, will contain everything below.
   - `run_safety_check` splits the preflight verdict into its checks, in the same order and with the same outcome. It also notices when a different drive has taken the chosen drive's place.
   - `Sha256Hex` parses an expected SHA-256.
   - `detect_plan_family` detects an already-planned image's family without reading the image again.
+  - A third confirmation form, the identity code with an acknowledgement that names what will be lost (`identity-code-contents-acknowledged`), for drives with files whose partitions could be read. The engine writes the acknowledgement, records it with a fingerprint of the drive's partition layout in the one-time confirmation, checks both again before writing and once more after locking the drive, and records the form and the text in the audit log. The CLI keeps the full phrase.
   - IBM Plex Sans and Mono are embedded under the SIL Open Font License. `osflux-studio.exe` carries the OSflux icon and asks for Administrator when it opens.
 
 ### Changed

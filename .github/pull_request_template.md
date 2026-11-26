@@ -13,4 +13,4 @@
 - [ ] Any new dependency has a GPL-3.0-compatible licence, and `Cargo.lock` is committed.
 - [ ] `CHANGELOG.md` has a line under `[Unreleased]` for anything a user would notice.
 - [ ] The README or `DOCUMENTS/` are updated if behaviour, commands or options changed.
-- [ ] I agree that my contribution is licensed under GPL-3.0-or-later.
+- [ ] I agree that my contribution is licensed under the licence of the code it changes: GPL-3.0-or-later for the engine, CLI and core, GPL-3.0-only for osflux-studio.

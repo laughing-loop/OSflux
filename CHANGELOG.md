@@ -7,7 +7,27 @@ minor version may change command-line options or output.
 
 ## [Unreleased]
 
-The first release, 0.1.0, will contain everything below.
+## [0.1.0] - 2026-11-26
+
+The first release of OSflux.
+
+**What it does.** OSflux makes bootable USB sticks and SD cards. Give it a Windows 11 installer ISO, a Linux ISO or a raw disk image, and it writes the image to the stick, reads every byte back to check it, and tells you the image's SHA-256 so you can compare it with the one on the download page. For Windows installers it can also skip the TPM and Secure Boot checks, set up a local account instead of a Microsoft account, and skip the privacy questions, all off unless you choose them. There are two programs in the download: **OSflux Studio** (`osflux-studio.exe`), the desktop app, and `osflux.exe`, the same engine on the command line.
+
+**Windows only, for now.** OSflux runs on Windows 10 and 11 (64-bit). It builds on Linux, but cannot list or write drives there yet.
+
+**How it keeps your data safe.**
+
+- It only writes to drives that report removable media, such as USB sticks and SD cards. The drive Windows runs from, internal disks, and external hard disks and SSDs are never offered, even over USB.
+- Before writing, you confirm the exact drive: an empty stick with its four-character code; a stick with files with the same code and a box that names what will be lost; the command line always asks for the full phrase. A confirmation works once, for one image, within 10 minutes.
+- OSflux checks the drive again just before writing and once more after locking it, and stops without writing if it changed.
+- Every confirmation and write is recorded in an audit log you can open from Studio.
+- Writing needs Administrator rights; Studio asks for them when it opens.
+
+**The programs are not code-signed yet,** so Windows SmartScreen may say it protected your PC when you open them. Choose **More info**, then **Run anyway**. You can check the download against `SHA256SUMS.txt` first.
+
+**In the download:** `osflux-0.1.0-windows-x64.zip` with both programs, the licence, `THIRD-PARTY-NOTICES.html` (the licence of every Rust crate built into them, also linked from Studio's About > Licenses) and the IBM Plex font licence, and `SHA256SUMS.txt`.
+
+The details of everything in this release follow.
 
 ### Added
 
@@ -33,7 +53,7 @@ The first release, 0.1.0, will contain everything below.
 - **The Windows program** has the OSflux icon and version details. `--version` prints the version.
 - **Continuous integration** on Windows and Linux: formatting, lints as errors, tests, and the Windows build.
 - **A release workflow** that packages `osflux.exe` with checksums and signs it once a code signing certificate is set up.
-- **Licence.** OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence. CI checks that every dependency's licence is compatible with GPL-3.0.
+- **Licence.** OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 Joly Doh. The OSflux name and logo are not covered by the licence. CI checks that every dependency's licence is compatible with GPL-3.0.
 
 - **OSflux Studio, in progress** (`osflux-studio.exe`): the desktop app, built with Slint on the same engine, to the v2 design in `DOCUMENTS/studio/`.
   - The window shell (header with Administrator status, step rail with "This session", action bar and status bar), dark, light and follow-Windows themes, Settings (theme, verify after writing) and About with the licences.
@@ -66,6 +86,8 @@ The first release, 0.1.0, will contain everything below.
 
 ### Changed
 
+- **Smaller programs.** Release builds leave out debug symbols, and the published programs are built with link-time optimisation: `osflux.exe` is about 1.1 MB and `osflux-studio.exe` about 19 MB, each about 5% smaller.
+- **Version details.** Both programs' Properties name the product OSflux, Joly Doh as the company and copyright holder and the version from `Cargo.toml`; `osflux.exe` is described as "OSflux command line" and `osflux-studio.exe` as "OSflux Studio". The release workflow checks them before packaging.
 - **Drives are listed without PowerShell.** OSflux asks Windows' storage stack directly, as Rufus does: `IOCTL_STORAGE_QUERY_PROPERTY` for the bus, removable media, model and serial, Plug and Play for the device-instance ID and the name Device Manager shows, the disk geometry for the size when the drive can't be read, and the system volume's disk extents to find the system disk. Listing works where scripts are blocked, is faster, and never opens a console window. Drive codes stay the same; the bus is named more precisely (SATA or NVMe where Windows' old inventory said IDE or SCSI). If the system volume can't be located, every disk is treated as holding it.
 - **The program is now `osflux`** (`osflux.exe` on Windows); it was `osflux-cli`.
 - **Rust is pinned** to 1.97.0 in `rust-toolchain.toml`, so every machine builds and lints the same way.

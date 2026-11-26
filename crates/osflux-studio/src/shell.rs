@@ -291,6 +291,14 @@ fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>, session: &Rc<RefCell<
     });
 
     studio.on_open_link(|id| {
+        if id == "notices" {
+            let program = std::env::current_exe().ok();
+            let target = about::third_party_notices(program.as_deref());
+            if let Err(error) = system::open_url(&target) {
+                crate::log!("could not open {target}: {error}");
+            }
+            return;
+        }
         if let Some(url) = about::link(id.as_str()) {
             if let Err(error) = system::open_url(url) {
                 crate::log!("could not open {url}: {error}");

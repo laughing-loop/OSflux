@@ -12,6 +12,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
+authors = ["Joly Doh"]
 
 [workspace.dependencies]
 crossbeam = "0.8"
@@ -26,3 +27,16 @@ windows = { version = "0.56", features = [
     "Win32_System_Threading",
     "Win32_Security",
 ] }
+
+# No debug symbols in release executables. (On Windows the linker already
+# keeps debug information in a separate .pdb, which is not shipped.)
+[profile.release]
+strip = "symbols"
+
+# What the Release workflow builds: whole-program link-time optimisation in
+# one codegen unit makes the programs about 5% smaller, but takes about
+# 20 minutes, so ordinary CI builds keep the release profile.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

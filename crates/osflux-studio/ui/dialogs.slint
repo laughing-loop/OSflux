@@ -381,7 +381,7 @@ export component AboutDialog inherits Dialog {
                         }
                     }
                     Label {
-                        text: "© 2026 HOD Technologies Limited · GPL-3.0";
+                        text: "© 2026 Joly Doh · GPL-3.0";
                         font-size: 13px;
                     }
                 }
@@ -402,11 +402,11 @@ export component AboutDialog inherits Dialog {
         }
         LicenceBlock {
             title: "OSflux Studio · GPL-3.0-only";
-            body: "Copyright (C) 2026 HOD Technologies Limited. OSflux Studio includes Slint, which is licensed under version 3 of the GNU GPL only, so this program as a whole is distributed under the GNU General Public License, version 3.";
+            body: "Copyright (C) 2026 Joly Doh. OSflux Studio includes Slint, which is licensed under version 3 of the GNU GPL only, so this program as a whole is distributed under the GNU General Public License, version 3.";
         }
         LicenceBlock {
             title: "osflux-engine and the osflux command-line tool · GPL-3.0-or-later";
-            body: "Copyright (C) 2026 HOD Technologies Limited. Free software under the GNU General Public License, version 3 or (at your option) any later version.";
+            body: "Copyright (C) 2026 Joly Doh. Free software under the GNU General Public License, version 3 or (at your option) any later version.";
         }
         LicenceBlock {
             title: "Slint · GPL-3.0-only";
@@ -417,8 +417,19 @@ export component AboutDialog inherits Dialog {
             body: "Copyright © 2017 IBM Corp. with Reserved Font Name \"Plex\". Used under the SIL Open Font License 1.1; the fonts are embedded unmodified.";
         }
         LicenceBlock {
+            title: "Other Rust crates";
+            body: "osflux.exe and osflux-studio.exe also include open-source Rust crates under the MIT, Apache 2.0, Unicode, BSD, Boost, zlib and ISC licences. THIRD-PARTY-NOTICES.html, next to the program, lists each one with its licence text.";
+        }
+        GhostButton {
+            text: "Third-party notices";
+            show-icon: true;
+            icon-after: true;
+            icon: @image-url("icons/external.svg");
+            clicked => { Studio.open-link("notices"); }
+        }
+        LicenceBlock {
             title: "Name and logo";
-            body: "The OSflux name and logo are not covered by these licences. HOD Technologies Limited keeps all rights to them.";
+            body: "The OSflux name and logo are not covered by these licences. Joly Doh keeps all rights to them.";
         }
         Rectangle {
             height: 1px;

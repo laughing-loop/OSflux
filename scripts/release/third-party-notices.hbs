@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OSflux third-party notices</title>
+<style>
+  body { font-family: "IBM Plex Sans", "Segoe UI", sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #161616; }
+  h1 { font-weight: 400; }
+  h2 { margin-top: 2.5rem; border-bottom: 1px solid #c6c6c6; padding-bottom: .25rem; }
+  ul.crates { columns: 2; }
+  pre { white-space: pre-wrap; background: #f4f4f4; padding: 1rem; font-size: .8rem; }
+</style>
+</head>
+<body>
+<h1>OSflux third-party notices</h1>
+<p>osflux.exe and osflux-studio.exe are built from OSflux's own source and the Rust crates below. Each crate is listed under its licence, with that licence's full text. OSflux itself is licensed under the GNU General Public License, version 3 or later (osflux-studio.exe under version 3 only, because it includes Slint); see LICENSE. The IBM Plex fonts embedded in osflux-studio.exe are covered by the SIL Open Font License 1.1 in IBM-PLEX-OFL.txt.</p>
+
+<h2>Licences used</h2>
+<ul>
+{{#each overview}}
+  <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+
+{{#each licenses}}
+<h2 id="{{id}}">{{name}}</h2>
+<p>Used by:</p>
+<ul class="crates">
+{{#each used_by}}
+  <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

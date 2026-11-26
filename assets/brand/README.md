@@ -62,4 +62,4 @@ Wordmark font: IBM Plex Sans, SIL Open Font License 1.1.
 
 ## Licence
 
-The OSflux name and logo are not covered by OSflux's GPL-3.0-or-later licence; HOD Technologies Limited keeps all rights to them. See the Licence section of the main README.
+The OSflux name and logo are not covered by OSflux's GPL-3.0-or-later licence; Joly Doh keeps all rights to them. See the Licence section of the main README.

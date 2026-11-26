@@ -286,7 +286,7 @@ fn prints_its_version() {
             Some(format!("osflux {}", env!("CARGO_PKG_VERSION")).as_str()),
             "{flag}"
         );
-        assert!(text.contains("HOD Technologies Limited"), "{flag}");
+        assert!(text.contains("Copyright (C) 2026 Joly Doh"), "{flag}");
         assert!(text.contains("GPL-3.0-or-later"), "{flag}");
     }
 }

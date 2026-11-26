@@ -3,6 +3,7 @@ name = "osflux-studio"
 description = "OSflux Studio: the desktop app for writing bootable USB drives"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 # Studio includes Slint, which it uses under GPL-3.0-only, so Studio is
 # GPL-3.0-only; the engine and CLI stay GPL-3.0-or-later.
 license = "GPL-3.0-only"

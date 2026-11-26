@@ -4,19 +4,23 @@
 import { Theme, ThemeChoice, Status } from "theme.slint";
 import {
     Studio, Screen, StepState, StepData, SummaryData, HintIcon, DriveKind, PlanRowData, NoteData,
-    DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData
+    DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData, ConfirmDriveData, MatchState
 } from "state.slint";
 import { SquareButton, ButtonKind } from "components/button.slint";
 import { ScrollArea } from "components/scroll.slint";
 import { Header, Rail, ActionBar, StatusBar } from "shell.slint";
 import { Body, Label, Mono } from "components/text.slint";
-import { TitleBlock, ImageEmptyScreen, ImageCheckedScreen, DriveScreen, SafetyScreen } from "screens.slint";
+import {
+    TitleBlock, ImageEmptyScreen, ImageCheckedScreen, DriveScreen, SafetyScreen,
+    WindowsOptionsScreen, ConfirmScreen
+} from "screens.slint";
 import { SettingsDialog, AboutDialog } from "dialogs.slint";
 import { Gallery } from "gallery.slint";
 
 export {
     Theme, ThemeChoice, Status, Studio, Screen, StepState, StepData, SummaryData, HintIcon, DriveKind,
-    PlanRowData, NoteData, DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData, Gallery
+    PlanRowData, NoteData, DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData,
+    ConfirmDriveData, MatchState, Gallery
 }
 
 export component AppWindow inherits Window {
@@ -100,6 +104,8 @@ export component AppWindow inherits Window {
                         if Studio.screen == Screen.image && Studio.image-chosen: ImageCheckedScreen { }
                         if Studio.screen == Screen.drive: DriveScreen { }
                         if Studio.screen == Screen.safety: SafetyScreen { }
+                        if Studio.screen == Screen.windows-options: WindowsOptionsScreen { }
+                        if Studio.screen == Screen.confirm: ConfirmScreen { }
                     }
                 }
                 ActionBar {
@@ -120,13 +126,22 @@ export component AppWindow inherits Window {
                         icon: @image-url("icons/file.svg");
                         clicked => { Studio.choose-image(); }
                     }
-                    SquareButton {
+                    if Studio.screen != Screen.confirm: SquareButton {
                         width: 177px;
                         text: "Next";
                         kind: ButtonKind.primary;
                         enabled: Studio.can-go-next;
                         icon: @image-url("icons/arrow-right.svg");
                         clicked => { Studio.next(); }
+                    }
+                    // Red, and locked until the code or phrase matches.
+                    if Studio.screen == Screen.confirm: SquareButton {
+                        width: 208px;
+                        text: "Write to drive";
+                        kind: ButtonKind.danger;
+                        enabled: Studio.can-write;
+                        icon: Studio.can-write ? @image-url("icons/arrow-right.svg") : @image-url("icons/lock.svg");
+                        clicked => { Studio.write(); }
                     }
                 }
             }

@@ -13,10 +13,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use osflux_engine::{
-    assess_all_targets, run_safety_check, SafetyCheck, SafetyCheckError, Sha256Hex,
-    Sha256ParseError, TargetAssessment, TargetAssessmentError,
+    assess_all_targets, create_write_intent, now_unix_seconds, record_write_authorization,
+    run_safety_check, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, SafetyCheck,
+    SafetyCheckError, Sha256Hex, Sha256ParseError, TargetAssessment, TargetAssessmentError,
+    WriteIntentStatus, WritePreflightError,
 };
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+
+use crate::confirm_step::{
+    confirm_view, failure_text, normalize_typed, ConfirmFailure, ConfirmView, Confirmation, Inputs,
+};
+use crate::drive_step::DriveEntry;
+use crate::windows_options::{OptionId, WindowsOptions};
 
 use crate::drive_step::{drive_hint, ChosenDrive, DriveList};
 use crate::format::{middle_truncate, size_short};
@@ -29,8 +37,8 @@ use crate::steps::{
     build_rail, step_label, steps_for, Flow, StepId, StepView, Subtitle, RAIL_NAME_CHARS,
 };
 use crate::{
-    AppWindow, BlockedDriveData, CheckData, DetailRowData, DriveData, DriveKind, HintIcon,
-    NoteData, PlanRowData, Screen, Status, Studio, SummaryData,
+    AppWindow, BlockedDriveData, CheckData, ConfirmDriveData, DetailRowData, DriveData, DriveKind,
+    HintIcon, NoteData, PlanRowData, Screen, Status, Studio, SummaryData,
 };
 
 /// The engine calls a session makes. [`LiveEngine`] is the real engine;
@@ -40,6 +48,13 @@ pub trait Engine: Send + Sync {
     fn scan_drives(&self) -> Vec<TargetAssessment>;
     fn safety_check(&self, image: &Path, drive: &ChosenDrive)
         -> Result<SafetyCheck, SafetyFailure>;
+    /// Checks the image and drive once more and records the engine's
+    /// one-time confirmation for them, which lasts 10 minutes.
+    fn confirm(&self, image: &Path, drive: &ChosenDrive) -> Result<Confirmation, ConfirmFailure>;
+    /// The time, for telling when a confirmation has expired.
+    fn now_unix_seconds(&self) -> u64 {
+        now_unix_seconds()
+    }
 }
 
 pub struct LiveEngine;
@@ -64,6 +79,43 @@ impl Engine for LiveEngine {
                 SafetyFailure::DriveGone
             }
             SafetyCheckError::Image(error) => SafetyFailure::Image(error.to_string()),
+        })
+    }
+
+    fn confirm(&self, image: &Path, drive: &ChosenDrive) -> Result<Confirmation, ConfirmFailure> {
+        let mut intent = create_write_intent(image, drive.index).map_err(|error| match error {
+            WritePreflightError::Target(TargetAssessmentError::NotFound { .. }) => {
+                ConfirmFailure::DriveChanged
+            }
+            other => ConfirmFailure::Failed(other.to_string()),
+        })?;
+        if intent.target_identity_code != drive.identity {
+            return Err(ConfirmFailure::DriveChanged);
+        }
+        if intent.status != WriteIntentStatus::ConfirmationRequired {
+            return Err(ConfirmFailure::NotAllowed(intent.reason.clone()));
+        }
+        let store = AuthorizationStore::default_location()
+            .map_err(|error| ConfirmFailure::Failed(error.to_string()))?;
+        record_write_authorization(&mut intent, image, &store, now_unix_seconds())
+            .map_err(|error| ConfirmFailure::Failed(error.to_string()))?;
+        let expires_at_unix_seconds = intent
+            .authorization_expires_at_unix_seconds
+            .ok_or_else(|| ConfirmFailure::Failed("no confirmation was recorded".to_string()))?;
+        // As `--intent` does: the audit log records each confirmation offered.
+        if let Some(audit) = AuditLog::default_location() {
+            let mut event = AuditEvent::for_intent(AuditEventKind::Authorized, &intent);
+            if intent.short_confirmation.is_some() {
+                event = event
+                    .with_detail("the drive was empty, so its identity code may confirm the write");
+            }
+            if let Err(error) = audit.record(&event) {
+                crate::log!("audit: could not record the confirmation: {error}");
+            }
+        }
+        Ok(Confirmation {
+            intent,
+            expires_at_unix_seconds,
         })
     }
 }
@@ -113,6 +165,20 @@ pub struct Session {
     safety: Option<Result<SafetyCheck, SafetyFailure>>,
     safety_busy: bool,
     safety_job: u64,
+
+    windows_options: WindowsOptions,
+
+    confirmation: Option<Result<Confirmation, ConfirmFailure>>,
+    confirm_busy: bool,
+    confirm_job: u64,
+    /// Exactly what was typed, upper-cased as the inputs show it.
+    typed: String,
+    expired: bool,
+    /// Checks every second whether the confirmation has expired.
+    expiry_timer: Timer,
+    /// Write to drive was pressed; writing arrives in the next update.
+    write_requested: bool,
+    me: Weak<RefCell<Session>>,
 }
 
 impl Session {
@@ -145,7 +211,17 @@ impl Session {
             safety: None,
             safety_busy: false,
             safety_job: 0,
+            windows_options: WindowsOptions::default(),
+            confirmation: None,
+            confirm_busy: false,
+            confirm_job: 0,
+            typed: String::new(),
+            expired: false,
+            expiry_timer: Timer::default(),
+            write_requested: false,
+            me: Weak::new(),
         }));
+        session.borrow_mut().me = Rc::downgrade(&session);
         if jobs == Jobs::Background {
             ACTIVE.with(|active| *active.borrow_mut() = Rc::downgrade(&session));
         }
@@ -193,6 +269,7 @@ impl Session {
         self.image_error.clear();
         self.step = StepId::Image;
         self.safety = None;
+        self.clear_confirmation();
         self.render();
         self.run(
             move |engine| {
@@ -237,14 +314,20 @@ impl Session {
             }
             StepId::Safety => {
                 if self.safety_view().is_some_and(|view| view.can_continue) {
-                    self.step = if self.flow() == Flow::Windows {
-                        StepId::WindowsOptions
+                    if self.flow() == Flow::Windows {
+                        self.step = StepId::WindowsOptions;
                     } else {
-                        StepId::Confirm
-                    };
+                        self.go_to(StepId::Confirm);
+                        return;
+                    }
                 }
             }
-            StepId::WindowsOptions => self.step = StepId::Confirm,
+            StepId::WindowsOptions => {
+                if self.windows_options.can_continue() {
+                    self.go_to(StepId::Confirm);
+                    return;
+                }
+            }
             StepId::Confirm => {}
         }
         self.render();
@@ -275,9 +358,18 @@ impl Session {
 
     fn go_to(&mut self, step: StepId) {
         self.step = step;
+        self.write_requested = false;
         if step == StepId::Drive && !self.drives_busy {
             // Sticks come and go; list them afresh each time.
             self.scan_drives();
+        }
+        if step == StepId::Confirm {
+            // A confirmation still running is kept; otherwise ask afresh.
+            let current = matches!(&self.confirmation, Some(Ok(_))) && !self.expired;
+            if !current && !self.confirm_busy {
+                self.start_confirm();
+                return;
+            }
         }
         self.render();
     }
@@ -290,7 +382,141 @@ impl Session {
         {
             self.chosen = Some(drive.chosen());
             self.safety = None;
+            self.clear_confirmation();
         }
+        self.render();
+    }
+
+    /// A Windows option was ticked or cleared.
+    pub fn set_option(&mut self, index: usize, on: bool) {
+        if let Some(option) = OptionId::from_index(index) {
+            self.windows_options.set(option, on);
+        }
+        self.render();
+    }
+
+    pub fn account_name_edited(&mut self, text: &str) {
+        self.windows_options.account_name = text.to_string();
+        self.render();
+    }
+
+    pub fn windows_options(&self) -> &WindowsOptions {
+        &self.windows_options
+    }
+
+    /// The code boxes or the phrase field changed.
+    pub fn typed_edited(&mut self, text: &str) {
+        let short = matches!(&self.confirmation, Some(Ok(confirmation)) if confirmation.short());
+        let typed = normalize_typed(text, short);
+        if typed != text {
+            if let Some(window) = self.window.upgrade() {
+                window.global::<Studio>().set_typed(typed.clone().into());
+            }
+        }
+        self.typed = typed;
+        self.write_requested = false;
+        self.render();
+    }
+
+    /// Exactly what was typed, to pass to the engine when writing.
+    pub fn typed(&self) -> &str {
+        &self.typed
+    }
+
+    /// "Confirm the drive again", after the confirmation expired.
+    pub fn confirm_again(&mut self) {
+        self.start_confirm();
+    }
+
+    /// Write to drive. Writing arrives in the next update; for now this
+    /// only says so, and nothing is written.
+    pub fn write(&mut self) {
+        if self.confirm_view().is_some_and(|view| view.can_write) {
+            self.write_requested = true;
+        }
+        self.render();
+    }
+
+    /// Marks the confirmation expired once its 10 minutes are up. Called
+    /// every second while one is active.
+    pub fn check_expiry(&mut self, now_unix_seconds: u64) {
+        let expired = matches!(
+            &self.confirmation,
+            Some(Ok(confirmation)) if confirmation.expired(now_unix_seconds)
+        );
+        if expired && !self.expired {
+            crate::log!("confirm: the confirmation expired");
+            self.expired = true;
+            self.write_requested = false;
+            self.expiry_timer.stop();
+            self.render();
+        }
+    }
+
+    fn clear_confirmation(&mut self) {
+        self.confirm_job += 1;
+        self.confirmation = None;
+        self.confirm_busy = false;
+        self.typed.clear();
+        self.expired = false;
+        self.write_requested = false;
+        self.expiry_timer.stop();
+        if let Some(window) = self.window.upgrade() {
+            window.global::<Studio>().set_typed(SharedString::new());
+        }
+    }
+
+    fn start_confirm(&mut self) {
+        let (Some(image), Some(chosen)) = (&self.image, &self.chosen) else {
+            self.render();
+            return;
+        };
+        let path = image.path.clone();
+        let chosen = chosen.clone();
+        self.clear_confirmation();
+        let job = self.confirm_job;
+        self.confirm_busy = true;
+        self.render();
+        self.run(
+            move |engine| engine.confirm(&path, &chosen),
+            Session::confirmed,
+            job,
+        );
+    }
+
+    fn confirmed(&mut self, job: u64, result: Result<Confirmation, ConfirmFailure>) {
+        if job != self.confirm_job {
+            return;
+        }
+        self.confirm_busy = false;
+        match &result {
+            Ok(confirmation) => {
+                crate::log!(
+                    "confirm: ready for drive {} ({}), valid until {}",
+                    confirmation.intent.target_index,
+                    if confirmation.short() {
+                        "drive code"
+                    } else {
+                        "full phrase"
+                    },
+                    osflux_engine::format_unix_utc(confirmation.expires_at_unix_seconds)
+                );
+                let me = self.me.clone();
+                self.expiry_timer
+                    .start(TimerMode::Repeated, Duration::from_secs(1), move || {
+                        let Some(session) = me.upgrade() else { return };
+                        let Ok(mut session) = session.try_borrow_mut() else {
+                            return;
+                        };
+                        let now = session.engine.now_unix_seconds();
+                        session.check_expiry(now);
+                    });
+            }
+            Err(failure) => crate::log!("confirm: {failure:?}"),
+        }
+        self.confirmation = Some(result);
+        let now = self.engine.now_unix_seconds();
+        self.check_expiry(now);
         self.render();
     }
 
@@ -364,6 +590,7 @@ impl Session {
         let job = self.safety_job;
         self.safety_busy = true;
         self.safety = None;
+        self.clear_confirmation();
         self.render();
         self.run(
             move |engine| engine.safety_check(&path, &chosen),
@@ -544,7 +771,8 @@ impl Session {
                 label.push_str(" · Safety check verdict");
                 self.render_safety(&studio, safety.as_ref());
             }
-            StepId::WindowsOptions | StepId::Confirm => self.render_coming_next(&studio),
+            StepId::WindowsOptions => self.render_windows_options(&studio),
+            StepId::Confirm => self.render_confirm(&studio),
         }
         studio.set_step_label(label.into());
     }
@@ -580,8 +808,30 @@ impl Session {
             if self.safety_busy {
                 subtitles.push((StepId::Safety, Subtitle::Text("Checking…".to_string())));
             } else if let Some(view) = safety {
-                subtitles.push((StepId::Safety, Subtitle::Text(view.rail_subtitle.clone())));
+                // Current: "Verdict: Ready"; done: "Ready", as frames 09–14 show.
+                let text = if self.step == StepId::Safety {
+                    view.rail_subtitle.clone()
+                } else {
+                    view.title.to_string()
+                };
+                subtitles.push((StepId::Safety, Subtitle::Text(text)));
             }
+        }
+        if reached(StepId::Confirm) && flow == Flow::Windows {
+            subtitles.push((
+                StepId::WindowsOptions,
+                Subtitle::Text(self.windows_options.rail_subtitle()),
+            ));
+        }
+        if self.step == StepId::Confirm {
+            let text = if self.confirm_busy {
+                "Preparing…"
+            } else if let Some(view) = self.confirm_view() {
+                view.rail_subtitle
+            } else {
+                "Confirm the drive"
+            };
+            subtitles.push((StepId::Confirm, Subtitle::Text(text.to_string())));
         }
         let blocked = (self.step == StepId::Safety && safety.is_some_and(|view| view.rail_blocked))
             .then_some(StepId::Safety);
@@ -613,7 +863,7 @@ impl Session {
                 .unwrap_or_else(|| "Not chosen yet".to_string())
                 .into(),
             show_windows_options: flow == Flow::Windows,
-            windows_options: "None".into(),
+            windows_options: self.windows_options.summary().into(),
         }
     }
 
@@ -759,29 +1009,158 @@ impl Session {
         studio.set_can_go_next(view.can_continue);
     }
 
-    /// Windows options and Confirm arrive in the next pull request.
-    fn render_coming_next(&self, studio: &Studio<'_>) {
-        let windows_options = self.step == StepId::WindowsOptions;
-        studio.set_screen(if windows_options {
-            Screen::WindowsOptions
+    /// Step 4 for Windows installers (frames 09–10).
+    fn render_windows_options(&self, studio: &Studio<'_>) {
+        let options = &self.windows_options;
+        studio.set_screen(Screen::WindowsOptions);
+        studio.set_title("Windows options".into());
+        studio.set_description(
+            "Optional changes to how Windows Setup runs. All are off unless you turn them on."
+                .into(),
+        );
+        studio.set_option_bypass(options.bypass_requirements);
+        studio.set_option_local_account(options.local_account);
+        studio.set_option_privacy(options.skip_privacy_questions);
+        studio.set_option_bitlocker(options.no_auto_bitlocker);
+        studio.set_option_region(options.copy_region);
+        let error = if options.local_account && !options.account_name.is_empty() {
+            options.account_error().unwrap_or_default()
         } else {
-            Screen::Confirm
+            String::new()
+        };
+        studio.set_account_error(error.into());
+        studio.set_hint(options.hint().into());
+        studio.set_hint_icon(if options.can_continue() {
+            HintIcon::None
+        } else {
+            HintIcon::Warning
         });
-        studio.set_title(
-            if windows_options {
-                "Windows options"
+        studio.set_can_go_back(true);
+        studio.set_can_go_next(options.can_continue());
+    }
+
+    fn chosen_entry(&self) -> Option<&DriveEntry> {
+        let list = self.drives.as_ref()?;
+        let chosen = self.chosen.as_ref()?;
+        list.position_of(chosen)
+            .map(|position| &list.allowed[position])
+    }
+
+    fn confirm_view(&self) -> Option<ConfirmView> {
+        let Some(Ok(confirmation)) = &self.confirmation else {
+            return None;
+        };
+        let contents = match &self.safety {
+            Some(Ok(check)) => check.target.contents.as_ref(),
+            _ => None,
+        };
+        let entry = self.chosen_entry();
+        Some(confirm_view(Inputs {
+            confirmation,
+            model: self
+                .chosen
+                .as_ref()
+                .map(|chosen| chosen.model.as_str())
+                .unwrap_or_default(),
+            path: entry
+                .map(|entry| entry.path.as_str())
+                .unwrap_or(confirmation.intent.target_path.as_str()),
+            contents,
+            typed: &self.typed,
+            expired: self.expired,
+            verify: self.verify,
+        }))
+    }
+
+    /// The Confirm step (frames 11–14 and 21).
+    fn render_confirm(&self, studio: &Studio<'_>) {
+        studio.set_screen(Screen::Confirm);
+        studio.set_title("Confirm the drive".into());
+        studio.set_can_go_back(true);
+        studio.set_can_go_next(false);
+        studio.set_confirm_busy(self.confirm_busy);
+        studio.set_confirm_expired(self.expired);
+        if let Some(entry) = self.chosen_entry() {
+            studio.set_confirm_drive(ConfirmDriveData {
+                model: entry.model.clone().into(),
+                path: entry.path.clone().into(),
+                size: entry.size.clone().into(),
+                bus: entry.bus.clone().into(),
+                media: entry.media.clone().into(),
+                kind: entry.kind,
+                status: entry.status,
+                status_label: entry.status_label.into(),
+            });
+        }
+        studio.set_confirm_options(if self.flow() == Flow::Windows {
+            self.windows_options.summary().into()
+        } else {
+            SharedString::new()
+        });
+        studio.set_confirm_verify(
+            if self.verify {
+                "On · every byte read back and compared"
             } else {
-                "Confirm the drive"
+                "Off · written bytes are not read back"
             }
             .into(),
         );
-        studio.set_description(
-            "This step comes in the next Studio update. Nothing has been written to the drive."
+
+        let failure = match &self.confirmation {
+            Some(Err(failure)) => failure_text(failure),
+            _ => String::new(),
+        };
+        studio.set_confirm_error(failure.clone().into());
+        let Some(view) = self.confirm_view() else {
+            studio.set_description(
+                if self.confirm_busy {
+                    "The engine is checking the image and the drive once more."
+                } else {
+                    "OSflux couldn't offer a confirmation for this drive."
+                }
                 .into(),
-        );
-        studio.set_hint("Coming in the next update.".into());
-        studio.set_can_go_back(true);
-        studio.set_can_go_next(windows_options);
+            );
+            studio.set_hint(
+                if self.confirm_busy {
+                    "Preparing the confirmation…"
+                } else {
+                    "Write to drive is locked."
+                }
+                .into(),
+            );
+            studio.set_hint_icon(HintIcon::Lock);
+            studio.set_can_write(false);
+            return;
+        };
+        studio.set_description(view.description.into());
+        studio.set_confirm_short(view.short);
+        studio.set_drive_code(view.code.clone().into());
+        studio.set_phrase_head(view.phrase_head.clone().into());
+        studio.set_phrase_code(view.phrase_code.clone().into());
+        studio.set_contents_note(view.contents_note.clone().into());
+        studio.set_erase_title(view.erase_title.clone().into());
+        studio.set_erase_body(view.erase_body.clone().into());
+        studio.set_typed_characters(model((0..4).map(|index| {
+            SharedString::from(
+                self.typed
+                    .chars()
+                    .nth(index)
+                    .map(String::from)
+                    .unwrap_or_default(),
+            )
+        })));
+        studio.set_match_state(view.match_state);
+        studio.set_match_message(view.match_message.clone().into());
+        studio.set_can_write(view.can_write);
+        if self.write_requested {
+            studio.set_hint(
+                "Writing comes in the next Studio update. Nothing has been written.".into(),
+            );
+            studio.set_hint_icon(HintIcon::Info);
+        } else {
+            studio.set_hint(view.hint.into());
+            studio.set_hint_icon(view.hint_icon);
+        }
     }
 }
 

@@ -9,12 +9,14 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use osflux_engine::{
-    build_safety_check, BootCatalogPlatform, BootEmulation, BootStyle, DetectionMethod,
-    DeviceAccess, DriveContents, DriveContentsState, ElToritoBootInfo, ImageFamily, ImageKind,
-    ImagePlan, ImagePlanStatus, ImageSignature, ImageWriteStrategy, IsoBootAsset, IsoBootAssetKind,
-    IsoBootMetadata, IsoDirectoryMetadata, IsoFilesystemStrategy, SafetyCheck, TargetAssessment,
-    TargetAssessmentStatus, WriteMode,
+    build_safety_check, build_write_intent, build_write_preflight, BootCatalogPlatform,
+    BootEmulation, BootStyle, DetectionMethod, DeviceAccess, DriveContents, DriveContentsState,
+    ElToritoBootInfo, ImageFamily, ImageKind, ImagePlan, ImagePlanStatus, ImageSignature,
+    ImageWriteStrategy, IsoBootAsset, IsoBootAssetKind, IsoBootMetadata, IsoDirectoryMetadata,
+    IsoFilesystemStrategy, SafetyCheck, TargetAssessment, TargetAssessmentStatus,
+    WriteIntentStatus, WriteMode,
 };
+use osflux_studio::confirm_step::{ConfirmFailure, Confirmation};
 use osflux_studio::drive_step::ChosenDrive;
 use osflux_studio::image_step::ImageAnalysis;
 use osflux_studio::safety_step::SafetyFailure;
@@ -38,9 +40,14 @@ pub const LINUX_ISO: &str = "D:/Images/ubuntu-24.04.1-live-server-amd64.iso";
 pub const BROKEN_ISO: &str = "D:/Images/recovery-tools-v3.iso";
 pub const MISSING_ISO: &str = "D:/Images/missing.iso";
 
+/// The stand-in engine's clock starts here; confirmations last 600 s.
+pub const START_TIME: u64 = 1_800_000_000;
+
 /// Sample images by path, and drives that tests can plug in and pull out.
 pub struct FakeEngine {
     pub drives: Mutex<Vec<TargetAssessment>>,
+    /// What `now_unix_seconds` returns, so tests can let time pass.
+    pub now: Mutex<u64>,
 }
 
 impl Engine for FakeEngine {
@@ -77,6 +84,37 @@ impl Engine for FakeEngine {
         let changed = target.identity_code != drive.identity;
         Ok(build_safety_check(plan, target, changed))
     }
+
+    /// The engine's own intent for the sample drive, without recording it.
+    fn confirm(&self, image: &Path, drive: &ChosenDrive) -> Result<Confirmation, ConfirmFailure> {
+        let plan = self
+            .analyze_image(image)
+            .map_err(ConfirmFailure::Failed)?
+            .plan;
+        let target = self
+            .drives
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|target| target.index == drive.index)
+            .cloned()
+            .ok_or(ConfirmFailure::DriveChanged)?;
+        if target.identity_code != drive.identity {
+            return Err(ConfirmFailure::DriveChanged);
+        }
+        let intent = build_write_intent(&build_write_preflight(&plan, &target));
+        if intent.status != WriteIntentStatus::ConfirmationRequired {
+            return Err(ConfirmFailure::NotAllowed(intent.reason.clone()));
+        }
+        Ok(Confirmation {
+            intent,
+            expires_at_unix_seconds: self.now_unix_seconds() + 600,
+        })
+    }
+
+    fn now_unix_seconds(&self) -> u64 {
+        *self.now.lock().unwrap()
+    }
 }
 
 pub struct Studio {
@@ -106,6 +144,7 @@ pub fn studio_with(settings: Settings, drives: Vec<TargetAssessment>) -> Studio 
     let window = window();
     let engine = Arc::new(FakeEngine {
         drives: Mutex::new(drives),
+        now: Mutex::new(START_TIME),
     });
     let shell = Shell::install_with(
         &window,

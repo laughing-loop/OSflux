@@ -7,7 +7,7 @@ mod support;
 
 use osflux_studio::settings::Settings;
 use osflux_studio::steps::StepId;
-use osflux_studio::{HintIcon, Screen, Status, StepState};
+use osflux_studio::{HintIcon, MatchState, Screen, Status, StepState};
 use slint::Model;
 use support::{
     drive, frame_05_drives, studio, studio_with, system_drive, BROKEN_ISO, LINUX_ISO, MISSING_ISO,
@@ -362,4 +362,211 @@ fn done_steps_in_the_rail_go_back_to_them() {
     studio.invoke_go_to_step(0);
     assert_eq!(studio.get_screen(), Screen::Image);
     assert_eq!(app.session().borrow().step(), StepId::Image);
+}
+
+// ---- Windows options and Confirm (frames 09–14, 21) -----------------------
+
+/// Image, drive and a passed safety check, for the Windows ISO on the
+/// SanDisk stick (empty, so its code confirms).
+fn through_the_safety_check(app: &support::Studio, image: &str, drive: i32) {
+    app.open(image);
+    let studio = app.studio();
+    studio.invoke_next();
+    studio.invoke_select_drive(drive);
+    studio.invoke_next();
+    assert!(studio.get_can_go_next(), "the safety check passed");
+}
+
+#[test]
+fn windows_options_are_off_until_ticked_and_shown_everywhere() {
+    let app = studio();
+    through_the_safety_check(&app, WINDOWS_ISO, 0);
+    let studio = app.studio();
+    studio.invoke_next();
+
+    assert_eq!(studio.get_screen(), Screen::WindowsOptions);
+    assert_eq!(studio.get_step_label(), "Step 4 of 5");
+    assert!(!studio.get_option_bypass());
+    assert_eq!(
+        studio.get_hint(),
+        "All options are off. Windows Setup runs as normal."
+    );
+    assert_eq!(studio.get_summary().windows_options, "None");
+    assert_eq!(
+        studio.get_steps().row_data(2).unwrap().subtitle,
+        "Ready",
+        "done steps show the verdict"
+    );
+
+    studio.invoke_set_option(0, true);
+    studio.invoke_set_option(1, true);
+    assert!(!studio.get_can_go_next(), "a local account needs a name");
+    studio.invoke_account_name_edited("Administrator".into());
+    assert!(!studio.get_can_go_next());
+    assert!(!studio.get_account_error().is_empty());
+    studio.invoke_account_name_edited("alex".into());
+    studio.invoke_set_option(2, true);
+    assert!(studio.get_can_go_next());
+    assert_eq!(
+        studio.get_hint(),
+        "3 options are on. They apply to every PC that boots from this stick."
+    );
+    assert_eq!(
+        studio.get_summary().windows_options,
+        "Skip hardware checks · Local account (alex) · Skip privacy questions"
+    );
+
+    let setup = app.session().borrow().windows_options().setup_options();
+    assert!(setup.bypass_requirements && setup.skip_privacy_questions);
+    assert_eq!(setup.local_account.as_deref(), Some("alex"));
+
+    studio.invoke_next();
+    assert_eq!(studio.get_screen(), Screen::Confirm);
+    assert_eq!(
+        studio.get_steps().row_data(3).unwrap().subtitle,
+        "3 options on"
+    );
+    assert_eq!(
+        studio.get_confirm_options(),
+        "Skip hardware checks · Local account (alex) · Skip privacy questions"
+    );
+}
+
+#[test]
+fn an_empty_drive_is_confirmed_with_its_code() {
+    let app = studio();
+    through_the_safety_check(&app, WINDOWS_ISO, 0);
+    let studio = app.studio();
+    studio.invoke_next();
+    studio.invoke_next();
+
+    assert_eq!(studio.get_screen(), Screen::Confirm);
+    assert_eq!(studio.get_step_label(), "Step 5 of 5");
+    assert!(studio.get_confirm_short());
+    assert_eq!(studio.get_drive_code(), "7F32");
+    assert_eq!(studio.get_confirm_drive().model, "SanDisk Ultra 64GB");
+    assert_eq!(studio.get_match_state(), MatchState::Empty);
+    assert!(!studio.get_can_write());
+    assert_eq!(
+        studio.get_steps().row_data(4).unwrap().subtitle,
+        "Type the drive code"
+    );
+
+    studio.invoke_typed_edited("7f3".into());
+    assert_eq!(studio.get_typed(), "7F3", "shown in upper case");
+    assert_eq!(studio.get_match_state(), MatchState::Typing);
+    studio.invoke_typed_edited("7F3B".into());
+    assert_eq!(studio.get_match_state(), MatchState::Mismatch);
+    assert_eq!(studio.get_match_message(), "Code does not match this drive");
+    assert!(!studio.get_can_write());
+
+    studio.invoke_typed_edited("7f32".into());
+    assert_eq!(studio.get_match_state(), MatchState::Match);
+    assert_eq!(studio.get_match_message(), "Matches SanDisk Ultra 64GB");
+    assert!(studio.get_can_write());
+    assert_eq!(
+        app.session().borrow().typed(),
+        "7F32",
+        "kept exactly as shown"
+    );
+
+    studio.invoke_write();
+    assert!(studio
+        .get_hint()
+        .starts_with("Writing comes in the next Studio update"));
+}
+
+#[test]
+fn a_drive_with_files_needs_the_full_phrase_and_not_its_code() {
+    let app = studio();
+    through_the_safety_check(&app, LINUX_ISO, 2);
+    let studio = app.studio();
+    studio.invoke_next();
+
+    assert_eq!(
+        studio.get_screen(),
+        Screen::Confirm,
+        "no Windows options for Linux"
+    );
+    assert!(!studio.get_confirm_short());
+    assert_eq!(studio.get_phrase_head(), "OSFLUX ERASE TARGET 4 ");
+    assert_eq!(studio.get_phrase_code(), "7F34");
+    assert_eq!(
+        studio.get_contents_note(),
+        "This drive has files on it, so OSflux asks for the full phrase."
+    );
+    assert!(studio
+        .get_erase_title()
+        .contains("Generic SD/MMC USB Device"));
+
+    studio.invoke_typed_edited("7F34".into());
+    assert_eq!(
+        studio.get_match_state(),
+        MatchState::Mismatch,
+        "the code alone is not enough"
+    );
+    studio.invoke_typed_edited("osflux erase target 4".into());
+    assert_eq!(studio.get_match_state(), MatchState::Typing);
+    assert_eq!(studio.get_match_message(), "Keep typing…");
+    studio.invoke_typed_edited("OSFLUX ERASE TARGET 4 7F34".into());
+    assert_eq!(studio.get_match_state(), MatchState::Match);
+    assert!(studio.get_can_write());
+}
+
+#[test]
+fn an_expired_confirmation_locks_writing_until_confirmed_again() {
+    let app = studio();
+    through_the_safety_check(&app, WINDOWS_ISO, 0);
+    let studio = app.studio();
+    studio.invoke_next();
+    studio.invoke_next();
+    studio.invoke_typed_edited("7F32".into());
+    assert!(studio.get_can_write());
+
+    // Ten minutes pass.
+    *app.engine.now.lock().unwrap() = support::START_TIME + 600;
+    app.session()
+        .borrow_mut()
+        .check_expiry(support::START_TIME + 600);
+    assert!(studio.get_confirm_expired());
+    assert!(
+        !studio.get_can_write(),
+        "a matching code no longer unlocks it"
+    );
+    assert_eq!(
+        studio.get_hint(),
+        "Write to drive is locked until you confirm again."
+    );
+    assert_eq!(
+        studio.get_steps().row_data(4).unwrap().subtitle,
+        "Confirmation expired"
+    );
+
+    studio.invoke_confirm_again();
+    assert!(!studio.get_confirm_expired());
+    assert_eq!(studio.get_typed(), "", "the code is typed again");
+    assert!(!studio.get_can_write());
+}
+
+#[test]
+fn a_drive_swapped_before_confirming_is_refused() {
+    let app = studio();
+    through_the_safety_check(&app, LINUX_ISO, 0);
+    let mut other = drive(
+        2,
+        "Another stick",
+        64_023_511_040,
+        osflux_engine::TargetAssessmentStatus::Eligible,
+        "target is empty",
+    );
+    other.identity_code = Some("0BAD".to_string());
+    *app.engine.drives.lock().unwrap() = vec![other];
+    let studio = app.studio();
+    studio.invoke_next();
+
+    assert_eq!(studio.get_screen(), Screen::Confirm);
+    assert!(studio
+        .get_confirm_error()
+        .starts_with("The drive changed after the safety check"));
+    assert!(!studio.get_can_write());
 }

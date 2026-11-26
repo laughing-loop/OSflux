@@ -12,7 +12,7 @@ OSflux is a next-generation bootable media and OS deployment platform.
 - OSflux Core: low-level device access, Windows I/O bindings, and write pipeline primitives.
 - OSflux Engine: orchestration layer for image planning, write execution, and verification.
 - OSflux CLI: command-line interface for local development and operator workflows.
-- OSflux Studio: the desktop app, built with Slint on the same engine. In progress: choosing an image, choosing a drive and the safety check run on the engine; Windows options, confirming and writing come next.
+- OSflux Studio: the desktop app, built with Slint on the same engine. In progress: choosing an image, choosing a drive, the safety check, Windows options and confirming the drive run on the engine; writing comes next.
 
 ## Current Status
 
@@ -50,7 +50,7 @@ cargo run
 cargo run -- --version
 ```
 
-Run OSflux Studio, or preview a view. The views are `shell`, `settings`, `about`, `licences` and `gallery` (the component sheet), plus the steps: `image`, `drives`, `drives-none`, `safety` and `safety-blocked`. The steps read the image given with `--image` through the real engine; the drives in a preview are samples, so none is read or written.
+Run OSflux Studio, or preview a view. The views are `shell`, `settings`, `about`, `licences` and `gallery` (the component sheet), plus the steps: `image`, `drives`, `drives-none`, `safety`, `safety-blocked`, `windows-options`, `windows-options-set`, `confirm-code`, `confirm-code-wrong`, `confirm-code-match`, `confirm-phrase` and `confirm-expired`. The steps read the image given with `--image` through the real engine; the drives in a preview are samples, so none is read or written.
 
 ```powershell
 cargo run -p osflux-studio

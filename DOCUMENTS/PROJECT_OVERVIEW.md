@@ -126,9 +126,9 @@ Studio is the desktop app. It is built with Slint and calls the engine directly,
   - **Step 2, Drive.** The drives the engine allows, the ones it will not erase with the reason in plain words, and Refresh.
   - **Step 3, Safety check.** The engine's verdict and its checks in order, with the technical details. A blocked verdict offers a way back.
   - Reading images, listing drives and the safety check run in the background, so the window never freezes.
+  - **Step 4, Windows options,** for Windows ISOs only: the five Setup options above, all off by default, with a username field and no password field.
+  - **Confirm:** the drive code for an empty drive or the full phrase otherwise, as the engine requires. The engine's confirmation lasts 10 minutes; when it expires, writing locks until the drive is confirmed again.
 - **Next:**
-  - Windows options, the five Setup options above, for Windows ISOs only.
-  - Confirm: the drive code or the full phrase, as the engine requires, with the 10-minute limit.
   - Writing and verifying, with speed, time left and Cancel.
   - The Done screens, with whether the hash matched and a link to the audit log.
   - The error screens.

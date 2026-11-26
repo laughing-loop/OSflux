@@ -6,7 +6,7 @@ mod support;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use osflux_studio::session::Jobs;
 use osflux_studio::settings::{Settings, ThemeSetting};
@@ -28,10 +28,7 @@ fn install(
         settings_path,
         administrator,
         EngineSetup {
-            engine: Arc::new(FakeEngine {
-                drives: Mutex::new(frame_05_drives()),
-                now: Mutex::new(support::START_TIME),
-            }),
+            engine: Arc::new(FakeEngine::new(frame_05_drives())),
             jobs: Jobs::Inline,
             clock: || "13:28".to_string(),
         },

@@ -3,6 +3,9 @@
 // statuses, codes and phrases come from the engine.
 
 import { ThemeChoice, Status } from "theme.slint";
+import { PhaseState } from "components/progress.slint";
+
+export { PhaseState }
 
 export enum Screen { image, drive, safety, windows-options, confirm, writing, done }
 
@@ -37,6 +40,32 @@ export enum MatchState { empty, typing, mismatch, match }
 
 // The icon before the action bar's hint.
 export enum HintIcon { none, shield, lock, warning, info, log }
+
+// One write phase on the Writing screen (frames 15–17).
+export struct PhaseData {
+    title: string,
+    engine-phase: string,
+    description: string,
+    state: PhaseState,
+    percent: string,
+    progress: float,
+    speed: string,
+    done: string,
+    time: string,
+}
+
+// One line of the Done screen's result list (frames 18–20).
+export struct ResultRowData {
+    key: string,
+    key-detail: string,
+    value: string,
+    mono: bool,
+    // The value in red: the hash that does not match.
+    alert: bool,
+    status: Status,
+    status-text: string,
+    detail: string,
+}
 
 // One line of the image plan (frames 02–04).
 export struct PlanRowData {
@@ -211,6 +240,23 @@ export global Studio {
     in property <bool> confirm-expired;
     in property <bool> can-write;
 
+    // Writing and verifying (frames 15–17)
+    in property <string> write-head;
+    in property <string> write-head-detail;
+    in property <[PhaseData]> write-phases;
+    in property <bool> write-verify-off;
+    in property <bool> cancelling;
+
+    // Done (frames 18–20), and a write that did not finish
+    in property <Status> done-status: Status.none;
+    in property <string> done-band-title;
+    in property <string> done-band-body;
+    // Red band (hash mismatch, failed); amber otherwise.
+    in property <bool> done-band-red;
+    in property <[ResultRowData]> done-rows;
+    in property <string> done-next;
+    in property <string> done-primary-label;
+
     // Settings
     in-out property <bool> settings-open;
     in-out property <bool> about-open;
@@ -234,6 +280,12 @@ export global Studio {
     callback set-option(int, bool);
     callback account-name-edited(string);
     callback typed-edited(string);
+    // "Restart as Administrator" on Confirm (frame 23).
+    callback restart-as-administrator();
+    // Cancel on the Writing screen.
+    callback cancel-write();
+    // The Done screen's main button: "Write another stick" or "Try again".
+    callback done-primary();
     callback acknowledged-changed(bool);
     callback confirm-again();
     callback write();

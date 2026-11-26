@@ -4,7 +4,8 @@
 import { Theme, ThemeChoice, Status } from "theme.slint";
 import {
     Studio, Screen, StepState, StepData, SummaryData, HintIcon, DriveKind, PlanRowData, NoteData,
-    DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData, ConfirmDriveData, MatchState
+    DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData, ConfirmDriveData, MatchState,
+    PhaseState, PhaseData, ResultRowData
 } from "state.slint";
 import { SquareButton, ButtonKind } from "components/button.slint";
 import { ScrollArea } from "components/scroll.slint";
@@ -12,7 +13,7 @@ import { Header, Rail, ActionBar, StatusBar } from "shell.slint";
 import { Body, Label, Mono } from "components/text.slint";
 import {
     TitleBlock, ImageEmptyScreen, ImageCheckedScreen, DriveScreen, SafetyScreen,
-    WindowsOptionsScreen, ConfirmScreen
+    WindowsOptionsScreen, ConfirmScreen, WritingScreen, DoneScreen
 } from "screens.slint";
 import { SettingsDialog, AboutDialog } from "dialogs.slint";
 import { Gallery } from "gallery.slint";
@@ -20,6 +21,7 @@ import { Gallery } from "gallery.slint";
 export {
     Theme, ThemeChoice, Status, Studio, Screen, StepState, StepData, SummaryData, HintIcon, DriveKind,
     PlanRowData, NoteData, DriveData, BlockedDriveData, CheckData, DetailData, DetailRowData,
+    PhaseState, PhaseData, ResultRowData,
     ConfirmDriveData, MatchState, Gallery
 }
 
@@ -59,7 +61,25 @@ export component AppWindow inherits Window {
                         spacing: 24px;
 
                         TitleBlock {
-                            status: Studio.screen == Screen.safety && !Studio.safety-busy ? Studio.verdict : Status.none;
+                            status: Studio.screen == Screen.safety && !Studio.safety-busy ? Studio.verdict
+                                : Studio.screen == Screen.done ? Studio.done-status : Status.none;
+
+                            // Frames 15–17: the time left for the whole write.
+                            if Studio.screen == Screen.writing: VerticalLayout {
+                                alignment: end;
+                                spacing: 4px;
+                                Text {
+                                    text: Studio.write-head;
+                                    font-size: 20px;
+                                    color: Theme.text;
+                                    horizontal-alignment: right;
+                                }
+                                Label {
+                                    text: Studio.write-head-detail;
+                                    font-size: 13px;
+                                    horizontal-alignment: right;
+                                }
+                            }
 
                             // Frames 05–06: how much room the image needs.
                             if Studio.screen == Screen.drive && Studio.image-needs != "": VerticalLayout {
@@ -106,18 +126,42 @@ export component AppWindow inherits Window {
                         if Studio.screen == Screen.safety: SafetyScreen { }
                         if Studio.screen == Screen.windows-options: WindowsOptionsScreen { }
                         if Studio.screen == Screen.confirm: ConfirmScreen { }
+                        if Studio.screen == Screen.writing: WritingScreen { }
+                        if Studio.screen == Screen.done: DoneScreen { }
                     }
                 }
                 ActionBar {
                     hint: Studio.hint;
                     icon: Studio.hint-icon;
-                    SquareButton {
+                    if Studio.screen != Screen.writing && Studio.screen != Screen.done: SquareButton {
                         width: 127px;
                         text: "Back";
                         kind: ButtonKind.secondary;
                         enabled: Studio.can-go-back;
                         show-icon: false;
                         clicked => { Studio.back(); }
+                    }
+                    if Studio.screen == Screen.writing: SquareButton {
+                        width: 208px;
+                        text: "Cancel";
+                        kind: ButtonKind.secondary;
+                        enabled: !Studio.cancelling;
+                        icon: @image-url("icons/close.svg");
+                        clicked => { Studio.cancel-write(); }
+                    }
+                    if Studio.screen == Screen.done: SquareButton {
+                        width: 208px;
+                        text: "Open audit log";
+                        kind: ButtonKind.secondary;
+                        icon: @image-url("icons/log.svg");
+                        clicked => { Studio.open-audit-log(); }
+                    }
+                    if Studio.screen == Screen.done: SquareButton {
+                        width: 248px;
+                        text: Studio.done-primary-label;
+                        kind: ButtonKind.primary;
+                        icon: @image-url("icons/arrow-right.svg");
+                        clicked => { Studio.done-primary(); }
                     }
                     if Studio.offer-another-image: SquareButton {
                         width: 224px;
@@ -126,7 +170,7 @@ export component AppWindow inherits Window {
                         icon: @image-url("icons/file.svg");
                         clicked => { Studio.choose-image(); }
                     }
-                    if Studio.screen != Screen.confirm: SquareButton {
+                    if Studio.screen != Screen.confirm && Studio.screen != Screen.writing && Studio.screen != Screen.done: SquareButton {
                         width: 177px;
                         text: "Next";
                         kind: ButtonKind.primary;

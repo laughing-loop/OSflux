@@ -5,8 +5,9 @@
 //!
 //! `--preview <view> [--image file] [--theme dark|light] [--not-admin]
 //! [--verify-off] [--snapshot file.png]`, where the view is one of shell,
-//! settings, about, licences, gallery, image, drives, drives-none, safety or
-//! safety-blocked.
+//! settings, about, licences, gallery, image, drives, drives-none, safety,
+//! safety-blocked, the Windows options and Confirm views, writing,
+//! verifying, done or done-mismatch.
 //!
 //! The steps read the image given with `--image` through the real engine.
 //! The drives are samples, matching the design's frames, so no drive is
@@ -17,9 +18,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use osflux_engine::{
-    build_safety_check, build_write_intent, build_write_preflight, plan_image, DeviceAccess,
-    DriveContents, DriveContentsState, DrivePartition, FilesystemKind, SafetyCheck,
-    TargetAssessment, TargetAssessmentStatus, WriteIntentStatus,
+    build_safety_check, build_write_intent, build_write_preflight, plan_image, CancelToken,
+    DeviceAccess, DriveContents, DriveContentsState, DrivePartition, FilesystemKind, RawWritePhase,
+    RawWriteProgress, RawWriteReport, SafetyCheck, TargetAssessment, TargetAssessmentStatus,
+    Verification, WriteIntentStatus,
 };
 use slint::ComponentHandle;
 
@@ -30,6 +32,7 @@ use crate::safety_step::SafetyFailure;
 use crate::session::{Engine, Jobs};
 use crate::settings::{Settings, ThemeSetting};
 use crate::shell::{self, EngineSetup, Shell};
+use crate::write_step::{WriteFailure, WriteRequest};
 use crate::{AppWindow, Gallery, Studio, Theme};
 
 /// How long a window is given to lay out and draw before the snapshot.
@@ -72,7 +75,20 @@ pub enum View {
     ConfirmPhrase,
     /// Frame 21: the confirmation has expired.
     ConfirmExpired,
+    /// Frame 15 (17 with --verify-off): writing, 46% done.
+    Writing,
+    /// Frame 16: verifying, after writing.
+    Verifying,
+    /// Frame 18 (19 with --verify-off): written, with the expected SHA-256
+    /// entered and matching.
+    Done,
+    /// Frame 20: written, but the expected SHA-256 differs.
+    DoneMismatch,
 }
+
+/// The image's SHA-256 in the design's frames.
+const SAMPLE_SHA256: &str = "2A1AB0D46D7285F738D082858925D3303F3DC430F0A4EAB5AA238325A4274906";
+const SAMPLE_IMAGE_BYTES: u64 = 9_030_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
@@ -118,6 +134,10 @@ impl Options {
                 "confirm-files-ticked" => options.view = View::ConfirmFilesTicked,
                 "confirm-phrase" => options.view = View::ConfirmPhrase,
                 "confirm-expired" => options.view = View::ConfirmExpired,
+                "writing" => options.view = View::Writing,
+                "verifying" => options.view = View::Verifying,
+                "done" => options.view = View::Done,
+                "done-mismatch" => options.view = View::DoneMismatch,
                 "--image" => options.image = args.next().map(PathBuf::from),
                 "--theme" => match args.next().as_deref() {
                     Some("dark") => options.settings.theme = ThemeSetting::Dark,
@@ -196,6 +216,59 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
                 _ => {}
             }
         }
+        View::Writing | View::Verifying | View::Done | View::DoneMismatch => {
+            let mut session = session.borrow_mut();
+            if matches!(options.view, View::Done | View::DoneMismatch) {
+                let expected = if options.view == View::Done {
+                    SAMPLE_SHA256
+                } else {
+                    "A1ACC315D73B2A9CDF67FECB16403D751C99B6E50983382663FE0745CDFCDB13"
+                };
+                studio.set_expected_sha(expected.into());
+                session.expected_sha_edited(expected);
+            }
+            session.next();
+            session.select_drive(0);
+            session.next();
+            session.next();
+            for option in 0..3 {
+                session.set_option(option, true);
+            }
+            studio.set_account_name("alex".into());
+            session.account_name_edited("alex");
+            session.next();
+            studio.set_typed("7F3A".into());
+            session.typed_edited("7F3A");
+            match options.view {
+                View::Writing => session.show_write_progress(
+                    RawWriteProgress {
+                        phase: RawWritePhase::Writing,
+                        completed_bytes: 4_155_000_000,
+                        total_bytes: SAMPLE_IMAGE_BYTES,
+                    },
+                    197.0,
+                ),
+                View::Verifying => {
+                    session.show_write_progress(
+                        RawWriteProgress {
+                            phase: RawWritePhase::Writing,
+                            completed_bytes: SAMPLE_IMAGE_BYTES,
+                            total_bytes: SAMPLE_IMAGE_BYTES,
+                        },
+                        451.0,
+                    );
+                    session.show_write_progress(
+                        RawWriteProgress {
+                            phase: RawWritePhase::Verifying,
+                            completed_bytes: 2_560_000_000,
+                            total_bytes: SAMPLE_IMAGE_BYTES,
+                        },
+                        125.0,
+                    );
+                }
+                _ => session.write(),
+            }
+        }
         View::WindowsOptions
         | View::WindowsOptionsSet
         | View::ConfirmCode
@@ -262,6 +335,34 @@ struct SampleEngine {
 const PREVIEW_TIME: u64 = 1_800_000_000;
 
 impl Engine for SampleEngine {
+    /// A finished write as the design's frames show it. Nothing is written.
+    fn write(
+        &self,
+        request: &WriteRequest,
+        _cancel: &CancelToken,
+        _progress: &mut dyn FnMut(RawWriteProgress),
+    ) -> Result<RawWriteReport, WriteFailure> {
+        let verify = request.verify;
+        Ok(RawWriteReport {
+            session_id: "OSFLUX-SESSION-PREVIEW".to_string(),
+            image_path: request.image.display().to_string(),
+            target_path: format!("\\\\.\\PhysicalDrive{}", request.target_index),
+            target_identity_code: request.typed.clone(),
+            image_sha256: SAMPLE_SHA256.to_ascii_lowercase(),
+            bytes_written: SAMPLE_IMAGE_BYTES,
+            bytes_verified: if verify { SAMPLE_IMAGE_BYTES } else { 0 },
+            verification: if verify {
+                Verification::ReadBack
+            } else {
+                Verification::Skipped
+            },
+            forced_dismount: false,
+            write_millis: 451_000,
+            verify_millis: if verify { 451_000 } else { 0 },
+            audit_recorded: true,
+        })
+    }
+
     fn analyze_image(&self, path: &Path) -> Result<ImageAnalysis, String> {
         analyze_image(path)
     }

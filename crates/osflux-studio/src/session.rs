@@ -1,22 +1,24 @@
 //! One pass through the steps: the chosen image, the drives, the chosen
 //! drive and the safety check, and what the window shows at each step.
 //!
-//! Reading an image, listing drives and running the safety check can take
-//! seconds, so they run on a worker thread and their results come back to
-//! the UI thread. Every verdict comes from the engine; the session only
-//! keeps what the person chose and shows what the engine said about it.
+//! Reading an image, listing drives, the safety check and writing can take
+//! seconds or minutes, so they run on a worker thread and their results come
+//! back to the UI thread. Every verdict comes from the engine; the session
+//! only keeps what the person chose and shows what the engine said about it.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use osflux_engine::{
-    assess_all_targets, create_write_intent, now_unix_seconds, record_write_authorization,
-    run_safety_check, AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, SafetyCheck,
-    SafetyCheckError, Sha256Hex, Sha256ParseError, TargetAssessment, TargetAssessmentError,
-    WriteIntentStatus, WritePreflightError,
+    assess_all_targets, create_write_intent, now_unix_seconds, prepare_raw_write,
+    read_region_settings, record_write_authorization, run_safety_check, write_image_to_target,
+    AuditEvent, AuditEventKind, AuditLog, AuthorizationStore, CancelToken, RawWritePhase,
+    RawWritePlan, RawWriteProgress, RawWriteReport, SafetyCheck, SafetyCheckError, Sha256Hex,
+    Sha256ParseError, TargetAssessment, TargetAssessmentError, Verification, WriteIntentStatus,
+    WritePreflightError, DEFAULT_CHUNK_SIZE_BYTES,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
@@ -36,9 +38,13 @@ use crate::shell::rail_model;
 use crate::steps::{
     build_rail, step_label, steps_for, Flow, StepId, StepView, Subtitle, RAIL_NAME_CHARS,
 };
+use crate::write_step::{
+    done_view, writing_view, DoneInputs, DoneKind, DoneView, WriteFailure, WriteOutcome,
+    WriteRequest, WriteTracker,
+};
 use crate::{
     AppWindow, BlockedDriveData, CheckData, ConfirmDriveData, DetailRowData, DriveData, DriveKind,
-    HintIcon, NoteData, PlanRowData, Screen, Status, Studio, SummaryData,
+    HintIcon, NoteData, PhaseData, PlanRowData, ResultRowData, Screen, Status, Studio, SummaryData,
 };
 
 /// The engine calls a session makes. [`LiveEngine`] is the real engine;
@@ -54,6 +60,19 @@ pub trait Engine: Send + Sync {
     /// The time, for telling when a confirmation has expired.
     fn now_unix_seconds(&self) -> u64 {
         now_unix_seconds()
+    }
+    /// Writes the image as the engine decides, reporting progress, and
+    /// stops between chunks once `cancel` is set.
+    fn write(
+        &self,
+        request: &WriteRequest,
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(RawWriteProgress),
+    ) -> Result<RawWriteReport, WriteFailure> {
+        let _ = (request, cancel, progress);
+        Err(WriteFailure::Failed(
+            "writing is not available in this preview".to_string(),
+        ))
     }
 }
 
@@ -122,6 +141,60 @@ impl Engine for LiveEngine {
             expires_at_unix_seconds,
         })
     }
+
+    fn write(
+        &self,
+        request: &WriteRequest,
+        cancel: &CancelToken,
+        progress: &mut dyn FnMut(RawWriteProgress),
+    ) -> Result<RawWriteReport, WriteFailure> {
+        let store = AuthorizationStore::default_location()
+            .map_err(|error| WriteFailure::Failed(error.to_string()))?;
+        let audit = AuditLog::default_location().ok_or_else(|| {
+            WriteFailure::Failed("OSflux could not find where to keep its audit log".to_string())
+        })?;
+        let mut setup = request.setup.clone();
+        if request.copy_region {
+            setup.region = Some(read_region_settings().map_err(|error| {
+                WriteFailure::Failed(format!("this PC's region could not be read: {error}"))
+            })?);
+        }
+        let plan = match prepare_raw_write(
+            &request.image,
+            request.target_index,
+            request.supplied(),
+            DEFAULT_CHUNK_SIZE_BYTES,
+            &setup,
+            &store,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                // As the CLI does: a refused write is recorded too.
+                let event = AuditEvent::new(
+                    AuditEventKind::WriteRefused,
+                    request.image.display().to_string(),
+                    request.target_index,
+                )
+                .with_detail(error.to_string());
+                if let Err(record) = audit.record(&event) {
+                    crate::log!("audit: could not record the refused write: {record}");
+                }
+                return Err(WriteFailure::from_error(&error));
+            }
+        };
+        let plan = RawWritePlan {
+            verification: if request.verify {
+                Verification::ReadBack
+            } else {
+                Verification::Skipped
+            },
+            cancel: cancel.clone(),
+            ..plan
+        };
+        // Studio never forces a busy drive free; it says the drive is in use.
+        write_image_to_target(&plan, &store, &audit, |_| false, progress)
+            .map_err(|error| WriteFailure::from_error(&error))
+    }
 }
 
 /// Where engine calls run.
@@ -136,6 +209,16 @@ pub enum Jobs {
 thread_local! {
     // The session that background results are delivered to, on the UI thread.
     static ACTIVE: RefCell<Weak<RefCell<Session>>> = const { RefCell::new(Weak::new()) };
+}
+
+enum WriteState {
+    Running {
+        tracker: WriteTracker,
+        cancel: CancelToken,
+        phase: RawWritePhase,
+        phase_started: Instant,
+    },
+    Finished(WriteOutcome),
 }
 
 struct LoadedImage {
@@ -182,8 +265,9 @@ pub struct Session {
     expired: bool,
     /// Checks every second whether the confirmation has expired.
     expiry_timer: Timer,
-    /// Write to drive was pressed; writing arrives in the next update.
-    write_requested: bool,
+    /// The write in progress, or how the last one ended.
+    write: Option<WriteState>,
+    write_job: u64,
     me: Weak<RefCell<Session>>,
 }
 
@@ -225,7 +309,8 @@ impl Session {
             acknowledged: false,
             expired: false,
             expiry_timer: Timer::default(),
-            write_requested: false,
+            write: None,
+            write_job: 0,
             me: Weak::new(),
         }));
         session.borrow_mut().me = Rc::downgrade(&session);
@@ -300,6 +385,10 @@ impl Session {
     }
 
     pub fn next(&mut self) {
+        if self.write.is_some() {
+            self.render();
+            return;
+        }
         match self.step {
             StepId::Image => {
                 let ready = !self.image_busy
@@ -364,8 +453,12 @@ impl Session {
     }
 
     fn go_to(&mut self, step: StepId) {
+        if self.writing() {
+            self.render();
+            return;
+        }
         self.step = step;
-        self.write_requested = false;
+        self.write = None;
         if step == StepId::Drive && !self.drives_busy {
             // Sticks come and go; list them afresh each time.
             self.scan_drives();
@@ -421,7 +514,6 @@ impl Session {
             }
         }
         self.typed = typed;
-        self.write_requested = false;
         self.render();
     }
 
@@ -433,7 +525,6 @@ impl Session {
     /// The box naming what will be lost was ticked or cleared.
     pub fn acknowledged_changed(&mut self, acknowledged: bool) {
         self.acknowledged = acknowledged;
-        self.write_requested = false;
         self.render();
     }
 
@@ -447,13 +538,193 @@ impl Session {
         self.start_confirm();
     }
 
-    /// Write to drive. Writing arrives in the next update; for now this
-    /// only says so, and nothing is written.
+    /// Write to drive: the engine checks the confirmation and the drive
+    /// once more, then writes and reads back.
     pub fn write(&mut self) {
-        if self.confirm_view().is_some_and(|view| view.can_write) {
-            self.write_requested = true;
+        let unlocked = self.confirm_view().is_some_and(|view| view.can_write);
+        if !unlocked || !self.administrator() || self.write.is_some() {
+            self.render();
+            return;
+        }
+        let (Some(image), Some(Ok(confirmation))) = (&self.image, &self.confirmation) else {
+            self.render();
+            return;
+        };
+        let windows = self.flow() == Flow::Windows;
+        let request = WriteRequest {
+            image: image.path.clone(),
+            target_index: confirmation.intent.target_index,
+            typed: self.typed.clone(),
+            acknowledgement: confirmation
+                .acknowledgement()
+                .filter(|_| self.acknowledged)
+                .map(str::to_string),
+            setup: if windows {
+                self.windows_options.setup_options()
+            } else {
+                Default::default()
+            },
+            copy_region: windows && self.windows_options.copy_region,
+            verify: self.verify,
+        };
+        crate::log!(
+            "write: starting on drive {} ({}), verify {}",
+            request.target_index,
+            request.supplied().typed().len(),
+            request.verify
+        );
+        self.write_job += 1;
+        let job = self.write_job;
+        let cancel = CancelToken::new();
+        self.write = Some(WriteState::Running {
+            tracker: WriteTracker::new(request.verify),
+            cancel: cancel.clone(),
+            phase: RawWritePhase::Writing,
+            phase_started: Instant::now(),
+        });
+        self.expiry_timer.stop();
+        self.render();
+
+        match self.jobs {
+            Jobs::Inline => {
+                let mut events = Vec::new();
+                let result = self
+                    .engine
+                    .write(&request, &cancel, &mut |event| events.push(event));
+                for event in events {
+                    self.write_progress(job, event);
+                }
+                self.write_finished(job, result);
+            }
+            Jobs::Background => {
+                let engine = Arc::clone(&self.engine);
+                std::thread::spawn(move || {
+                    let result = engine.write(&request, &cancel, &mut |event| {
+                        let _ = slint::invoke_from_event_loop(move || {
+                            apply_when_free(move |session| session.write_progress(job, event));
+                        });
+                    });
+                    let _ = slint::invoke_from_event_loop(move || {
+                        apply_when_free(move |session| session.write_finished(job, result));
+                    });
+                });
+            }
+        }
+    }
+
+    /// True while a write is running.
+    pub fn writing(&self) -> bool {
+        matches!(self.write, Some(WriteState::Running { .. }))
+    }
+
+    fn administrator(&self) -> bool {
+        self.window
+            .upgrade()
+            .is_none_or(|window| window.global::<Studio>().get_administrator())
+    }
+
+    fn write_progress(&mut self, job: u64, event: RawWriteProgress) {
+        if job != self.write_job {
+            return;
+        }
+        let Some(WriteState::Running {
+            tracker,
+            phase,
+            phase_started,
+            ..
+        }) = &mut self.write
+        else {
+            return;
+        };
+        if event.phase != *phase {
+            *phase = event.phase;
+            *phase_started = Instant::now();
+        }
+        let seconds = phase_started.elapsed().as_secs_f64();
+        tracker.update(event, seconds);
+        self.render();
+    }
+
+    /// Shows progress as if `phase_seconds` had passed in its phase, with a
+    /// stand-in write when none is running: for previews and tests, which
+    /// cannot wait for a real stick. Nothing is written.
+    pub fn show_write_progress(&mut self, event: RawWriteProgress, phase_seconds: f64) {
+        if self.write.is_none() {
+            self.write = Some(WriteState::Running {
+                tracker: WriteTracker::new(self.verify),
+                cancel: CancelToken::new(),
+                phase: event.phase,
+                phase_started: Instant::now(),
+            });
+        }
+        if let Some(WriteState::Running { tracker, phase, .. }) = &mut self.write {
+            *phase = event.phase;
+            tracker.update(event, phase_seconds);
         }
         self.render();
+    }
+
+    fn write_finished(&mut self, job: u64, result: Result<RawWriteReport, WriteFailure>) {
+        if job != self.write_job {
+            return;
+        }
+        match &result {
+            Ok(report) => crate::log!(
+                "write: finished, {} bytes written, {} verified",
+                report.bytes_written,
+                report.bytes_verified
+            ),
+            Err(failure) => crate::log!("write: did not finish: {failure:?}"),
+        }
+        match result {
+            // Nothing was written: back to Confirm, as frames 21 and 22 show.
+            Err(WriteFailure::Expired) => {
+                self.write = None;
+                self.expired = true;
+            }
+            Err(WriteFailure::DriveChanged(_)) => {
+                self.write = None;
+                self.confirmation = Some(Err(ConfirmFailure::DriveChanged));
+            }
+            Ok(report) => self.write = Some(WriteState::Finished(WriteOutcome::Written(report))),
+            Err(failure) => {
+                self.write = Some(WriteState::Finished(WriteOutcome::NotWritten(failure)))
+            }
+        }
+        self.render();
+    }
+
+    /// Cancel on the Writing screen: the engine stops after the current
+    /// chunk.
+    pub fn cancel_write(&mut self) {
+        if let Some(WriteState::Running {
+            tracker, cancel, ..
+        }) = &mut self.write
+        {
+            crate::log!("write: cancel requested");
+            cancel.cancel();
+            tracker.cancelling = true;
+        }
+        self.render();
+    }
+
+    /// The Done screen's main button. After a write: another stick with the
+    /// same image. After one that did not finish: confirm the drive again.
+    pub fn done_primary(&mut self) {
+        match &self.write {
+            Some(WriteState::Finished(WriteOutcome::Written(_))) => {
+                self.write = None;
+                self.chosen = None;
+                self.safety = None;
+                self.clear_confirmation();
+                self.go_to(StepId::Drive);
+            }
+            Some(WriteState::Finished(WriteOutcome::NotWritten(_))) => {
+                self.write = None;
+                self.start_confirm();
+            }
+            _ => self.render(),
+        }
     }
 
     /// Marks the confirmation expired once its 10 minutes are up. Called
@@ -463,10 +734,9 @@ impl Session {
             &self.confirmation,
             Some(Ok(confirmation)) if confirmation.expired(now_unix_seconds)
         );
-        if expired && !self.expired {
+        if expired && !self.expired && self.write.is_none() {
             crate::log!("confirm: the confirmation expired");
             self.expired = true;
-            self.write_requested = false;
             self.expiry_timer.stop();
             self.render();
         }
@@ -479,7 +749,6 @@ impl Session {
         self.typed.clear();
         self.acknowledged = false;
         self.expired = false;
-        self.write_requested = false;
         self.expiry_timer.stop();
         if let Some(window) = self.window.upgrade() {
             window.global::<Studio>().set_typed(SharedString::new());
@@ -795,8 +1064,19 @@ impl Session {
                 self.render_safety(&studio, safety.as_ref());
             }
             StepId::WindowsOptions => self.render_windows_options(&studio),
-            StepId::Confirm => self.render_confirm(&studio),
+            StepId::Confirm => match &self.write {
+                Some(WriteState::Running { tracker, .. }) => {
+                    label = "Writing".to_string();
+                    self.render_writing(&studio, tracker);
+                }
+                Some(WriteState::Finished(outcome)) => {
+                    label = "Done".to_string();
+                    self.render_done(&studio, outcome);
+                }
+                None => self.render_confirm(&studio),
+            },
         }
+        studio.set_writing(self.writing());
         studio.set_step_label(label.into());
     }
 
@@ -846,19 +1126,42 @@ impl Session {
                 Subtitle::Text(self.windows_options.rail_subtitle()),
             ));
         }
+        let done = match &self.write {
+            Some(WriteState::Finished(outcome)) => Some(self.done_view_for(outcome)),
+            _ => None,
+        };
         if self.step == StepId::Confirm {
-            let text = if self.confirm_busy {
-                "Preparing…"
-            } else if let Some(view) = self.confirm_view() {
-                view.rail_subtitle
-            } else {
-                "Confirm the drive"
+            let text = match (&self.write, &done) {
+                (Some(WriteState::Running { tracker, .. }), _) => {
+                    writing_view(tracker, "").rail_subtitle
+                }
+                (_, Some(view)) => view.rail_subtitle,
+                _ if self.confirm_busy => "Preparing…",
+                _ => match self.confirm_view() {
+                    Some(view) => view.rail_subtitle,
+                    None => "Confirm the drive",
+                },
             };
             subtitles.push((StepId::Confirm, Subtitle::Text(text.to_string())));
         }
-        let blocked = (self.step == StepId::Safety && safety.is_some_and(|view| view.rail_blocked))
-            .then_some(StepId::Safety);
-        build_rail(flow, self.step, blocked, &subtitles)
+        let blocked = if self.step == StepId::Safety && safety.is_some_and(|view| view.rail_blocked)
+        {
+            Some(StepId::Safety)
+        } else if done.as_ref().is_some_and(|view| view.rail_blocked) {
+            Some(StepId::Confirm)
+        } else {
+            None
+        };
+        let mut rail = build_rail(flow, self.step, blocked, &subtitles);
+        // A finished write: Confirm is done, as frames 18 and 19 show.
+        if done.as_ref().is_some_and(|view| !view.rail_blocked) {
+            for step in &mut rail {
+                if step.id == StepId::Confirm {
+                    step.state = crate::steps::StepState::Done;
+                }
+            }
+        }
+        rail
     }
 
     fn summary(&self, flow: Flow) -> SummaryData {
@@ -1177,16 +1480,98 @@ impl Session {
         })));
         studio.set_match_state(view.match_state);
         studio.set_match_message(view.match_message.clone().into());
-        studio.set_can_write(view.can_write);
-        if self.write_requested {
-            studio.set_hint(
-                "Writing comes in the next Studio update. Nothing has been written.".into(),
-            );
-            studio.set_hint_icon(HintIcon::Info);
+        let administrator = self.administrator();
+        studio.set_can_write(view.can_write && administrator);
+        if !administrator && !self.expired {
+            // Frame 23.
+            studio.set_hint("Write to drive needs Administrator rights.".into());
+            studio.set_hint_icon(HintIcon::Lock);
         } else {
             studio.set_hint(view.hint.into());
             studio.set_hint_icon(view.hint_icon);
         }
+    }
+
+    fn chosen_model(&self) -> String {
+        self.chosen
+            .as_ref()
+            .map(|chosen| chosen.model.clone())
+            .unwrap_or_default()
+    }
+
+    fn done_view_for(&self, outcome: &WriteOutcome) -> DoneView {
+        let image_name = self
+            .image
+            .as_ref()
+            .map(|image| image.analysis.plan.file_name.clone())
+            .unwrap_or_default();
+        done_view(DoneInputs {
+            outcome,
+            image_name: &image_name,
+            model: &self.chosen_model(),
+            expected: self.expected_sha.as_ref(),
+            uefi_only: self.flow() == Flow::Windows,
+        })
+    }
+
+    /// Writing and verifying (frames 15–17).
+    fn render_writing(&self, studio: &Studio<'_>, tracker: &WriteTracker) {
+        let view = writing_view(tracker, &self.chosen_model());
+        studio.set_screen(Screen::Writing);
+        studio.set_title(view.title.into());
+        studio.set_description(view.description.into());
+        studio.set_can_go_back(false);
+        studio.set_can_go_next(false);
+        studio.set_can_write(false);
+        studio.set_cancelling(tracker.cancelling);
+        studio.set_write_head(view.head.into());
+        studio.set_write_head_detail(view.head_detail.into());
+        studio.set_write_verify_off(view.verify_off);
+        studio.set_write_phases(model(view.phases.into_iter().map(|phase| PhaseData {
+            title: phase.title.into(),
+            engine_phase: phase.engine_phase.into(),
+            description: phase.description.into(),
+            state: phase.state,
+            percent: phase.percent.into(),
+            progress: phase.progress,
+            speed: phase.speed.into(),
+            done: phase.done.into(),
+            time: phase.time.into(),
+        })));
+        studio.set_hint(view.hint.into());
+        studio.set_hint_icon(view.hint_icon);
+    }
+
+    /// Done (frames 18–20), or a write that did not finish.
+    fn render_done(&self, studio: &Studio<'_>, outcome: &WriteOutcome) {
+        let view = self.done_view_for(outcome);
+        studio.set_screen(Screen::Done);
+        studio.set_title(view.title.into());
+        studio.set_description(view.description.clone().into());
+        studio.set_can_go_back(false);
+        studio.set_can_go_next(false);
+        studio.set_can_write(false);
+        studio.set_done_status(view.status);
+        studio.set_done_band_title(view.band_title.clone().into());
+        studio.set_done_band_body(view.band_body.clone().into());
+        studio.set_done_band_red(matches!(
+            view.kind,
+            DoneKind::HashMismatch | DoneKind::Failed
+        ));
+        studio.set_done_rows(model(view.rows.iter().map(|row| ResultRowData {
+            key: row.key.clone().into(),
+            key_detail: row.key_detail.clone().into(),
+            value: row.value.clone().into(),
+            mono: row.mono,
+            alert: row.alert,
+            status: row.status,
+            status_text: row.status_text.clone().into(),
+            detail: row.detail.clone().into(),
+        })));
+        studio.set_done_next(view.next_step.into());
+        studio.set_done_primary_label(view.primary.into());
+        studio.set_hint(view.hint.into());
+        studio.set_hint_icon(view.hint_icon);
     }
 }
 

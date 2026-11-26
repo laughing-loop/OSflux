@@ -3,6 +3,7 @@
 
 pub mod clock;
 pub mod drop;
+pub mod elevate;
 pub mod icon;
 pub mod picker;
 

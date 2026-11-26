@@ -47,7 +47,9 @@ The first release, 0.1.0, will contain everything below.
       - A drive with files is confirmed with the same code and a ticked box that says what will be lost, such as "Erase SMI USB DISK (14.8 GB) and the 1 partition with files on it". A drive whose contents could not be read still needs the full phrase.
       - The engine records a one-time confirmation that lasts 10 minutes, as `--intent` does. When it expires, writing locks until the drive is confirmed again.
       - Studio keeps exactly what was typed, and the box's text as the engine wrote it, for the engine.
-      - "Write to drive" unlocks only on a match. Writing itself comes next.
+      - "Write to drive" unlocks only on a match. Without Administrator rights it stays locked, and "Restart as Administrator" starts Studio again through the UAC prompt.
+    - **Writing and verifying:** the engine checks the confirmation and the drive once more, then writes and reads back, with each phase's progress, speed, amount done and time left. Cancel stops after the current chunk; the stick then needs writing again. Studio never forces a busy drive free: it says another program is using the drive.
+    - **Done:** "Written and verified", "Written, not verified" or "Hash mismatch" when the image's SHA-256 differs from the one entered, with the result list and the next step. A write that was cancelled or failed says so and offers to try again. "Write another stick" goes back to the drives with the same image.
   - Reading images, listing drives, the safety check and the confirmation run off the UI thread.
   - Studio keeps a log, `studio.log` in OSflux's state folder, with startup times, the renderer and each step of setting up dropped files.
   - On Windows Studio draws with Slint's software renderer, which opens the window in about 0.2 s instead of about 1.2 s with OpenGL. `SLINT_BACKEND=winit-femtovg` selects OpenGL.
@@ -57,6 +59,7 @@ The first release, 0.1.0, will contain everything below.
   - `run_safety_check` splits the preflight verdict into its checks, in the same order and with the same outcome. It also notices when a different drive has taken the chosen drive's place.
   - `Sha256Hex` parses an expected SHA-256.
   - `detect_plan_family` detects an already-planned image's family without reading the image again.
+  - A write can be stopped between chunks through the plan's `CancelToken`. The audit log records it as `write-cancelled`, and the error says whether anything reached the drive.
   - A third confirmation form, the identity code with an acknowledgement that names what will be lost (`identity-code-contents-acknowledged`), for drives with files whose partitions could be read. The engine writes the acknowledgement, records it with a fingerprint of the drive's partition layout in the one-time confirmation, checks both again before writing and once more after locking the drive, and records the form and the text in the audit log. The CLI keeps the full phrase.
   - IBM Plex Sans and Mono are embedded under the SIL Open Font License. `osflux-studio.exe` carries the OSflux icon and asks for Administrator when it opens.
 

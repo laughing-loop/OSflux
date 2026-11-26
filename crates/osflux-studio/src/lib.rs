@@ -21,6 +21,7 @@ pub mod shell;
 pub mod steps;
 pub mod system;
 pub mod windows_options;
+pub mod write_step;
 
 #[cfg(feature = "preview")]
 pub mod preview;

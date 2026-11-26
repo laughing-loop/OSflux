@@ -7,9 +7,10 @@ import { StatusIcon, StatusLabel } from "components/status.slint";
 import { SquareButton, ButtonKind, GhostButton } from "components/button.slint";
 import { Band, BandKind, Tag } from "components/band.slint";
 import { TextField, OptionRow, CodeBoxes, PhraseField, MatchMessage, AcknowledgeRow } from "components/inputs.slint";
+import { PhaseProgress } from "components/progress.slint";
 import { Tooltip } from "components/tooltip.slint";
 import {
-    SectionHeader, KeyValueRow, NoteRow, DriveTableHeader, DriveRow, BlockedDriveRow,
+    SectionHeader, KeyValueRow, ResultRow, NoteRow, DriveTableHeader, DriveRow, BlockedDriveRow,
     ChecklistRow, DetailGrid, DriveIcon
 } from "components/rows.slint";
 
@@ -822,6 +823,7 @@ component InfoNote inherits HorizontalLayout {
 export component ConfirmScreen inherits VerticalLayout {
     spacing: 0;
 
+
     if Studio.confirm-error != "": Band {
         kind: BandKind.red;
         title: "No confirmation";
@@ -1050,6 +1052,105 @@ export component ConfirmScreen inherits VerticalLayout {
                     icon: @image-url("icons/refresh.svg");
                     clicked => { Studio.confirm-again(); }
                 }
+            }
+        }
+    }
+    // Frame 23: without Administrator rights nothing can be written; the
+    // way out sits under the confirmation.
+    if !Studio.administrator && Studio.confirm-error == "" && !Studio.confirm-busy && !Studio.confirm-expired: VerticalLayout {
+        Rectangle {
+            height: 24px;
+        }
+        Band {
+            kind: BandKind.amber;
+            title: "Restart OSflux as Administrator to write";
+            body: "Windows only lets programs running as Administrator write to a drive.";
+            VerticalLayout {
+                alignment: center;
+                SquareButton {
+                    width: 240px;
+                    button-height: 48px;
+                    text: "Restart as Administrator";
+                    kind: ButtonKind.secondary;
+                    icon: @image-url("icons/shield.svg");
+                    clicked => { Studio.restart-as-administrator(); }
+                }
+            }
+        }
+    }
+}
+
+// Writing and verifying (frames 15–17): one card per phase, the speed note,
+// and, with verification off, the amber reminder.
+export component WritingScreen inherits VerticalLayout {
+    spacing: 24px;
+
+    if Studio.write-verify-off: Band {
+        kind: BandKind.amber;
+        compact: true;
+        body: "Verification: off. A fake or failing stick won't be caught.";
+    }
+    for phase in Studio.write-phases: PhaseProgress {
+        title: phase.title;
+        engine-phase: phase.engine-phase;
+        description: phase.description;
+        state: phase.state;
+        progress: phase.progress;
+        speed: phase.speed;
+        done: phase.done;
+        time: phase.time;
+    }
+    InfoNote {
+        text: "The stick sets the speed. A USB 3 stick in a USB 3 port is usually 3–4× faster.";
+    }
+}
+
+// Done (frames 18–20), and a write that was cancelled or failed: the band
+// when there is something to do, the result list, and the next step.
+export component DoneScreen inherits VerticalLayout {
+    spacing: 24px;
+
+    if Studio.done-band-title != "": Band {
+        kind: Studio.done-band-red ? BandKind.red : BandKind.amber;
+        title: Studio.done-band-title;
+        body: Studio.done-band-body;
+    }
+    VerticalLayout {
+        spacing: 0;
+        SectionHeader {
+            title: "Result";
+        }
+        for row in Studio.done-rows: ResultRow {
+            key: row.key;
+            key-detail: row.key-detail;
+            value: row.value;
+            mono: row.mono;
+            value-color: row.alert ? Theme.status-blocked : Theme.text;
+            status: row.status;
+            status-text: row.status-text;
+            detail: row.detail;
+        }
+    }
+    if Studio.done-next != "": Rectangle {
+        background: Theme.layer-01;
+        min-height: next-row.min-height;
+        next-row := HorizontalLayout {
+            padding: 24px;
+            spacing: 16px;
+            VerticalLayout {
+                alignment: start;
+                padding-top: 2px;
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    source: @image-url("icons/arrow-right.svg");
+                    colorize: Theme.link;
+                }
+            }
+            Body {
+                text: Studio.done-next;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
             }
         }
     }

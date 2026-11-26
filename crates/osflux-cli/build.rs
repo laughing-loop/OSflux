@@ -18,17 +18,20 @@ fn main() {
 
     let mut resource = winresource::WindowsResource::new();
     resource.set_icon(icon.to_str().expect("the icon path is valid UTF-8"));
-    // Shown in the file's Properties and in Task Manager. The version
-    // numbers come from Cargo.toml.
+    // Shown in the file's Properties and in Task Manager. Code signing
+    // (SignPath) needs the product name to be the project's and the version
+    // to be the same in every file of a release, so both programs say
+    // "OSflux" and take the version from Cargo.toml.
+    let version = env::var("CARGO_PKG_VERSION").expect("set by Cargo");
     resource
         .set("ProductName", "OSflux")
-        .set("FileDescription", "OSflux")
+        .set("FileDescription", "OSflux command line")
         .set("InternalName", "osflux")
         .set("OriginalFilename", "osflux.exe")
-        .set(
-            "LegalCopyright",
-            "Copyright (C) 2026 HOD Technologies Limited",
-        );
+        .set("CompanyName", "Joly Doh")
+        .set("LegalCopyright", "Copyright (C) 2026 Joly Doh")
+        .set("ProductVersion", &version)
+        .set("FileVersion", &version);
     if let Err(error) = resource.compile() {
         panic!(
             "could not embed the Windows icon from {}: {error}. On Windows this needs the \

@@ -7,6 +7,14 @@
 
 OSflux is a next-generation bootable media and OS deployment platform.
 
+## Download and run
+
+1. Download `osflux-<version>-windows-x64.zip` from [Releases](https://github.com/laughing-loop/OSflux/releases) and unzip it. It runs on Windows 10 and 11, 64-bit.
+2. Optionally, check the zip against `SHA256SUMS.txt` from the same release: `Get-FileHash osflux-<version>-windows-x64.zip`.
+3. Open `osflux-studio.exe`, the desktop app. It asks for Administrator, which writing to a drive needs. `osflux.exe` is the same engine on the command line.
+
+The programs are not code-signed yet, so Windows SmartScreen may say it protected your PC. Choose **More info**, then **Run anyway**.
+
 ## Platform Layout
 
 - OSflux Core: low-level device access, Windows I/O bindings, and write pipeline primitives.
@@ -273,12 +281,12 @@ cargo run -- --blocks=16 --block-size=1048576
 
 ## Licence
 
-Copyright (C) 2026 HOD Technologies Limited
+Copyright (C) 2026 Joly Doh
 
 OSflux is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version (SPDX: `GPL-3.0-or-later`).
 
 OSflux is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text of the GNU General Public License.
 
-The licence covers OSflux's source code. It does not cover the OSflux name or logo, including the files in `assets/brand/`. HOD Technologies Limited keeps all rights to them, so using them, for example on a modified version, needs its permission. The logo's wordmark is drawn from IBM Plex Sans, under the SIL Open Font License 1.1.
+The licence covers OSflux's source code. It does not cover the OSflux name or logo, including the files in `assets/brand/`. Joly Doh keeps all rights to them, so using them, for example on a modified version, needs permission. The logo's wordmark is drawn from IBM Plex Sans, under the SIL Open Font License 1.1.
 
 Every dependency's licence is checked for compatibility with GPL-3.0 in CI (`deny.toml`).

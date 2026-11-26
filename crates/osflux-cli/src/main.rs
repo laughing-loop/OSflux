@@ -1985,7 +1985,7 @@ fn format_basis_points(basis_points: u32) -> String {
 /// The version, with the licence notice the GPL asks programs to show.
 fn print_version() {
     println!("osflux {}", env!("CARGO_PKG_VERSION"));
-    println!("Copyright (C) 2026 HOD Technologies Limited");
+    println!("Copyright (C) 2026 Joly Doh");
     println!("License GPL-3.0-or-later: GNU GPL version 3 or later <https://www.gnu.org/licenses/gpl-3.0.html>");
     println!("This is free software: you are free to change and redistribute it.");
     println!("There is NO WARRANTY, to the extent permitted by law.");

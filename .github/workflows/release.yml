@@ -19,6 +19,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_ABOUT_VERSION: 0.9.3
+  # The SHA-256 published with that release's x86_64-pc-windows-msvc
+  # archive. Update both together.
+  CARGO_ABOUT_SHA256: 9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02
 
 jobs:
   build:
@@ -54,10 +58,25 @@ jobs:
         run: ./scripts/release/read-version.ps1
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
 
-      - name: Build osflux.exe
-        run: cargo build --release --locked -p osflux-cli
+      - name: Build osflux.exe and osflux-studio.exe
+        run: cargo build --profile dist --locked -p osflux-cli -p osflux-studio
+
+      - name: Install cargo-about
+        shell: pwsh
+        run: |
+          $name = "cargo-about-$env:CARGO_ABOUT_VERSION-x86_64-pc-windows-msvc"
+          $archive = Join-Path $env:RUNNER_TEMP "$name.tar.gz"
+          Invoke-WebRequest -Uri "https://github.com/EmbarkStudios/cargo-about/releases/download/$env:CARGO_ABOUT_VERSION/$name.tar.gz" -OutFile $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:CARGO_ABOUT_SHA256) { throw "cargo-about's archive has SHA-256 $hash, not $env:CARGO_ABOUT_SHA256" }
+          tar -xzf $archive -C $env:RUNNER_TEMP
+          Join-Path $env:RUNNER_TEMP $name | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # Every crate built into the two programs, with its licence text.
+      - name: Write the third-party notices
+        run: cargo about generate --workspace --all-features --locked scripts/release/third-party-notices.hbs -o target/dist/THIRD-PARTY-NOTICES.html
 
       - name: Sign with SSL.com eSigner
         if: vars.SIGNING_PROVIDER == 'ssl-com'
@@ -68,17 +87,35 @@ jobs:
           password: ${{ secrets.ES_PASSWORD }}
           credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
           totp_secret: ${{ secrets.ES_TOTP_SECRET }}
-          file_path: ${{ github.workspace }}/target/release/osflux.exe
+          file_path: ${{ github.workspace }}/target/dist/osflux.exe
           output_path: ${{ github.workspace }}/signed
           environment_name: PROD
           malware_block: false
           override: false
           clean_logs: true
 
-      - name: Use the signed osflux.exe
+      - name: Sign osflux-studio.exe with SSL.com eSigner
+        if: vars.SIGNING_PROVIDER == 'ssl-com'
+        uses: sslcom/esigner-codesign@cf5f6c1d38ad10f47e3ed9aca873f429b1a8d85b # v1.3.2
+        with:
+          command: sign
+          username: ${{ secrets.ES_USERNAME }}
+          password: ${{ secrets.ES_PASSWORD }}
+          credential_id: ${{ secrets.ES_CREDENTIAL_ID }}
+          totp_secret: ${{ secrets.ES_TOTP_SECRET }}
+          file_path: ${{ github.workspace }}/target/dist/osflux-studio.exe
+          output_path: ${{ github.workspace }}/signed
+          environment_name: PROD
+          malware_block: false
+          override: false
+          clean_logs: true
+
+      - name: Use the signed programs
         if: vars.SIGNING_PROVIDER == 'ssl-com'
         shell: pwsh
-        run: Move-Item -Force signed/osflux.exe target/release/osflux.exe
+        run: |
+          Move-Item -Force signed/osflux.exe target/dist/osflux.exe
+          Move-Item -Force signed/osflux-studio.exe target/dist/osflux-studio.exe
 
       - name: Sign with a certificate in Azure Key Vault
         if: vars.SIGNING_PROVIDER == 'azure-key-vault'
@@ -95,13 +132,15 @@ jobs:
           azuresigntool sign `
             -kvu $env:KEY_VAULT_URL -kvc $env:KEY_VAULT_CERTIFICATE `
             -kvi $env:KEY_VAULT_CLIENT_ID -kvs $env:KEY_VAULT_CLIENT_SECRET -kvt $env:KEY_VAULT_TENANT_ID `
-            -tr $env:TIMESTAMP_URL -td sha256 -fd sha256 -v target/release/osflux.exe
+            -tr $env:TIMESTAMP_URL -td sha256 -fd sha256 -v target/dist/osflux.exe target/dist/osflux-studio.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Check the signature
+      - name: Check the signatures
         if: vars.SIGNING_PROVIDER != ''
         shell: pwsh
-        run: ./scripts/release/verify-signature.ps1 -Path target/release/osflux.exe
+        run: |
+          ./scripts/release/verify-signature.ps1 -Path target/dist/osflux.exe
+          ./scripts/release/verify-signature.ps1 -Path target/dist/osflux-studio.exe
 
       - name: Package
         shell: pwsh

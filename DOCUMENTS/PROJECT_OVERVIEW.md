@@ -136,7 +136,7 @@ Studio is the desktop app. It is built with Slint and calls the engine directly,
 
 ## Licence
 
-OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 HOD Technologies Limited. The OSflux name and logo are not covered by the licence.
+OSflux is licensed under the GNU General Public License, version 3 or later (`GPL-3.0-or-later`), Copyright (C) 2026 Joly Doh. The OSflux name and logo are not covered by the licence.
 
 The Studio program is distributed under GPL-3.0 only, because it includes Slint, which is licensed that way.
 

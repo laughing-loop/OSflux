@@ -31,8 +31,9 @@ Rust is pinned in `rust-toolchain.toml`, so CI and every developer machine use t
    ```
 4. **Watch `.github/workflows/release.yml` run:**
    - It checks that the tag matches `Cargo.toml`.
-   - It runs the tests, builds `osflux.exe` and signs it, if signing is set up.
-   - It packages `osflux-<version>-windows-x64.zip` (with the licence, README and changelog) and `SHA256SUMS.txt`.
+   - It runs the tests, builds `osflux.exe` and `osflux-studio.exe` with the `dist` profile (link-time optimisation, about 20 minutes) and signs both, if signing is set up.
+   - It writes `THIRD-PARTY-NOTICES.html` with [cargo-about](https://github.com/EmbarkStudios/cargo-about) (`about.toml`, `scripts/release/third-party-notices.hbs`): every crate built into the programs, with its licence text. cargo-about's version and its archive's SHA-256 are pinned in the workflow; update both together.
+   - It packages `osflux-<version>-windows-x64.zip` (both programs, the notices, the IBM Plex font licence, the licence, README and changelog) and `SHA256SUMS.txt`, with the hashes of the zip and both programs.
    - It publishes a GitHub release whose notes are the version's changelog section.
    - A version with a hyphen, such as `0.2.0-beta.1`, is published as a pre-release.
 
@@ -40,7 +41,7 @@ To try the release build without publishing, run the Release workflow by hand fr
 
 ## Code signing
 
-Windows SmartScreen warns before running unsigned programs from the internet, and a tool that needs Administrator and erases drives should carry its publisher's name. The release workflow signs `osflux.exe` as soon as a certificate is set up, and builds unsigned until then. The release notes say which.
+Windows SmartScreen warns before running unsigned programs from the internet, and a tool that needs Administrator and erases drives should carry its publisher's name. The release workflow signs `osflux.exe` and `osflux-studio.exe` as soon as a certificate is set up, and builds unsigned until then. The release notes say which.
 
 Since 2023, code signing keys must live in certified hardware: a USB token, a hardware security module (HSM), or a cloud signing service. A token cannot be plugged into GitHub's runners, so signing in CI needs one of the two cloud routes the workflow supports.
 
@@ -55,4 +56,4 @@ Settings → Environments → `release` (created by the first release run, or cr
 
 After signing, the workflow checks the signature and its timestamp with `signtool` and fails the release if either is missing.
 
-The signing steps follow each provider's documented setup but cannot be tried until a certificate exists. The first signed release should be a hand-run test build, and its `osflux.exe` checked under Properties → Digital Signatures.
+The signing steps follow each provider's documented setup but cannot be tried until a certificate exists. The first signed release should be a hand-run test build, and both programs checked under Properties → Digital Signatures.

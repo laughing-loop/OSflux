@@ -189,6 +189,12 @@ export global Studio {
     in property <string> confirm-error;
     // The drive code confirms (an empty drive), not the full phrase.
     in property <bool> confirm-short;
+    // A drive with files: its code and a ticked box naming what will be lost
+    // confirm, not the full phrase.
+    in property <bool> confirm-acknowledge;
+    // The box's text, from the engine: what will be lost.
+    in property <string> acknowledgement;
+    in-out property <bool> acknowledged;
     in property <ConfirmDriveData> confirm-drive;
     in property <string> confirm-options;
     in property <string> confirm-verify;
@@ -228,6 +234,7 @@ export global Studio {
     callback set-option(int, bool);
     callback account-name-edited(string);
     callback typed-edited(string);
+    callback acknowledged-changed(bool);
     callback confirm-again();
     callback write();
     callback refresh();

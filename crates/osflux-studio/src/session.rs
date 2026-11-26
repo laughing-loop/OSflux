@@ -108,6 +108,10 @@ impl Engine for LiveEngine {
             if intent.short_confirmation.is_some() {
                 event = event
                     .with_detail("the drive was empty, so its identity code may confirm the write");
+            } else if let Some(acknowledgement) = &intent.contents_acknowledgement {
+                event = event.with_detail(format!(
+                    "the drive had files, so its identity code with the acknowledgement \"{acknowledgement}\" may confirm the write"
+                ));
             }
             if let Err(error) = audit.record(&event) {
                 crate::log!("audit: could not record the confirmation: {error}");
@@ -173,6 +177,8 @@ pub struct Session {
     confirm_job: u64,
     /// Exactly what was typed, upper-cased as the inputs show it.
     typed: String,
+    /// Whether the box naming what will be lost is ticked.
+    acknowledged: bool,
     expired: bool,
     /// Checks every second whether the confirmation has expired.
     expiry_timer: Timer,
@@ -216,6 +222,7 @@ impl Session {
             confirm_busy: false,
             confirm_job: 0,
             typed: String::new(),
+            acknowledged: false,
             expired: false,
             expiry_timer: Timer::default(),
             write_requested: false,
@@ -406,8 +413,8 @@ impl Session {
 
     /// The code boxes or the phrase field changed.
     pub fn typed_edited(&mut self, text: &str) {
-        let short = matches!(&self.confirmation, Some(Ok(confirmation)) if confirmation.short());
-        let typed = normalize_typed(text, short);
+        let code = matches!(&self.confirmation, Some(Ok(confirmation)) if confirmation.uses_code());
+        let typed = normalize_typed(text, code);
         if typed != text {
             if let Some(window) = self.window.upgrade() {
                 window.global::<Studio>().set_typed(typed.clone().into());
@@ -421,6 +428,18 @@ impl Session {
     /// Exactly what was typed, to pass to the engine when writing.
     pub fn typed(&self) -> &str {
         &self.typed
+    }
+
+    /// The box naming what will be lost was ticked or cleared.
+    pub fn acknowledged_changed(&mut self, acknowledged: bool) {
+        self.acknowledged = acknowledged;
+        self.write_requested = false;
+        self.render();
+    }
+
+    /// Whether the box naming what will be lost is ticked.
+    pub fn acknowledged(&self) -> bool {
+        self.acknowledged
     }
 
     /// "Confirm the drive again", after the confirmation expired.
@@ -458,11 +477,13 @@ impl Session {
         self.confirmation = None;
         self.confirm_busy = false;
         self.typed.clear();
+        self.acknowledged = false;
         self.expired = false;
         self.write_requested = false;
         self.expiry_timer.stop();
         if let Some(window) = self.window.upgrade() {
             window.global::<Studio>().set_typed(SharedString::new());
+            window.global::<Studio>().set_acknowledged(false);
         }
     }
 
@@ -496,6 +517,8 @@ impl Session {
                     confirmation.intent.target_index,
                     if confirmation.short() {
                         "drive code"
+                    } else if confirmation.acknowledgement().is_some() {
+                        "drive code and acknowledgement"
                     } else {
                         "full phrase"
                     },
@@ -1067,6 +1090,7 @@ impl Session {
                 .unwrap_or(confirmation.intent.target_path.as_str()),
             contents,
             typed: &self.typed,
+            acknowledged: self.acknowledged,
             expired: self.expired,
             verify: self.verify,
         }))
@@ -1134,6 +1158,8 @@ impl Session {
         };
         studio.set_description(view.description.into());
         studio.set_confirm_short(view.short);
+        studio.set_confirm_acknowledge(view.acknowledge);
+        studio.set_acknowledgement(view.acknowledgement.clone().into());
         studio.set_drive_code(view.code.clone().into());
         studio.set_phrase_head(view.phrase_head.clone().into());
         studio.set_phrase_code(view.phrase_code.clone().into());

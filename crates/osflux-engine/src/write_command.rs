@@ -353,6 +353,8 @@ mod tests {
                 None
             },
             short_confirmation: None,
+            contents_acknowledgement: None,
+            contents_fingerprint: None,
             image_source: "C:\\images\\sample.iso".to_string(),
             target_index: 2,
             target_path: "\\\\.\\PhysicalDrive2".to_string(),

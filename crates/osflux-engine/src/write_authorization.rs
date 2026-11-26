@@ -6,16 +6,20 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::clock::format_unix_utc;
-use crate::write_intent::{match_confirmation, ConfirmationForm, WriteIntent, WriteIntentStatus};
+use crate::write_intent::{
+    match_supplied_confirmation, ConfirmationForm, SuppliedConfirmation, WriteIntent,
+    WriteIntentStatus,
+};
 
 /// How long a confirmation issued by `--intent` stays usable.
 pub const AUTHORIZATION_LIFETIME_SECONDS: u64 = 10 * 60;
 /// Overrides where OSflux keeps its state, for managed machines and tests.
 pub const STATE_DIR_ENV: &str = "OSFLUX_STATE_DIR";
 
-// Version 2 added `short_confirmation`. Records only live for ten minutes, so
-// an older record is simply refused and `--intent` run again.
-const RECORD_HEADER: &str = "osflux-write-authorization 2";
+// Version 2 added `short_confirmation`, version 3 `contents_acknowledgement`
+// and `contents_fingerprint`. Records only live for ten minutes, so an older
+// record is simply refused and the write confirmed again.
+const RECORD_HEADER: &str = "osflux-write-authorization 3";
 /// Tolerates small clock corrections between issuing and checking.
 const CLOCK_SKEW_SECONDS: u64 = 60;
 
@@ -57,6 +61,13 @@ pub struct WriteAuthorization {
     /// The identity code, when the drive was empty at `--intent` and the code
     /// alone may confirm the write.
     pub short_confirmation: Option<String>,
+    /// What the person acknowledged would be lost, when the drive had files
+    /// that could be named; the identity code with exactly this
+    /// acknowledgement may then confirm the write.
+    pub contents_acknowledgement: Option<String>,
+    /// The drive's layout fingerprint when the acknowledgement was offered.
+    /// The write stops if the drive no longer matches it.
+    pub contents_fingerprint: Option<String>,
     pub image: ImageIdentity,
     pub issued_at_unix_seconds: u64,
     pub expires_at_unix_seconds: u64,
@@ -73,6 +84,12 @@ pub enum AuthorizationProblem {
     /// The identity code was typed, but the drive was not empty when the
     /// confirmation was issued, so only the full phrase covers it.
     ShortConfirmationNotRecorded,
+    /// The code was given with an acknowledgement, but none was offered when
+    /// the confirmation was issued, so only the full phrase covers it.
+    AcknowledgementNotRecorded,
+    /// The acknowledgement is not the one offered when the confirmation was
+    /// issued, so it does not describe what would be lost.
+    AcknowledgementMismatch,
     TargetChanged,
     ImageMismatch,
 }
@@ -97,6 +114,12 @@ impl AuthorizationProblem {
             ),
             Self::ShortConfirmationNotRecorded => format!(
                 "drive {target_index} was not empty when --intent ran, so the write needs the full phrase; if the drive has been emptied since, run --intent again"
+            ),
+            Self::AcknowledgementNotRecorded => format!(
+                "what is on drive {target_index} could not be named when the write was confirmed, so the write needs the full phrase"
+            ),
+            Self::AcknowledgementMismatch => format!(
+                "the acknowledgement does not match what was on drive {target_index} when the write was confirmed; confirm again"
             ),
             Self::TargetChanged => format!(
                 "drive {target_index} is not the drive the confirmation was issued for; run --intent again"
@@ -126,6 +149,8 @@ impl WriteAuthorization {
             target_identity_code: intent.target_identity_code.clone()?,
             confirmation_phrase: intent.confirmation_phrase.clone()?,
             short_confirmation: intent.short_confirmation.clone(),
+            contents_acknowledgement: intent.contents_acknowledgement.clone(),
+            contents_fingerprint: intent.contents_fingerprint.clone(),
             image,
             issued_at_unix_seconds: now_unix_seconds,
             expires_at_unix_seconds: now_unix_seconds + AUTHORIZATION_LIFETIME_SECONDS,
@@ -141,7 +166,7 @@ impl WriteAuthorization {
         target_path: &str,
         target_identity_code: &str,
         image: &ImageIdentity,
-        supplied_phrase: &str,
+        supplied: &SuppliedConfirmation<'_>,
         now_unix_seconds: u64,
     ) -> Result<ConfirmationForm, AuthorizationProblem> {
         if self.issued_at_unix_seconds > now_unix_seconds + CLOCK_SKEW_SECONDS {
@@ -161,18 +186,34 @@ impl WriteAuthorization {
             return Err(AuthorizationProblem::TargetChanged);
         }
 
-        let Some(form) = match_confirmation(
+        let Some(form) = match_supplied_confirmation(
             Some(&self.confirmation_phrase),
             self.short_confirmation.as_deref(),
-            supplied_phrase,
+            Some(&self.target_identity_code),
+            self.contents_acknowledgement.as_deref(),
+            supplied,
         ) else {
-            if supplied_phrase
-                .trim()
-                .eq_ignore_ascii_case(&self.target_identity_code)
-            {
-                return Err(AuthorizationProblem::ShortConfirmationNotRecorded);
-            }
-            return Err(AuthorizationProblem::PhraseMismatch);
+            return Err(match supplied {
+                SuppliedConfirmation::Typed(text)
+                    if text.trim().eq_ignore_ascii_case(&self.target_identity_code) =>
+                {
+                    AuthorizationProblem::ShortConfirmationNotRecorded
+                }
+                SuppliedConfirmation::Typed(_) => AuthorizationProblem::PhraseMismatch,
+                SuppliedConfirmation::CodeWithContentsAcknowledged { code, .. }
+                    if !code.trim().eq_ignore_ascii_case(&self.target_identity_code) =>
+                {
+                    AuthorizationProblem::PhraseMismatch
+                }
+                SuppliedConfirmation::CodeWithContentsAcknowledged { .. }
+                    if self.contents_acknowledgement.is_none() =>
+                {
+                    AuthorizationProblem::AcknowledgementNotRecorded
+                }
+                SuppliedConfirmation::CodeWithContentsAcknowledged { .. } => {
+                    AuthorizationProblem::AcknowledgementMismatch
+                }
+            });
         };
 
         if &self.image != image {
@@ -191,6 +232,14 @@ impl WriteAuthorization {
             (
                 "short_confirmation",
                 self.short_confirmation.clone().unwrap_or_default(),
+            ),
+            (
+                "contents_acknowledgement",
+                self.contents_acknowledgement.clone().unwrap_or_default(),
+            ),
+            (
+                "contents_fingerprint",
+                self.contents_fingerprint.clone().unwrap_or_default(),
             ),
             ("image_path", self.image.path.clone()),
             ("image_size_bytes", self.image.size_bytes.to_string()),
@@ -257,6 +306,10 @@ impl WriteAuthorization {
             target_identity_code: text("target_identity_code")?,
             confirmation_phrase: text("confirmation_phrase")?,
             short_confirmation: Some(text("short_confirmation")?).filter(|code| !code.is_empty()),
+            contents_acknowledgement: Some(text("contents_acknowledgement")?)
+                .filter(|text| !text.is_empty()),
+            contents_fingerprint: Some(text("contents_fingerprint")?)
+                .filter(|text| !text.is_empty()),
             image: ImageIdentity {
                 path: text("image_path")?,
                 size_bytes: number("image_size_bytes")?,
@@ -447,7 +500,9 @@ mod tests {
         AuthorizationStoreError, ImageIdentity, WriteAuthorization, AUTHORIZATION_LIFETIME_SECONDS,
     };
     use crate::preflight::WritePreflightStatus;
-    use crate::write_intent::{ConfirmationForm, WriteIntent, WriteIntentStatus};
+    use crate::write_intent::{
+        ConfirmationForm, SuppliedConfirmation, WriteIntent, WriteIntentStatus,
+    };
     use std::fs;
     use std::path::PathBuf;
 
@@ -522,7 +577,7 @@ mod tests {
                 r"\\.\PhysicalDrive3",
                 "0B21",
                 &image(),
-                "OSFLUX ERASE TARGET 3 2E85",
+                &SuppliedConfirmation::Typed("OSFLUX ERASE TARGET 3 2E85"),
                 NOW
             ),
             Err(AuthorizationProblem::TargetChanged)
@@ -533,7 +588,7 @@ mod tests {
                 r"\\.\PhysicalDrive3",
                 "2E85",
                 &image(),
-                "OSFLUX ERASE TARGET 3 XXXX",
+                &SuppliedConfirmation::Typed("OSFLUX ERASE TARGET 3 XXXX"),
                 NOW
             ),
             Err(AuthorizationProblem::PhraseMismatch)
@@ -544,7 +599,7 @@ mod tests {
                 r"\\.\PhysicalDrive3",
                 "2E85",
                 &changed_image,
-                "OSFLUX ERASE TARGET 3 2E85",
+                &SuppliedConfirmation::Typed("OSFLUX ERASE TARGET 3 2E85"),
                 NOW
             ),
             Err(AuthorizationProblem::ImageMismatch)
@@ -608,11 +663,11 @@ mod tests {
             .unwrap();
         record = record
             .replace(
+                "osflux-write-authorization 3",
                 "osflux-write-authorization 2",
-                "osflux-write-authorization 1",
             )
             .lines()
-            .filter(|line| !line.starts_with("short_confirmation="))
+            .filter(|line| !line.starts_with("contents_"))
             .collect::<Vec<_>>()
             .join("\n");
         fs::create_dir_all(store.directory()).unwrap();
@@ -755,7 +810,116 @@ mod tests {
         supplied: &str,
         now: u64,
     ) -> Result<ConfirmationForm, AuthorizationProblem> {
-        authorization.check(3, r"\\.\PhysicalDrive3", "2E85", &image(), supplied, now)
+        let supplied = SuppliedConfirmation::Typed(supplied);
+        authorization.check(3, r"\\.\PhysicalDrive3", "2E85", &image(), &supplied, now)
+    }
+
+    fn check_acknowledged(
+        authorization: &WriteAuthorization,
+        code: &str,
+        acknowledgement: &str,
+    ) -> Result<ConfirmationForm, AuthorizationProblem> {
+        let supplied = SuppliedConfirmation::CodeWithContentsAcknowledged {
+            code,
+            acknowledgement,
+        };
+        authorization.check(3, r"\\.\PhysicalDrive3", "2E85", &image(), &supplied, NOW)
+    }
+
+    const ACKNOWLEDGEMENT: &str =
+        "Erase General UDisk USB Device (960 MB) and the 1 partition with files on it";
+
+    fn drive_with_files() -> WriteIntent {
+        WriteIntent {
+            contents_acknowledgement: Some(ACKNOWLEDGEMENT.to_string()),
+            contents_fingerprint: Some("ab".repeat(32)),
+            ..intent()
+        }
+    }
+
+    #[test]
+    fn accepts_the_code_with_the_acknowledgement_offered() {
+        let authorization = WriteAuthorization::issue(&drive_with_files(), image(), NOW).unwrap();
+
+        assert_eq!(
+            authorization.contents_fingerprint.as_deref(),
+            Some("ab".repeat(32).as_str())
+        );
+        assert_eq!(
+            check_acknowledged(&authorization, "2e85", ACKNOWLEDGEMENT),
+            Ok(ConfirmationForm::CodeWithContentsAcknowledged)
+        );
+        // The full phrase still works, and the code alone still does not.
+        assert_eq!(
+            check_with(&authorization, "OSFLUX ERASE TARGET 3 2E85", NOW),
+            Ok(ConfirmationForm::FullPhrase)
+        );
+        assert_eq!(
+            check_with(&authorization, "2E85", NOW),
+            Err(AuthorizationProblem::ShortConfirmationNotRecorded)
+        );
+    }
+
+    #[test]
+    fn refuses_the_code_with_a_different_acknowledgement_or_code() {
+        let authorization = WriteAuthorization::issue(&drive_with_files(), image(), NOW).unwrap();
+
+        assert_eq!(
+            check_acknowledged(
+                &authorization,
+                "2E85",
+                "Erase General UDisk USB Device (960 MB) and the 2 partitions with files on it"
+            ),
+            Err(AuthorizationProblem::AcknowledgementMismatch)
+        );
+        assert_eq!(
+            check_acknowledged(&authorization, "0B21", ACKNOWLEDGEMENT),
+            Err(AuthorizationProblem::PhraseMismatch)
+        );
+    }
+
+    #[test]
+    fn refuses_an_acknowledgement_when_none_was_offered() {
+        // The drive's contents could not be named, or it was empty.
+        let authorization = WriteAuthorization::issue(&intent(), image(), NOW).unwrap();
+
+        assert_eq!(
+            check_acknowledged(&authorization, "2E85", ACKNOWLEDGEMENT),
+            Err(AuthorizationProblem::AcknowledgementNotRecorded)
+        );
+    }
+
+    #[test]
+    fn keeps_the_acknowledgement_across_save_and_load() {
+        let store = AuthorizationStore::new(temp_dir());
+        let authorization = WriteAuthorization::issue(&drive_with_files(), image(), NOW).unwrap();
+
+        store.save(&authorization).unwrap();
+        let loaded = store.load(3).unwrap();
+        let _ = fs::remove_dir_all(store.directory());
+
+        assert_eq!(loaded, Some(authorization));
+    }
+
+    #[test]
+    fn an_expired_acknowledged_confirmation_is_refused() {
+        let authorization = WriteAuthorization::issue(&drive_with_files(), image(), NOW).unwrap();
+        let supplied = SuppliedConfirmation::CodeWithContentsAcknowledged {
+            code: "2E85",
+            acknowledgement: ACKNOWLEDGEMENT,
+        };
+
+        assert!(matches!(
+            authorization.check(
+                3,
+                r"\\.\PhysicalDrive3",
+                "2E85",
+                &image(),
+                &supplied,
+                NOW + AUTHORIZATION_LIFETIME_SECONDS
+            ),
+            Err(AuthorizationProblem::Expired { .. })
+        ));
     }
 
     fn intent() -> WriteIntent {
@@ -764,6 +928,8 @@ mod tests {
             reason: "preflight passed".to_string(),
             confirmation_phrase: Some("OSFLUX ERASE TARGET 3 2E85".to_string()),
             short_confirmation: None,
+            contents_acknowledgement: None,
+            contents_fingerprint: None,
             image_source: r"C:\images\alpine.iso".to_string(),
             target_index: 3,
             target_path: r"\\.\PhysicalDrive3".to_string(),

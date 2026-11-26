@@ -1,13 +1,16 @@
 //! The Confirm step (frames 11–14, and 21 when the confirmation expires).
 //!
 //! The engine decides which confirmation a drive needs: its four-character
-//! code when it is empty, the full phrase otherwise. It records a one-time
-//! confirmation that lasts 10 minutes, and checks what the person types.
-//! Studio passes exactly what was typed (upper-cased, as the inputs show it)
-//! and never turns a code into the phrase.
+//! code when it is empty; for a drive with files it can name, the code and a
+//! ticked box saying what will be lost; the full phrase otherwise. It records
+//! a one-time confirmation that lasts 10 minutes, and checks what the person
+//! supplies. Studio passes exactly what was typed (upper-cased, as the inputs
+//! show it) and the engine's own acknowledgement text, and never turns a code
+//! into the phrase.
 
 use osflux_engine::{
-    match_confirmation, ConfirmationForm, DriveContents, DriveContentsState, WriteIntent,
+    match_confirmation, match_supplied_confirmation, ConfirmationForm, DriveContents,
+    DriveContentsState, SuppliedConfirmation, WriteIntent,
 };
 
 use crate::{HintIcon, MatchState};
@@ -37,6 +40,18 @@ impl Confirmation {
         self.intent.short_confirmation.is_some()
     }
 
+    /// What will be lost, for a drive with files the engine could name: the
+    /// code and a ticked box with this text confirm the write.
+    pub fn acknowledgement(&self) -> Option<&str> {
+        self.intent.contents_acknowledgement.as_deref()
+    }
+
+    /// True when the code boxes are shown: an empty drive, or a drive with
+    /// files confirmed with its code and the box.
+    pub fn uses_code(&self) -> bool {
+        self.short() || self.acknowledgement().is_some()
+    }
+
     pub fn code(&self) -> &str {
         self.intent
             .target_identity_code
@@ -51,13 +66,34 @@ impl Confirmation {
             .unwrap_or_default()
     }
 
-    /// Which accepted confirmation `typed` is, as the engine judges it.
-    pub fn matches(&self, typed: &str) -> Option<ConfirmationForm> {
-        match_confirmation(
+    /// What to hand the engine for `typed`, with the box ticked or not.
+    pub fn supplied<'a>(&'a self, typed: &'a str, acknowledged: bool) -> SuppliedConfirmation<'a> {
+        match self.acknowledgement() {
+            Some(acknowledgement) if acknowledged => {
+                SuppliedConfirmation::CodeWithContentsAcknowledged {
+                    code: typed,
+                    acknowledgement,
+                }
+            }
+            _ => SuppliedConfirmation::Typed(typed),
+        }
+    }
+
+    /// Which accepted confirmation `typed` (and the box, when there is one)
+    /// is, as the engine judges it.
+    pub fn matches(&self, typed: &str, acknowledged: bool) -> Option<ConfirmationForm> {
+        match_supplied_confirmation(
             self.intent.confirmation_phrase.as_deref(),
             self.intent.short_confirmation.as_deref(),
-            typed,
+            self.intent.target_identity_code.as_deref(),
+            self.acknowledgement(),
+            &self.supplied(typed, acknowledged),
         )
+    }
+
+    /// Whether `typed` is this drive's code, whatever the box says.
+    fn code_matches(&self, typed: &str) -> bool {
+        match_confirmation(None, Some(self.code()), typed).is_some()
     }
 
     pub fn expired(&self, now_unix_seconds: u64) -> bool {
@@ -84,6 +120,10 @@ pub fn normalize_typed(text: &str, short: bool) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmView {
     pub short: bool,
+    /// A drive with files, confirmed with its code and the box.
+    pub acknowledge: bool,
+    /// The box's text: what will be lost.
+    pub acknowledgement: String,
     pub description: &'static str,
     pub code: String,
     /// The phrase without its last four characters, and those characters.
@@ -109,6 +149,8 @@ pub struct Inputs<'a> {
     pub path: &'a str,
     pub contents: Option<&'a DriveContents>,
     pub typed: &'a str,
+    /// Whether the box naming what will be lost is ticked.
+    pub acknowledged: bool,
     pub expired: bool,
     pub verify: bool,
 }
@@ -116,10 +158,35 @@ pub struct Inputs<'a> {
 pub fn confirm_view(inputs: Inputs<'_>) -> ConfirmView {
     let confirmation = inputs.confirmation;
     let short = confirmation.short();
+    let acknowledge = !short && confirmation.acknowledgement().is_some();
     let typed = inputs.typed;
-    let matched = confirmation.matches(typed);
+    let matched = confirmation.matches(typed, inputs.acknowledged);
 
-    let (match_state, match_message) = if short {
+    let (match_state, match_message) = if acknowledge {
+        let count = typed.chars().count();
+        if count < 4 {
+            (
+                if count == 0 {
+                    MatchState::Empty
+                } else {
+                    MatchState::Typing
+                },
+                "Type all 4 characters and tick the box to unlock Write to drive.".to_string(),
+            )
+        } else if !confirmation.code_matches(typed) {
+            (
+                MatchState::Mismatch,
+                "Code does not match this drive".to_string(),
+            )
+        } else if matched.is_some() {
+            (MatchState::Match, format!("Matches {}", inputs.model))
+        } else {
+            (
+                MatchState::Typing,
+                "Code matches. Tick the box to unlock Write to drive.".to_string(),
+            )
+        }
+    } else if short {
         let count = typed.chars().count();
         if count == 0 {
             (
@@ -174,6 +241,8 @@ pub fn confirm_view(inputs: Inputs<'_>) -> ConfirmView {
         .is_none_or(|contents| contents.state == DriveContentsState::Unknown);
     let contents_note = if short {
         String::new()
+    } else if acknowledge {
+        "This drive has files on it. Type its code and tick the box to confirm.".to_string()
     } else if unknown_contents {
         "OSflux couldn't check what's on this drive, so it asks for the full phrase.".to_string()
     } else {
@@ -217,8 +286,15 @@ pub fn confirm_view(inputs: Inputs<'_>) -> ConfirmView {
 
     ConfirmView {
         short,
+        acknowledge,
+        acknowledgement: confirmation
+            .acknowledgement()
+            .unwrap_or_default()
+            .to_string(),
         description: if short {
             "Check this is the right drive, then type its code to unlock Write to drive."
+        } else if acknowledge {
+            "Type the drive's code and tick the box to unlock Write to drive."
         } else {
             "Type the full phrase to unlock Write to drive."
         },
@@ -241,6 +317,8 @@ pub fn confirm_view(inputs: Inputs<'_>) -> ConfirmView {
             "Confirmation expired"
         } else if short {
             "Type the drive code"
+        } else if acknowledge {
+            "Type the code and tick the box"
         } else {
             "Type the full phrase"
         },
@@ -267,7 +345,7 @@ mod tests {
     use crate::{HintIcon, MatchState};
     use osflux_engine::{
         confirmation_phrase, ConfirmationForm, DriveContents, DriveContentsState, DrivePartition,
-        WriteIntent, WriteIntentStatus, WritePreflightStatus,
+        SuppliedConfirmation, WriteIntent, WriteIntentStatus, WritePreflightStatus,
     };
 
     fn confirmation(index: u32, code: &str, short: bool) -> Confirmation {
@@ -277,6 +355,8 @@ mod tests {
                 reason: "ready".into(),
                 confirmation_phrase: Some(confirmation_phrase(index, code)),
                 short_confirmation: short.then(|| code.to_string()),
+                contents_acknowledgement: None,
+                contents_fingerprint: None,
                 image_source: "image.iso".into(),
                 target_index: index,
                 target_path: format!("\\\\.\\PhysicalDrive{index}"),
@@ -300,6 +380,7 @@ mod tests {
             path: "\\\\.\\PhysicalDrive2",
             contents: None,
             typed,
+            acknowledged: false,
             expired: false,
             verify: true,
         })
@@ -355,6 +436,7 @@ mod tests {
                 path: "\\\\.\\PhysicalDrive4",
                 contents: Some(contents),
                 typed,
+                acknowledged: false,
                 expired: false,
                 verify: false,
             })
@@ -398,6 +480,88 @@ mod tests {
         assert!(unknown.erase_body.starts_with("OSflux couldn't read"));
     }
 
+    const ACKNOWLEDGEMENT: &str =
+        "Erase SMI USB DISK (14.8 GB) and the 1 partition with files on it";
+
+    #[test]
+    fn a_drive_with_files_takes_its_code_and_the_ticked_box() {
+        let mut confirmation = confirmation(3, "C4D2", false);
+        confirmation.intent.contents_acknowledgement = Some(ACKNOWLEDGEMENT.to_string());
+        let contents = DriveContents {
+            state: DriveContentsState::HasData,
+            reason: "files".into(),
+            partition_scheme: None,
+            partitions: vec![DrivePartition {
+                number: 1,
+                start_bytes: 1 << 20,
+                size_bytes: 1 << 30,
+                filesystem: None,
+                label: None,
+                used_bytes: None,
+            }],
+        };
+        let make = |typed: &str, acknowledged: bool| {
+            confirm_view(Inputs {
+                confirmation: &confirmation,
+                model: "SMI USB DISK",
+                path: "\\\\.\\PhysicalDrive3",
+                contents: Some(&contents),
+                typed,
+                acknowledged,
+                expired: false,
+                verify: true,
+            })
+        };
+
+        let empty = make("", false);
+        assert!(!empty.short);
+        assert!(empty.acknowledge);
+        assert_eq!(empty.acknowledgement, ACKNOWLEDGEMENT);
+        assert_eq!(empty.code, "C4D2");
+        assert_eq!(empty.match_state, MatchState::Empty);
+        assert_eq!(
+            empty.contents_note,
+            "This drive has files on it. Type its code and tick the box to confirm."
+        );
+        assert_eq!(
+            empty.description,
+            "Type the drive's code and tick the box to unlock Write to drive."
+        );
+        assert_eq!(empty.rail_subtitle, "Type the code and tick the box");
+        assert!(!empty.can_write);
+
+        // The right code is not enough until the box is ticked.
+        let code_only = make("C4D2", false);
+        assert_eq!(code_only.match_state, MatchState::Typing);
+        assert_eq!(
+            code_only.match_message,
+            "Code matches. Tick the box to unlock Write to drive."
+        );
+        assert_eq!(code_only.matched, None);
+        assert!(!code_only.can_write);
+
+        // Ticking the box does not make a wrong code right.
+        let wrong = make("C4D3", true);
+        assert_eq!(wrong.match_state, MatchState::Mismatch);
+        assert!(!wrong.can_write);
+
+        let right = make("C4D2", true);
+        assert_eq!(right.match_state, MatchState::Match);
+        assert_eq!(right.match_message, "Matches SMI USB DISK");
+        assert_eq!(
+            right.matched,
+            Some(ConfirmationForm::CodeWithContentsAcknowledged)
+        );
+        assert!(right.can_write);
+        assert_eq!(
+            confirmation.supplied("C4D2", true),
+            SuppliedConfirmation::CodeWithContentsAcknowledged {
+                code: "C4D2",
+                acknowledgement: ACKNOWLEDGEMENT,
+            }
+        );
+    }
+
     #[test]
     fn an_expired_confirmation_locks_the_write_as_in_frame_21() {
         let confirmation = confirmation(2, "7F3A", true);
@@ -409,6 +573,7 @@ mod tests {
             path: "\\\\.\\PhysicalDrive2",
             contents: None,
             typed: "7F3A",
+            acknowledged: false,
             expired: true,
             verify: true,
         });

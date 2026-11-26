@@ -62,8 +62,13 @@ pub enum View {
     ConfirmCodeWrong,
     /// Frame 13: the matching code.
     ConfirmCodeMatch,
-    /// Frame 14: the full phrase for an SD card with files (use a Linux
-    /// image and --verify-off).
+    /// Frame 14: an SD card with files, its code typed and the box naming
+    /// what will be lost not yet ticked (use a Linux image and
+    /// --verify-off).
+    ConfirmFiles,
+    /// Frame 14, with the box ticked: Write to drive unlocks.
+    ConfirmFilesTicked,
+    /// The full phrase, for an SD card whose contents could not be read.
     ConfirmPhrase,
     /// Frame 21: the confirmation has expired.
     ConfirmExpired,
@@ -109,6 +114,8 @@ impl Options {
                 "confirm-code" => options.view = View::ConfirmCode,
                 "confirm-code-wrong" => options.view = View::ConfirmCodeWrong,
                 "confirm-code-match" => options.view = View::ConfirmCodeMatch,
+                "confirm-files" => options.view = View::ConfirmFiles,
+                "confirm-files-ticked" => options.view = View::ConfirmFilesTicked,
                 "confirm-phrase" => options.view = View::ConfirmPhrase,
                 "confirm-expired" => options.view = View::ConfirmExpired,
                 "--image" => options.image = args.next().map(PathBuf::from),
@@ -144,6 +151,7 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
             .take(2)
             .collect(),
         View::SafetyBlocked => small_stick_drives(),
+        View::ConfirmPhrase => unreadable_card_drives(),
         _ => sample_drives(),
     };
     let shell = Shell::install_with(
@@ -216,6 +224,19 @@ pub fn run(options: Options) -> Result<(), slint::PlatformError> {
             };
             studio.set_typed(typed.into());
             session.typed_edited(typed);
+        }
+        View::ConfirmFiles | View::ConfirmFilesTicked => {
+            let mut session = session.borrow_mut();
+            session.next();
+            session.select_drive(2);
+            session.next();
+            session.next();
+            studio.set_typed("B21C".into());
+            session.typed_edited("B21C");
+            if options.view == View::ConfirmFilesTicked {
+                studio.set_acknowledged(true);
+                session.acknowledged_changed(true);
+            }
         }
         View::ConfirmPhrase => {
             let mut session = session.borrow_mut();
@@ -325,6 +346,22 @@ fn sample_drive(
 }
 
 /// The drives of frame 05.
+/// The samples, with the SD card unreadable, so it needs the full phrase.
+fn unreadable_card_drives() -> Vec<TargetAssessment> {
+    let mut drives = sample_drives();
+    for drive in &mut drives {
+        if drive.index == 4 {
+            drive.contents = Some(DriveContents {
+                state: DriveContentsState::Unknown,
+                reason: "the drive could not be read".to_string(),
+                partition_scheme: None,
+                partitions: Vec::new(),
+            });
+        }
+    }
+    drives
+}
+
 fn sample_drives() -> Vec<TargetAssessment> {
     let removable = "Removable Media";
     let mut card = sample_drive(

@@ -18,12 +18,14 @@ Update (2026-11-23, later): real OSflux logo in every v2 frame (full mark everyw
 
 Update (2026-11-24): confirmation levels corrected from the engine source. There is no 64 GB rule; eligibility depends only on what the drive holds. Studio passes the engine what the person typed (code or phrase), not the full phrase in place of a code.
 
+Update (2026-11-26): a drive with files that the engine can name is confirmed in Studio with its 4-character code and a ticked box that says what will be lost, e.g. "Erase SMI USB DISK (14.8 GB) and the 1 partition with files on it". The full phrase stays for drives whose contents could not be read, and is the only confirmation the CLI takes for a drive with files. Frame 14 changes to match; the PNG still shows the full phrase until it is redrawn, and `--preview confirm-files` shows the new screen.
+
 ## Frames (v2 page)
 - Image: 01 empty · 02 Windows 11 ISO, Ready (expected SHA-256 filled) · 03 Linux ISO, Ready (hybrid, byte-for-byte copy) · 04 Needs inspection (ISO with a missing or invalid boot catalog)
 - Drive: 05 list (Not allowed open) · 06 no drives found
 - Safety check: 07 Ready · 08 Blocked (8.41 GB image on a 7.45 GB stick)
 - Windows options: 09 none selected · 10 options 1, 2 and 3 on
-- Confirm: 11–13 drive code (empty, wrong, matching) · 14 full phrase (SD card with files, verification off)
+- Confirm: 11–13 drive code (empty, wrong, matching) · 14 SD card with files: drive code typed, box naming what will be lost not yet ticked, verification off (Studio previews `confirm-files` and `confirm-files-ticked`; the PNG still shows the earlier full-phrase screen, which is now only for a drive whose contents could not be read, preview `confirm-phrase`)
 - Writing: 15 Writing · 16 Verifying · 17 Writing with verification off
 - Done: 18 Written and verified (hash matches) · 19 Written, not verified · 20 Hash mismatch
 - Errors: 21 Confirmation expired · 22 Drive changed or unplugged · 23 Not running as Administrator
@@ -107,21 +109,25 @@ A drive with engine status `eligible` uses the Ready style (label "Ready").
 - Maps to CLI flags `--bypass-requirements`, `--local-account <NAME>`, `--skip-privacy-questions`, `--no-auto-bitlocker`, `--copy-region` (autounattend.xml at the stick root).
 
 ## Confirmation levels
-The engine decides which confirmation a drive needs and checks it. Studio passes the engine exactly what the person typed, the drive code or the full phrase, and never turns a typed code into the phrase. That way the engine applies the checks that go with the code, and the audit log records which confirmation was used.
+The engine decides which confirmation a drive needs and checks it. Studio passes the engine exactly what the person typed, the drive code or the full phrase, plus, for a drive with files, the engine's own acknowledgement text when the box is ticked. It never turns a typed code into the phrase. That way the engine applies the checks that go with each confirmation, and the audit log records which one was used.
 
 - For an `eligible` drive the engine accepts the 4-character drive code on its own. It then reads the drive again before the write and once more after locking it, and refuses the write if anything has appeared on it. The full phrase is accepted too.
-- For any other allowed drive, only the full phrase `OSFLUX ERASE TARGET {index} {code}` confirms the write.
+- For a drive with files whose partitions the engine could read, Studio asks for the drive code and a ticked box. The box's text comes from the engine (`contents_acknowledgement` in `write_intent.rs`): "Erase {model} ({size}) and the {n} partition(s) with files on it", with the size written as Studio writes sizes. The engine records the text and a fingerprint of the drive's partition layout with the 10-minute confirmation. Before writing it builds the text again from a fresh look at the drive, and checks the layout again once the drive is locked; if a partition was added, removed or reformatted, it refuses and asks for a new confirmation. The audit log records the form (`identity-code-contents-acknowledged`) and the text. The full phrase is accepted too.
+- For any other allowed drive (contents that could not be read, or data with no partition to name), only the full phrase `OSFLUX ERASE TARGET {index} {code}` confirms the write.
+- The CLI keeps the full phrase for every drive with files; the code with a box exists only in Studio.
 - The drive's size plays no part: a blank 128 GB stick is `eligible` as well (`target.rs`, `drive_contents.rs`).
 
-| Drive's engine status | What the person types | Screen |
+| Drive's engine status | What the person does | Screen |
 |---|---|---|
-| `eligible` (empty drive: blank, or one FAT32 or exFAT partition with nothing in it) | The 4-character drive code, e.g. `7F3A` | Drive summary card (with Windows options + verification) + 4 square code boxes |
-| `needs-confirmation` (anything else: files, more partitions, another filesystem, or contents that could not be read) | The full phrase, e.g. `OSFLUX ERASE TARGET 4 B21C` | Full-phrase screen + amber note "This drive has files on it, so OSflux asks for the full phrase." When the contents could not be read: "OSflux couldn't check what's on this drive, so it asks for the full phrase." |
+| `eligible` (empty drive: blank, or one FAT32 or exFAT partition with nothing in it) | Types the 4-character drive code, e.g. `7F3A` | Drive summary card (with Windows options + verification) + 4 square code boxes |
+| `needs-confirmation`, with files the engine can name (one or more partitions read) | Types the drive code, e.g. `B21C`, and ticks "Erase SD card in USB card reader (14.8 GB) and the 1 partition with files on it" | Amber note "This drive has files on it. Type its code and tick the box to confirm." + red band (what will be erased) + the code shown in blue next to 4 square code boxes + the box: a check box with a red left edge and the engine's text in Plex Sans 14/600 + match message |
+| `needs-confirmation`, contents not readable or nothing to name | Types the full phrase, e.g. `OSFLUX ERASE TARGET 4 B21C` | Full-phrase screen + amber note "OSflux couldn't check what's on this drive, so it asks for the full phrase." (or "This drive has files on it, so OSflux asks for the full phrase." when it holds data with no partition to name) |
 | `blocked` | Nothing — cannot be selected | Listed under "Not allowed" |
 
 - The drive code is 4 hex characters (0–9, A–F). It changes if a different drive takes the same slot.
 - Code boxes: upper-case on input, auto-advance, paste fills all four, Backspace moves back. States: empty, wrong (red border, "Code does not match this drive"), matching (green, "Matches SanDisk Ultra 64GB").
-- "Write to drive" (red, #DC2626) unlocks only on an exact match; before that it is disabled grey with a lock icon. Confirmations last 10 minutes.
+- With the box (a drive with files): the right code with the box clear shows "Code matches. Tick the box to unlock Write to drive." (neutral); ticking the box does not make a wrong code right. Rail subtitle "Type the code and tick the box".
+- "Write to drive" (red, #DC2626) unlocks only on an exact match (and, for a drive with files, a ticked box); before that it is disabled grey with a lock icon. Confirmations last 10 minutes.
 
 ## Writing and verifying
 - Two phases in order: Writing, then Verifying ("Every byte is read back and compared"). Each phase: progress bar, MB/s, GB done of total, time left. Head shows total time left.
@@ -148,7 +154,7 @@ The engine decides which confirmation a drive needs and checks it. Studio passes
 
 ## Behaviour
 - Next locked on Needs inspection / Blocked; safety check stops at the first failure.
-- Inputs upper-case. Write unlocks only on an exact match (code or full phrase).
+- Inputs upper-case. Write unlocks only on an exact match (code, code with the box ticked, or full phrase).
 
 ## Engine mapping (from the osflux-engine source)
 Use these exact values in technical panels; UI labels on the left.
@@ -177,6 +183,7 @@ Use these exact values in technical panels; UI labels on the left.
 | Ready / Needs confirmation / Needs inspection / Blocked | `ready` / `needs-confirmation` / `needs-inspection` / `blocked` |
 | **Write mode selection** | `selected` / `needs-inspection` / `blocked` |
 | **Confirmation** | `confirmation-required` → `confirmation-missing` / `confirmation-mismatch` → match |
+| Confirmed with (audit log, write plan) | `full-phrase` / `identity-code` / `identity-code-contents-acknowledged` |
 | **Session** | `prepared` / `blocked` |
 | **Write progress phases** | `planned` → `prepared` → `writing` → `verifying` (verify skipped with `--no-verify`) |
 

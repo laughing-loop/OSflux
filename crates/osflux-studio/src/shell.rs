@@ -226,6 +226,20 @@ fn connect(window: &AppWindow, shell: &Rc<RefCell<Shell>>, session: &Rc<RefCell<
     let state = Rc::clone(session);
     studio.on_write(move || state.borrow_mut().write());
 
+    let state = Rc::clone(session);
+    studio.on_cancel_write(move || state.borrow_mut().cancel_write());
+
+    let state = Rc::clone(session);
+    studio.on_done_primary(move || state.borrow_mut().done_primary());
+
+    studio.on_restart_as_administrator(|| match platform::elevate::restart_as_administrator() {
+        Ok(()) => {
+            crate::log!("elevate: started OSflux as Administrator; closing this window");
+            let _ = slint::quit_event_loop();
+        }
+        Err(error) => crate::log!("elevate: {error}"),
+    });
+
     let weak = window.as_weak();
     let state = Rc::clone(session);
     studio.on_fix(move || {

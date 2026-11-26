@@ -7,11 +7,12 @@ mod support;
 
 use osflux_studio::settings::Settings;
 use osflux_studio::steps::StepId;
+use osflux_studio::write_step::WriteFailure;
 use osflux_studio::{HintIcon, MatchState, Screen, Status, StepState};
 use slint::Model;
 use support::{
     drive, frame_05_drives, studio, studio_with, system_drive, with_unreadable_contents,
-    BROKEN_ISO, LINUX_ISO, MISSING_ISO, WINDOWS_ISO,
+    BROKEN_ISO, LINUX_ISO, MISSING_ISO, WINDOWS_ISO, WRITTEN_SHA256,
 };
 
 fn rail_titles(studio: &osflux_studio::Studio<'_>) -> Vec<String> {
@@ -471,9 +472,258 @@ fn an_empty_drive_is_confirmed_with_its_code() {
     );
 
     studio.invoke_write();
-    assert!(studio
-        .get_hint()
-        .starts_with("Writing comes in the next Studio update"));
+    assert_eq!(
+        studio.get_screen(),
+        Screen::Done,
+        "the sample write finishes at once"
+    );
+    let writes = app.engine.writes.lock().unwrap();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0].typed, "7F32", "the code exactly as typed");
+    assert_eq!(writes[0].acknowledgement, None);
+    assert!(writes[0].verify);
+}
+
+/// An empty stick confirmed with its code, ready to write.
+fn confirmed_with_the_code(app: &support::Studio) {
+    through_the_safety_check(app, WINDOWS_ISO, 0);
+    let studio = app.studio();
+    studio.invoke_next();
+    studio.invoke_next();
+    studio.invoke_typed_edited("7F32".into());
+    assert!(studio.get_can_write());
+}
+
+#[test]
+fn a_finished_write_is_written_and_verified_as_in_frame_18() {
+    let app = studio();
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+
+    assert_eq!(studio.get_screen(), Screen::Done);
+    assert_eq!(studio.get_step_label(), "Done");
+    assert_eq!(studio.get_title(), "Written and verified");
+    assert_eq!(studio.get_done_status(), Status::Ready);
+    assert!(!studio.get_writing());
+    let rows = studio.get_done_rows();
+    assert_eq!(
+        rows.row_data(0).unwrap().value,
+        WRITTEN_SHA256.to_ascii_uppercase()
+    );
+    assert_eq!(rows.row_data(1).unwrap().value, "Not entered");
+    assert_eq!(rows.row_data(2).unwrap().status, Status::Ready);
+    assert_eq!(rows.row_data(3).unwrap().value, "15 min 02 s");
+    assert!(studio.get_done_next().contains("UEFI: entry"));
+    assert_eq!(studio.get_done_primary_label(), "Write another stick");
+    let confirm = studio.get_steps().row_data(4).unwrap();
+    assert_eq!(confirm.state, StepState::Done);
+    assert_eq!(confirm.subtitle, "Written and verified");
+}
+
+#[test]
+fn the_expected_hash_is_compared_after_writing() {
+    let app = studio();
+    app.open(WINDOWS_ISO);
+    let studio = app.studio();
+    studio.invoke_expected_sha_edited(WRITTEN_SHA256.into());
+    studio.invoke_next();
+    studio.invoke_select_drive(0);
+    studio.invoke_next();
+    studio.invoke_next();
+    studio.invoke_next();
+    studio.invoke_typed_edited("7F32".into());
+    studio.invoke_write();
+
+    assert_eq!(studio.get_title(), "Written and verified");
+    let expected = studio.get_done_rows().row_data(1).unwrap();
+    assert_eq!(expected.status, Status::Ready);
+    assert_eq!(expected.status_text, "Matches");
+}
+
+#[test]
+fn a_different_expected_hash_is_a_mismatch_as_in_frame_20() {
+    let app = studio();
+    app.open(WINDOWS_ISO);
+    let studio = app.studio();
+    studio.invoke_expected_sha_edited(
+        "A1ACC315D73B2A9CDF67FECB16403D751C99B6E50983382663FE0745CDFCDB13".into(),
+    );
+    studio.invoke_next();
+    studio.invoke_select_drive(0);
+    studio.invoke_next();
+    studio.invoke_next();
+    studio.invoke_next();
+    studio.invoke_typed_edited("7F32".into());
+    studio.invoke_write();
+
+    assert_eq!(studio.get_title(), "Hash mismatch");
+    assert_eq!(studio.get_done_status(), Status::Blocked);
+    assert!(studio.get_done_band_red());
+    assert_eq!(
+        studio.get_done_band_title(),
+        "Download the image again before you use this stick."
+    );
+    assert!(studio.get_done_rows().row_data(1).unwrap().alert);
+    let confirm = studio.get_steps().row_data(4).unwrap();
+    assert_eq!(confirm.state, StepState::Blocked);
+    assert_eq!(confirm.subtitle, "Hash mismatch");
+}
+
+#[test]
+fn with_verification_off_the_stick_is_written_not_verified_as_in_frame_19() {
+    let app = studio();
+    app.studio().invoke_set_verify_after_writing(false);
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+
+    assert!(!app.engine.writes.lock().unwrap()[0].verify);
+    assert_eq!(studio.get_title(), "Written, not verified");
+    assert_eq!(studio.get_done_status(), Status::NeedsInspection);
+}
+
+#[test]
+fn a_drive_with_files_is_written_with_the_acknowledgement() {
+    let app = studio();
+    through_the_safety_check(&app, LINUX_ISO, 2);
+    let studio = app.studio();
+    studio.invoke_next();
+    studio.invoke_typed_edited("7F34".into());
+    studio.set_acknowledged(true);
+    studio.invoke_acknowledged_changed(true);
+    studio.invoke_write();
+
+    let writes = app.engine.writes.lock().unwrap();
+    assert_eq!(writes[0].typed, "7F34");
+    assert_eq!(
+        writes[0].acknowledgement.as_deref(),
+        Some("Erase Generic SD/MMC USB Device (14.8 GB) and the 1 partition with files on it")
+    );
+    assert!(writes[0].setup.is_empty(), "no Windows options for Linux");
+    assert!(studio.get_done_next().contains("choose the USB stick"));
+}
+
+#[test]
+fn windows_options_go_with_the_write() {
+    let app = studio();
+    through_the_safety_check(&app, WINDOWS_ISO, 0);
+    let studio = app.studio();
+    studio.invoke_next();
+    studio.invoke_set_option(0, true);
+    studio.invoke_next();
+    studio.invoke_typed_edited("7F32".into());
+    studio.invoke_write();
+
+    let writes = app.engine.writes.lock().unwrap();
+    assert!(writes[0].setup.bypass_requirements);
+    assert!(!writes[0].copy_region);
+}
+
+#[test]
+fn a_cancelled_write_offers_to_try_again() {
+    let app = studio();
+    *app.engine.write_failure.lock().unwrap() = Some(WriteFailure::Cancelled { written: true });
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+
+    assert_eq!(studio.get_screen(), Screen::Done);
+    assert_eq!(studio.get_title(), "Writing cancelled");
+    assert_eq!(
+        studio.get_done_band_title(),
+        "This stick won't start a PC. It needs writing again before you can use it."
+    );
+    assert!(!studio.get_done_band_red(), "amber, not red");
+    assert_eq!(
+        studio.get_steps().row_data(4).unwrap().subtitle,
+        "Needs writing again"
+    );
+    assert_eq!(studio.get_done_primary_label(), "Try again");
+
+    studio.invoke_done_primary();
+    assert_eq!(
+        studio.get_screen(),
+        Screen::Confirm,
+        "confirm the drive again"
+    );
+    assert!(!studio.get_can_write());
+}
+
+#[test]
+fn an_expired_confirmation_at_write_time_shows_frame_21() {
+    let app = studio();
+    *app.engine.write_failure.lock().unwrap() = Some(WriteFailure::Expired);
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+
+    assert_eq!(studio.get_screen(), Screen::Confirm);
+    assert!(studio.get_confirm_expired());
+}
+
+#[test]
+fn a_drive_that_changed_at_write_time_shows_frame_22() {
+    let app = studio();
+    *app.engine.write_failure.lock().unwrap() =
+        Some(WriteFailure::DriveChanged("the drive changed".into()));
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+
+    assert_eq!(studio.get_screen(), Screen::Confirm);
+    assert!(studio.get_confirm_error().contains("The drive changed"));
+}
+
+#[test]
+fn a_failed_write_says_why() {
+    let app = studio();
+    *app.engine.write_failure.lock().unwrap() =
+        Some(WriteFailure::InUse("a volume is in use".into()));
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+
+    assert_eq!(studio.get_title(), "Not written");
+    assert_eq!(
+        studio.get_done_band_title(),
+        "Another program is using the drive."
+    );
+    assert!(studio.get_done_band_red());
+}
+
+#[test]
+fn write_another_stick_goes_back_to_the_drives() {
+    let app = studio();
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.invoke_write();
+    studio.invoke_done_primary();
+
+    assert_eq!(studio.get_screen(), Screen::Drive);
+    assert_eq!(
+        studio.get_steps().row_data(1).unwrap().subtitle,
+        "Choose one drive"
+    );
+    assert!(!studio.get_can_go_next(), "no drive chosen yet");
+}
+
+#[test]
+fn without_administrator_rights_writing_is_locked_as_in_frame_23() {
+    let app = studio();
+    confirmed_with_the_code(&app);
+    let studio = app.studio();
+    studio.set_administrator(false);
+    studio.invoke_typed_edited("7F32".into());
+
+    assert!(!studio.get_can_write());
+    assert_eq!(
+        studio.get_hint(),
+        "Write to drive needs Administrator rights."
+    );
+    studio.invoke_write();
+    assert_eq!(studio.get_screen(), Screen::Confirm, "nothing starts");
+    assert!(app.engine.writes.lock().unwrap().is_empty());
 }
 
 #[test]

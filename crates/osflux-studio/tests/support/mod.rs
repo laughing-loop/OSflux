@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use osflux_engine::{
     build_safety_check, build_write_intent, build_write_preflight, BootCatalogPlatform,
-    BootEmulation, BootStyle, DetectionMethod, DeviceAccess, DriveContents, DriveContentsState,
-    DrivePartition, ElToritoBootInfo, FilesystemKind, ImageFamily, ImageKind, ImagePlan,
-    ImagePlanStatus, ImageSignature, ImageWriteStrategy, IsoBootAsset, IsoBootAssetKind,
-    IsoBootMetadata, IsoDirectoryMetadata, IsoFilesystemStrategy, PartitionScheme, SafetyCheck,
-    TargetAssessment, TargetAssessmentStatus, WriteIntentStatus, WriteMode,
+    BootEmulation, BootStyle, CancelToken, DetectionMethod, DeviceAccess, DriveContents,
+    DriveContentsState, DrivePartition, ElToritoBootInfo, FilesystemKind, ImageFamily, ImageKind,
+    ImagePlan, ImagePlanStatus, ImageSignature, ImageWriteStrategy, IsoBootAsset, IsoBootAssetKind,
+    IsoBootMetadata, IsoDirectoryMetadata, IsoFilesystemStrategy, PartitionScheme, RawWritePhase,
+    RawWriteProgress, RawWriteReport, SafetyCheck, TargetAssessment, TargetAssessmentStatus,
+    Verification, WriteIntentStatus, WriteMode,
 };
 use osflux_studio::confirm_step::{ConfirmFailure, Confirmation};
 use osflux_studio::drive_step::ChosenDrive;
@@ -23,6 +24,7 @@ use osflux_studio::safety_step::SafetyFailure;
 use osflux_studio::session::{Engine, Jobs, Session};
 use osflux_studio::settings::Settings;
 use osflux_studio::shell::{EngineSetup, Shell};
+use osflux_studio::write_step::{WriteFailure, WriteRequest};
 use osflux_studio::AppWindow;
 
 thread_local! {
@@ -48,9 +50,74 @@ pub struct FakeEngine {
     pub drives: Mutex<Vec<TargetAssessment>>,
     /// What `now_unix_seconds` returns, so tests can let time pass.
     pub now: Mutex<u64>,
+    /// How the next write ends: `None` writes (and verifies) successfully.
+    pub write_failure: Mutex<Option<WriteFailure>>,
+    /// Every write asked for.
+    pub writes: Mutex<Vec<WriteRequest>>,
+}
+
+/// The SHA-256 a successful sample write reports.
+pub const WRITTEN_SHA256: &str = "2a1ab0d46d7285f738d082858925d3303f3dc430f0a4eab5aa238325a4274906";
+const WRITTEN_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+impl FakeEngine {
+    pub fn new(drives: Vec<TargetAssessment>) -> Self {
+        Self {
+            drives: Mutex::new(drives),
+            now: Mutex::new(START_TIME),
+            write_failure: Mutex::new(None),
+            writes: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 impl Engine for FakeEngine {
+    /// Reports writing (and verifying) in halves, then the outcome set in
+    /// `write_failure`. Nothing is written anywhere.
+    fn write(
+        &self,
+        request: &WriteRequest,
+        _cancel: &CancelToken,
+        progress: &mut dyn FnMut(RawWriteProgress),
+    ) -> Result<RawWriteReport, WriteFailure> {
+        self.writes.lock().unwrap().push(request.clone());
+        let mut phases = vec![RawWritePhase::Writing];
+        if request.verify {
+            phases.push(RawWritePhase::Verifying);
+        }
+        for phase in phases {
+            for completed_bytes in [0, WRITTEN_BYTES / 2, WRITTEN_BYTES] {
+                progress(RawWriteProgress {
+                    phase,
+                    completed_bytes,
+                    total_bytes: WRITTEN_BYTES,
+                });
+            }
+        }
+        if let Some(failure) = self.write_failure.lock().unwrap().take() {
+            return Err(failure);
+        }
+        let verification = if request.verify {
+            Verification::ReadBack
+        } else {
+            Verification::Skipped
+        };
+        Ok(RawWriteReport {
+            session_id: "OSFLUX-SESSION-TEST".to_string(),
+            image_path: request.image.display().to_string(),
+            target_path: format!("\\\\.\\PhysicalDrive{}", request.target_index),
+            target_identity_code: String::new(),
+            image_sha256: WRITTEN_SHA256.to_string(),
+            bytes_written: WRITTEN_BYTES,
+            bytes_verified: if request.verify { WRITTEN_BYTES } else { 0 },
+            verification,
+            forced_dismount: false,
+            write_millis: 451_000,
+            verify_millis: if request.verify { 451_000 } else { 0 },
+            audit_recorded: true,
+        })
+    }
+
     fn analyze_image(&self, path: &Path) -> Result<ImageAnalysis, String> {
         match path.to_str() {
             Some(WINDOWS_ISO) => Ok(windows_iso()),
@@ -142,10 +209,7 @@ impl Studio {
 /// frame 05 plugged in.
 pub fn studio_with(settings: Settings, drives: Vec<TargetAssessment>) -> Studio {
     let window = window();
-    let engine = Arc::new(FakeEngine {
-        drives: Mutex::new(drives),
-        now: Mutex::new(START_TIME),
-    });
+    let engine = Arc::new(FakeEngine::new(drives));
     let shell = Shell::install_with(
         &window,
         settings,

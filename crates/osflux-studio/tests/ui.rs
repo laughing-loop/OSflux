@@ -6,7 +6,7 @@ mod support;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use osflux_studio::session::Jobs;
 use osflux_studio::settings::{Settings, ThemeSetting};
@@ -28,10 +28,7 @@ fn install(
         settings_path,
         administrator,
         EngineSetup {
-            engine: Arc::new(FakeEngine {
-                drives: Mutex::new(frame_05_drives()),
-                now: Mutex::new(support::START_TIME),
-            }),
+            engine: Arc::new(FakeEngine::new(frame_05_drives())),
             jobs: Jobs::Inline,
             clock: || "13:28".to_string(),
         },
@@ -213,6 +210,81 @@ mod clicks {
             .find(|element| element.accessible_role() != Some(AccessibleRole::Text))
             .unwrap_or_else(|| panic!("a control labelled {label:?}"));
         element.mock_single_click(PointerEventButton::Left);
+    }
+
+    /// The control labelled `label`, which must lie wholly inside a window of
+    /// `width` × `height`.
+    fn inside_the_window(
+        app: &super::support::Studio,
+        label: &str,
+        width: f32,
+        height: f32,
+    ) -> ElementHandle {
+        let element = ElementHandle::find_by_accessible_label(&app.window, label)
+            .find(|element| element.accessible_role() != Some(AccessibleRole::Text))
+            .unwrap_or_else(|| panic!("a control labelled {label:?}"));
+        let position = element.absolute_position();
+        let size = element.size();
+        assert!(
+            position.x >= 0.0
+                && position.y >= 0.0
+                && position.x + size.width <= width + 0.5
+                && position.y + size.height <= height + 0.5,
+            "{label:?} at {position:?}, {size:?} is not inside {width} x {height}"
+        );
+        element
+    }
+
+    #[test]
+    fn at_the_minimum_size_the_action_bar_stays_visible_and_clickable() {
+        let app = studio();
+        // The smallest the window allows: 960 x 640.
+        app.window
+            .window()
+            .set_size(slint::LogicalSize::new(960.0, 640.0));
+        app.window.show().expect("the window shows");
+        // The longest flow: a Windows image with options, confirmed with its
+        // code, so the page and the rail's "This session" are both full.
+        app.open(WINDOWS_ISO);
+        let studio = app.studio();
+        studio.invoke_next();
+        studio.invoke_select_drive(0);
+        studio.invoke_next();
+        studio.invoke_next();
+        for option in 0..3 {
+            studio.invoke_set_option(option, true);
+        }
+        studio.invoke_account_name_edited("alex".into());
+        studio.invoke_next();
+        studio.invoke_typed_edited("7F32".into());
+        assert_eq!(studio.get_screen(), Screen::Confirm);
+        assert!(studio.get_can_write());
+
+        inside_the_window(&app, "Back", 960.0, 640.0);
+        let write = inside_the_window(&app, "Write to drive", 960.0, 640.0);
+        write.mock_single_click(PointerEventButton::Left);
+        assert_eq!(
+            studio.get_screen(),
+            Screen::Done,
+            "one click on Write to drive"
+        );
+        inside_the_window(&app, "Write another stick", 960.0, 640.0);
+    }
+
+    #[test]
+    fn at_the_minimum_size_back_still_works() {
+        let app = studio();
+        app.window
+            .window()
+            .set_size(slint::LogicalSize::new(960.0, 640.0));
+        app.window.show().expect("the window shows");
+        app.open(WINDOWS_ISO);
+        let studio = app.studio();
+        studio.invoke_next();
+        assert_eq!(studio.get_screen(), Screen::Drive);
+
+        inside_the_window(&app, "Back", 960.0, 640.0).mock_single_click(PointerEventButton::Left);
+        assert_eq!(studio.get_screen(), Screen::Image, "one click on Back");
     }
 
     #[test]

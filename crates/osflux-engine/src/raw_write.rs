@@ -75,7 +75,51 @@ pub struct RawWritePlan {
     /// When the one-time confirmation for this write expires; zero until
     /// `prepare_raw_write` has checked it.
     pub authorization_expires_at_unix_seconds: u64,
+    /// Lets another thread stop the write between chunks. Never set by the
+    /// CLI; Studio's Cancel sets it.
+    pub cancel: CancelToken,
 }
+
+/// Asks a write in progress to stop. The write checks it before each chunk
+/// it hashes, writes or reads back, so it stops within one chunk. A drive
+/// stopped part-way through writing holds part of the image and must be
+/// written again before it is used.
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn check(&self, phase: RawWritePhase, done: u64, total: u64) -> Result<(), RawWriteError> {
+        if self.is_cancelled() {
+            return Err(RawWriteError::Cancelled {
+                phase,
+                completed_bytes: done,
+                total_bytes: total,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Two tokens are equal when they are the same token.
+impl PartialEq for CancelToken {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CancelToken {}
 
 /// Whether a write is read back and compared once it is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,6 +292,12 @@ pub enum RawWriteError {
     VerifyMismatch {
         offset: u64,
     },
+    /// The write was stopped through its [`CancelToken`].
+    Cancelled {
+        phase: RawWritePhase,
+        completed_bytes: u64,
+        total_bytes: u64,
+    },
 }
 
 impl fmt::Display for RawWriteError {
@@ -319,6 +369,22 @@ impl fmt::Display for RawWriteError {
             Self::VerifyMismatch { offset } => write!(
                 formatter,
                 "verification failed: the drive differs from the image at byte {offset}"
+            ),
+            Self::Cancelled {
+                phase: RawWritePhase::Hashing,
+                ..
+            } => write!(
+                formatter,
+                "the write was cancelled while the image was being read, before anything was written to the drive"
+            ),
+            Self::Cancelled {
+                phase,
+                completed_bytes,
+                total_bytes,
+            } => write!(
+                formatter,
+                "the write was cancelled while {} after {completed_bytes} of {total_bytes} bytes; the drive must be written again before it is used",
+                phase.as_str()
             ),
         }
     }
@@ -590,6 +656,7 @@ pub fn build_raw_write_plan<'s>(
         layout,
         verification: Verification::ReadBack,
         authorization_expires_at_unix_seconds: 0,
+        cancel: CancelToken::default(),
     })
 }
 
@@ -732,7 +799,7 @@ pub fn write_image_to_target(
         }
         Err(error) => {
             notes.insert(0, error.to_string());
-            AuditEvent::for_plan(AuditEventKind::WriteFailed, plan).with_detail(notes.join("; "))
+            AuditEvent::for_plan(failure_kind(error), plan).with_detail(notes.join("; "))
         }
     };
     let audit_recorded = audit.record(&outcome_event).is_ok();
@@ -741,6 +808,15 @@ pub fn write_image_to_target(
         audit_recorded,
         ..report
     })
+}
+
+/// How the audit log records a write that did not succeed: one stopped
+/// through its cancel token as cancelled, anything else as failed.
+fn failure_kind(error: &RawWriteError) -> AuditEventKind {
+    match error {
+        RawWriteError::Cancelled { .. } => AuditEventKind::WriteCancelled,
+        _ => AuditEventKind::WriteFailed,
+    }
 }
 
 const FORCED_DISMOUNT_NOTE: &str =
@@ -852,6 +928,7 @@ pub fn execute_raw_write<D: BlockDevice>(
         device_size,
         chunk_size: plan.chunk_size_bytes as usize,
         verification: plan.verification,
+        cancel: &plan.cancel,
     };
     let (image_sha256, written) = match &plan.layout {
         WriteLayout::Raw => {
@@ -879,8 +956,17 @@ pub fn execute_raw_write<D: BlockDevice>(
                 });
             }
 
-            let image_sha256 = hash_image(&image, image_size, stream.chunk_size, &mut on_progress)
-                .map_err(image_error)?;
+            let image_sha256 = hash_image(
+                &image,
+                image_size,
+                stream.chunk_size,
+                &plan.cancel,
+                &mut on_progress,
+            )
+            .map_err(|error| match error {
+                HashError::Io(source) => image_error(source),
+                HashError::Write(error) => error,
+            })?;
             let copy = prepare_copy(&plan.image_path, device_size, layout)
                 .map_err(|error| file_copy_error(&plan.image_path, error))?;
             let image_bytes = copy.image.image_len();
@@ -937,21 +1023,32 @@ fn trailing_wipe(image_bytes: u64, device_size: u64) -> Option<(u64, u64)> {
     (start < device_size).then_some((start, device_size - start))
 }
 
+enum HashError {
+    Io(std::io::Error),
+    Write(RawWriteError),
+}
+
 /// Reads the whole image once to report its SHA-256.
 fn hash_image(
     image: &File,
     image_size: u64,
     chunk_size: usize,
+    cancel: &CancelToken,
     on_progress: &mut impl FnMut(RawWriteProgress),
-) -> std::io::Result<String> {
+) -> Result<String, HashError> {
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; chunk_size];
     let mut reader = image;
     let mut offset = 0u64;
     report(on_progress, RawWritePhase::Hashing, 0, image_size);
     while offset < image_size {
+        cancel
+            .check(RawWritePhase::Hashing, offset, image_size)
+            .map_err(HashError::Write)?;
         let length = chunk_length(chunk_size, offset, image_size);
-        reader.read_exact(&mut buffer[..length])?;
+        reader
+            .read_exact(&mut buffer[..length])
+            .map_err(HashError::Io)?;
         hash.update(&buffer[..length]);
         offset += length as u64;
         report(on_progress, RawWritePhase::Hashing, offset, image_size);
@@ -977,6 +1074,7 @@ struct WriteStream<'a, D: BlockDevice> {
     device_size: u64,
     chunk_size: usize,
     verification: Verification,
+    cancel: &'a CancelToken,
 }
 
 impl<D: BlockDevice> WriteStream<'_, D> {
@@ -1000,6 +1098,7 @@ impl<D: BlockDevice> WriteStream<'_, D> {
             let end = start + length;
             let mut offset = start;
             while offset < end {
+                self.cancel.check(RawWritePhase::Writing, done, total)?;
                 let piece = chunk_length(self.chunk_size, offset, end);
                 fill(offset, &mut buffer[..piece])?;
                 on_written(&buffer[..piece]);
@@ -1033,6 +1132,7 @@ impl<D: BlockDevice> WriteStream<'_, D> {
             let end = start + length;
             let mut offset = start;
             while offset < end {
+                self.cancel.check(RawWritePhase::Verifying, done, total)?;
                 let piece = chunk_length(self.chunk_size, offset, end);
                 fill(offset, &mut buffer[..piece])?;
                 let padded = padded_length(piece, offset, self.device_size);
@@ -1382,6 +1482,124 @@ mod tests {
             matches!(error, RawWriteError::VerifyMismatch { .. }),
             "{error}"
         );
+    }
+
+    #[test]
+    fn a_write_cancelled_before_it_starts_writes_nothing() {
+        let image = image_bytes(8192);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(8 * MIB);
+        let cancelled = plan(&path, image.len() as u64, 8 * MIB);
+        cancelled.cancel.cancel();
+
+        let error = execute_raw_write(&cancelled, &drive, |_| {}).unwrap_err();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            matches!(
+                error,
+                RawWriteError::Cancelled {
+                    phase: RawWritePhase::Writing,
+                    completed_bytes: 0,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(drive.writes.borrow().is_empty(), "nothing may be written");
+    }
+
+    #[test]
+    fn a_cancelled_write_stops_within_one_chunk() {
+        // Three chunks: cancelled once the first is written.
+        let image = image_bytes((9 * MIB) as usize);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(16 * MIB);
+        let write = plan(&path, image.len() as u64, 16 * MIB);
+        let token = write.cancel.clone();
+
+        let error = execute_raw_write(&write, &drive, |progress| {
+            if progress.phase == RawWritePhase::Writing && progress.completed_bytes >= 4 * MIB {
+                token.cancel();
+            }
+        })
+        .unwrap_err();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            matches!(
+                error,
+                RawWriteError::Cancelled {
+                    phase: RawWritePhase::Writing,
+                    completed_bytes,
+                    total_bytes,
+                } if completed_bytes == 4 * MIB && total_bytes == 9 * MIB
+            ),
+            "{error}"
+        );
+        assert_eq!(drive.writes.borrow().len(), 1, "only the first chunk");
+        assert!(error.to_string().contains("written again"), "{error}");
+    }
+
+    #[test]
+    fn a_write_cancelled_while_verifying_stops_reading_back() {
+        let image = image_bytes((9 * MIB) as usize);
+        let path = temp_image(&image);
+        let drive = MemoryDrive::new(16 * MIB);
+        let write = plan(&path, image.len() as u64, 16 * MIB);
+        let token = write.cancel.clone();
+        let mut last_verified = 0;
+
+        let error = execute_raw_write(&write, &drive, |progress| {
+            if progress.phase == RawWritePhase::Verifying {
+                last_verified = progress.completed_bytes;
+                if progress.completed_bytes > 0 {
+                    token.cancel();
+                }
+            }
+        })
+        .unwrap_err();
+        let _ = fs::remove_file(&path);
+
+        assert!(
+            matches!(
+                error,
+                RawWriteError::Cancelled {
+                    phase: RawWritePhase::Verifying,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert_eq!(last_verified, 4 * MIB, "stopped after one chunk");
+        // The whole image was written before verifying began.
+        assert_eq!(&drive.data.borrow()[..image.len()], &image[..]);
+    }
+
+    #[test]
+    fn a_cancelled_write_is_recorded_as_cancelled_not_failed() {
+        use crate::audit::AuditEventKind;
+        let cancelled = RawWriteError::Cancelled {
+            phase: RawWritePhase::Writing,
+            completed_bytes: 4,
+            total_bytes: 8,
+        };
+        assert_eq!(
+            super::failure_kind(&cancelled),
+            AuditEventKind::WriteCancelled
+        );
+        assert_eq!(
+            super::failure_kind(&RawWriteError::VerifyMismatch { offset: 0 }),
+            AuditEventKind::WriteFailed
+        );
+        let before_writing = RawWriteError::Cancelled {
+            phase: RawWritePhase::Hashing,
+            completed_bytes: 4,
+            total_bytes: 8,
+        };
+        assert!(before_writing
+            .to_string()
+            .contains("before anything was written"));
     }
 
     #[test]
@@ -2275,6 +2493,7 @@ mod tests {
             layout: WriteLayout::Raw,
             verification: Verification::ReadBack,
             authorization_expires_at_unix_seconds: 0,
+            cancel: super::CancelToken::default(),
         }
     }
 

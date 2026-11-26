@@ -161,6 +161,12 @@ export component ResultRow inherits Rectangle {
                 color: root.value-color;
                 wrap: word-wrap;
             }
+            // A detail without a status, such as how the time was split.
+            if root.status == Status.none && root.detail != "": Body {
+                text: "· " + root.detail;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
             if root.status != Status.none: HorizontalLayout {
                 spacing: 10px;
                 alignment: start;

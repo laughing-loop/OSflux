@@ -86,7 +86,7 @@ pub use progress::{
     ProgressPreviewStatus,
 };
 pub use raw_write::{
-    build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target,
+    build_raw_write_plan, execute_raw_write, prepare_raw_write, write_image_to_target, CancelToken,
     RawWriteError, RawWritePhase, RawWritePlan, RawWriteProgress, RawWriteReport, Verification,
     WriteLayout, MAX_RAW_WRITE_CHUNK_BYTES, RAW_WRITE_ALIGNMENT_BYTES,
 };
